@@ -424,16 +424,18 @@ function leadForm(id){
       <div class="fld"><label>Status</label><select id="f-status">${stOpts}</select></div>
       <div class="fld full"><label>Tipo</label><select id="f-tipo"><option value="comum" ${(l&&l.tipo||'comum')==='comum'?'selected':''}>Instagram / comum → Negócios</option><option value="empresario" ${l&&l.tipo==='empresario'?'selected':''}>Empresário → Empresários</option></select></div>
       <div class="fld full"><label>Observações</label><textarea id="f-notes" placeholder="Notas…">${esc(l&&l.notes||'')}</textarea></div>
-    </div></div>
+    </div>${agendorOn()&&!(l&&l.agendorPersonId)?`<label style="display:flex;align-items:center;gap:9px;margin-top:10px;padding:10px 12px;background:rgba(110,231,183,.07);border:1px solid rgba(110,231,183,.2);border-radius:9px;cursor:pointer"><input type="checkbox" id="f-ag-exists" style="width:16px;height:16px;accent-color:#6EE7B7;cursor:pointer"><span style="font-size:.78rem;color:var(--t2)">☁ Lead já está no Agendor (não enviar novamente)</span></label>`:''}</div>
     <div class="modal-ft"><button class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" id="f-save">${id?'Salvar':'Cadastrar'}</button></div></div></div>`);
   $('f-save').onclick=async()=>{
     const data={ name:$('f-name').value.trim(), username:$('f-user').value.trim().replace(/^@/,''), phone:$('f-phone').value.trim(), niche:$('f-niche').value.trim(), status:$('f-status').value, tipo:$('f-tipo').value, notes:$('f-notes').value.trim() };
     if(!data.name&&!data.username){ toast('Informe nome ou @usuário','warn'); return; }
+    const markAsInAgendor = !!($('f-ag-exists')&&$('f-ag-exists').checked);
     $('f-save').disabled=true;
     const prevStatus = id ? ((S.leads.find(x=>x.id===id)||{}).status) : null;
     let savedId=id;
     if(id){ const{error}=await sb.from('leads').update(leadToRow(data)).eq('id',id); if(error){toast(error.message,'error');return;} toast('Lead atualizado','success'); }
     else { data.source='manual'; const{data:ins,error}=await sb.from('leads').insert(leadToRow(data)).select('id').single(); if(error){toast(error.message,'error');return;} savedId=ins&&ins.id; toast('Lead cadastrado','success'); }
+    if(markAsInAgendor && savedId) await sb.from('leads').update({agendor_person_id:'manual'}).eq('id',savedId);
     closeModal(); await loadLeads(); if(data.status==='contato'||data.tipo==='empresario'){ await loadDeals(); if(savedId) await ensureDealForLead(savedId); } renderShell();
     if(data.status==='contato' && prevStatus!=='contato') notifyLeadContato(S.leads.find(x=>x.id===savedId)||data);
     if(data.status==='contato' && agendorOn() && agendorAutoOn() && savedId){ const lead=S.leads.find(x=>x.id===savedId); if(lead && !lead.agendorPersonId) sendLeadToAgendor(savedId,true); }
