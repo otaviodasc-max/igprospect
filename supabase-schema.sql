@@ -91,7 +91,27 @@ drop trigger if exists profiles_guard on public.profiles;
 create trigger profiles_guard before update on public.profiles
   for each row execute function public.guard_profile_update();
 
--- Cria uma organização nova e torna o usuário atual "dono"
+-- Associação usuário↔organização (many-to-many): permite que o mesmo
+-- login pertença a várias equipes e alterne entre elas. profiles.org_id/
+-- org_role continuam sendo a "equipe ativa no momento" (é o que
+-- public.my_org() lê), então nenhuma política de RLS de leads/calls/
+-- deals/messages/orgs precisa saber sobre esta tabela.
+create table if not exists public.org_members (
+  org_id     uuid not null references public.orgs(id) on delete cascade,
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  role       text not null default 'member' check (role in ('owner','member')),
+  created_at timestamptz not null default now(),
+  primary key (org_id, user_id)
+);
+alter table public.org_members enable row level security;
+drop policy if exists org_members_select on public.org_members;
+create policy org_members_select on public.org_members
+  for select using (user_id = auth.uid() or public.is_platform_admin());
+-- Sem policy de insert/update/delete para authenticated: só as funções
+-- SECURITY DEFINER abaixo escrevem aqui.
+
+-- Cria uma organização nova, torna o usuário atual "dono" e já a registra
+-- em org_members (também vira a equipe ativa, igual antes).
 -- p_module_id: módulo de profissão escolhido no questionário de onboarding
 -- (ver modules.js); default 'consorcio' se não informado.
 create or replace function public.create_org(p_name text, p_module_id text default null)
@@ -102,25 +122,58 @@ begin
   insert into public.orgs(name, join_code, module_id)
     values (coalesce(nullif(trim(p_name),''),'Meu espaço'), v_code, coalesce(p_module_id,'consorcio'))
     returning id into v_org;
+  insert into public.org_members(org_id, user_id, role) values (v_org, auth.uid(), 'owner');
   perform set_config('app.allow_org_change','1', true);
   update public.profiles set org_id = v_org, org_role = 'owner' where id = auth.uid();
   return v_org;
 end; $$;
 
--- Entra numa organização existente pelo código de convite
+-- Entra numa organização existente pelo código de convite; registra a
+-- associação em org_members (idempotente — não rebaixa quem já é owner
+-- dali) e troca a equipe ativa para ela.
 create or replace function public.join_org(p_code text)
 returns uuid language plpgsql security definer set search_path = public as $$
-declare v_org uuid;
+declare v_org uuid; v_role text;
 begin
   select id into v_org from public.orgs where join_code = upper(trim(p_code));
   if v_org is null then raise exception 'Código inválido'; end if;
+  insert into public.org_members(org_id, user_id, role) values (v_org, auth.uid(), 'member')
+    on conflict (org_id, user_id) do nothing;
+  select role into v_role from public.org_members where org_id=v_org and user_id=auth.uid();
   perform set_config('app.allow_org_change','1', true);
-  update public.profiles set org_id = v_org, org_role = 'member' where id = auth.uid();
+  update public.profiles set org_id = v_org, org_role = v_role where id = auth.uid();
   return v_org;
 end; $$;
 
+-- Troca a equipe ativa para outra que o usuário já integra (não cria,
+-- não convida — só muda o ponteiro profiles.org_id/org_role).
+create or replace function public.switch_org(p_org_id uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare v_role text;
+begin
+  select role into v_role from public.org_members where org_id=p_org_id and user_id=auth.uid();
+  if v_role is null then raise exception 'Você não faz parte deste espaço'; end if;
+  perform set_config('app.allow_org_change','1', true);
+  update public.profiles set org_id=p_org_id, org_role=v_role where id=auth.uid();
+end; $$;
+
+-- Lista as equipes do usuário p/ o seletor da barra lateral (bypassa RLS
+-- de orgs de propósito — é o único jeito de listar equipes que não são
+-- a ativa no momento, já que orgs_select só libera a ativa).
+create or replace function public.my_orgs()
+returns table(id uuid, name text, role text, is_current boolean)
+language sql stable security definer set search_path = public as $$
+  select o.id, o.name, m.role,
+         (o.id = (select org_id from public.profiles where id=auth.uid())) as is_current
+  from public.org_members m join public.orgs o on o.id = m.org_id
+  where m.user_id = auth.uid()
+  order by o.name;
+$$;
+
 grant execute on function public.create_org(text, text) to authenticated;
 grant execute on function public.join_org(text)  to authenticated;
+grant execute on function public.switch_org(uuid) to authenticated;
+grant execute on function public.my_orgs() to authenticated;
 
 -- ---------------------------------------------------------------------
 -- 4) LEADS (pertencem à ORGANIZAÇÃO; created_by = quem cadastrou)
@@ -201,37 +254,52 @@ drop policy if exists profiles_update on public.profiles;
 create policy profiles_update on public.profiles
   for update using (id = auth.uid() or public.is_platform_admin());
 
--- LEADS / CALLS: membros ativos da org fazem tudo na própria org; admin lê todos
+-- LEADS / CALLS: membros ativos da org fazem tudo (e SÓ) na própria org.
+-- Sem bypass de admin aqui — o painel Admin usa funções à parte (seção 7),
+-- para nunca misturar dados de organizações diferentes nas telas normais.
 drop policy if exists leads_org on public.leads;
 create policy leads_org on public.leads
   for all using (org_id = public.my_org() and public.is_active())
   with check (org_id = public.my_org());
 drop policy if exists leads_admin_read on public.leads;
-create policy leads_admin_read on public.leads
-  for select using (public.is_platform_admin());
 
 drop policy if exists calls_org on public.calls;
 create policy calls_org on public.calls
   for all using (org_id = public.my_org() and public.is_active())
   with check (org_id = public.my_org());
 drop policy if exists calls_admin_read on public.calls;
-create policy calls_admin_read on public.calls
-  for select using (public.is_platform_admin());
 
 -- ---------------------------------------------------------------------
--- 7) ADMIN — visões para o painel administrativo (só admin enxerga tudo)
+-- 7) ADMIN — funções para o painel administrativo (só admin enxerga tudo).
+--    São SECURITY DEFINER (mesmo padrão de create_org/join_org) e cada
+--    uma checa is_platform_admin() por dentro — é o único lugar do
+--    sistema que pode ver dados de mais de uma organização de uma vez.
 -- ---------------------------------------------------------------------
-create or replace view public.admin_orgs with (security_invoker = on) as
+drop view if exists public.admin_orgs;
+drop view if exists public.admin_users;
+
+create or replace function public.admin_orgs()
+returns table(id uuid, name text, join_code text, created_at timestamptz, members bigint, leads bigint, calls bigint)
+language sql stable security definer set search_path = public as $$
   select o.id, o.name, o.join_code, o.created_at,
          (select count(*) from public.profiles p where p.org_id = o.id) as members,
          (select count(*) from public.leads   l where l.org_id = o.id) as leads,
          (select count(*) from public.calls   c where c.org_id = o.id) as calls
-  from public.orgs o;
+  from public.orgs o
+  where public.is_platform_admin()
+  order by o.created_at desc;
+$$;
+grant execute on function public.admin_orgs() to authenticated;
 
-create or replace view public.admin_users with (security_invoker = on) as
+create or replace function public.admin_users()
+returns table(id uuid, email text, name text, org_id uuid, org_name text, org_role text, platform_role text, status text, created_at timestamptz)
+language sql stable security definer set search_path = public as $$
   select p.id, p.email, p.name, p.org_id, o.name as org_name,
          p.org_role, p.platform_role, p.status, p.created_at
-  from public.profiles p left join public.orgs o on o.id = p.org_id;
+  from public.profiles p left join public.orgs o on o.id = p.org_id
+  where public.is_platform_admin();
+$$;
+grant execute on function public.admin_users() to authenticated;
 
 -- ---------------------------------------------------------------------
 -- 8) PROMOVER VOCÊ A ADMIN DA PLATAFORMA

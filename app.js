@@ -363,7 +363,9 @@ function renderShell(){
   if(isAdmin) nav += `<div class="s-sec">Plataforma</div><div class="nav-item ${S.route==='admin'?'active':''}" data-route="admin"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>Admin</div>`;
   $('s-nav').innerHTML=nav;
   $('s-user').textContent = (S.profile&&(S.profile.name||S.profile.email))||'—';
-  $('s-org').textContent = ((S.org&&S.org.name)||'—') + (S.profile&&S.profile.org_role==='owner'?' · dono':'');
+  $('s-org').textContent = ((S.org&&S.org.name)||'—') + (S.profile&&S.profile.org_role==='owner'?' · dono':'') + ' ▾';
+  $('s-org').style.cursor='pointer'; $('s-org').title='Trocar de equipe';
+  $('s-org').onclick=renderOrgSwitcher;
   $('s-nav').querySelectorAll('[data-route]').forEach(el=>el.onclick=()=>{ S.route=el.dataset.route; selReset(); $('app').classList.remove('sb-open'); renderShell(); });
   // Menu gaveta no celular
   const mb=$('menu-btn'); if(mb) mb.onclick=()=>$('app').classList.toggle('sb-open');
@@ -1327,6 +1329,29 @@ function notifyLeadContato(lead){
 window.enablePush=enablePush; window.disablePush=disablePush;
 
 /* =====================================================================
+   SELETOR DE EQUIPES — mesmo login pode pertencer a várias organizações
+===================================================================== */
+async function renderOrgSwitcher(){
+  openModal(`<div class="modal-ov"><div class="modal-box" style="max-width:420px"><div class="modal-hd"><div><div class="modal-title">Minhas equipes</div><div class="modal-sub">Troque de equipe ou crie/entre em outra</div></div><div class="x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div></div>
+    <div class="modal-bd"><div id="org-sw-list" style="display:flex;flex-direction:column;gap:8px"><div style="font-size:.8rem;color:var(--t3)">Carregando…</div></div></div>
+    <div class="modal-ft"><button class="btn btn-outline" onclick="closeModal()">Fechar</button><button class="btn btn-primary" id="org-sw-add">+ Criar ou entrar em outra equipe</button></div></div></div>`);
+  $('org-sw-add').onclick=()=>{ closeModal(); renderOnboard(); };
+  const { data:orgs, error }=await sb.rpc('my_orgs');
+  if(!$('org-sw-list')) return; // modal já foi fechado
+  if(error){ $('org-sw-list').innerHTML=`<div style="font-size:.8rem;color:#EF4444">${esc(error.message)}</div>`; return; }
+  $('org-sw-list').innerHTML=(orgs||[]).map(o=>`
+    <button class="btn ${o.is_current?'btn-primary':'btn-outline'}" data-org="${esc(o.id)}" style="justify-content:space-between;display:flex;align-items:center" ${o.is_current?'disabled':''}>
+      <span>${esc(o.name)}</span><span style="font-size:.68rem;opacity:.75">${o.is_current?'atual':(o.role==='owner'?'dono(a)':'membro')}</span>
+    </button>`).join('') || '<div style="font-size:.8rem;color:var(--t3)">Nenhuma equipe encontrada.</div>';
+  $('org-sw-list').querySelectorAll('[data-org]').forEach(b=>b.onclick=async()=>{
+    b.disabled=true;
+    const { error }=await sb.rpc('switch_org',{ p_org_id:b.dataset.org });
+    if(error){ toast(error.message,'error'); b.disabled=false; return; }
+    closeModal(); toast('Equipe trocada','success'); await boot();
+  });
+}
+
+/* =====================================================================
    SETTINGS
 ===================================================================== */
 function renderSettings(){
@@ -1395,8 +1420,8 @@ function renderSettings(){
 ===================================================================== */
 async function renderAdmin(){
   $('content').innerHTML=`<div class="sec-title">Painel Administrativo</div><div class="sec-sub">Espaços e usuários da plataforma.</div><div id="adm">Carregando…</div>`;
-  const { data:orgs, error:e1 }=await sb.from('admin_orgs').select('*').order('created_at',{ascending:false});
-  const { data:users, error:e2 }=await sb.from('admin_users').select('*');
+  const { data:orgs, error:e1 }=await sb.rpc('admin_orgs');
+  const { data:users, error:e2 }=await sb.rpc('admin_users');
   if(e1||e2){ $('adm').innerHTML=`<div class="empty-state"><div class="empty-title">Erro</div><div class="empty-sub">${esc((e1||e2).message)}</div></div>`; return; }
   const orgRows=(orgs||[]).map(o=>`<tr><td><b>${esc(o.name)}</b></td><td>${o.members}</td><td>${o.leads}</td><td>${o.calls}</td><td><span class="tag">${esc(o.join_code)}</span></td></tr>`).join('')||'<tr><td colspan="5"><div class="empty-state"><div class="empty-sub">Nenhum espaço</div></div></td></tr>';
   const userRows=(users||[]).map(u=>`<tr><td><div class="lead-nm">${esc(u.name||'—')}</div><div class="lead-un">${esc(u.email||'')}</div></td><td>${esc(u.org_name||'—')}</td><td>${esc(u.org_role||'')}</td><td><span class="badge ${u.status==='active'?'b-contato':'b-respondeu'}">${u.status}</span></td><td><div class="tbl-acts">${u.platform_role==='admin'?'<span class="tag">admin</span>':`<button class="act-btn" data-block="${u.id}" data-st="${u.status}">${u.status==='active'?'Bloquear':'Liberar'}</button>`}</div></td></tr>`).join('');
