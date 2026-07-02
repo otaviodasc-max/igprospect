@@ -22,25 +22,32 @@ const S = { session:null, profile:null, org:null, route:'dashboard', period:'all
   cf:{ q:'', outcome:'', sort:'newest', page:1 },
   crmTipo:'', crmQ:'', dealQ:'', goalsView:'week', _funnelStages:[], sel:{ mode:false, ids:new Set() } };
 const PAGE_SIZE = 25;
-const STS = ['novo','chamado','respondeu','contato'];
-const SM = { novo:{label:'Novo Lead',short:'Novos'}, chamado:{label:'Chamado',short:'Chamados'}, respondeu:{label:'Respondeu',short:'Responderam'}, contato:{label:'Enviou Contato',short:'Convertidos'} };
-const SC = { novo:'#64748B', chamado:'#6366F1', respondeu:'#F59E0B', contato:'#10B981' };
+// Resolve o módulo de profissão ativo na organização atual (ver modules.js).
+// Todo o funil/terminologia abaixo é derivado daqui — nunca mais hardcoded.
+function MOD(){ const id=(S.org&&S.org.module_id)||'consorcio'; return (window.IGP_MODULES&&window.IGP_MODULES[id])||window.IGP_MODULES.consorcio; }
+const STS       = () => MOD().prospectFunnel.stages;
+const SM         = () => MOD().prospectFunnel.meta;
+const SC         = () => MOD().prospectFunnel.colors;
 const CALL_OUT = ['interessado','retornar','sem_interesse','nao_atendeu','fechado'];
 const COM = { interessado:'Interessado', retornar:'Retornar depois', sem_interesse:'Sem interesse', nao_atendeu:'Não atendeu', fechado:'Fechou negócio' };
 const CC = { interessado:'#10B981', retornar:'#F59E0B', sem_interesse:'#EF4444', nao_atendeu:'#64748B', fechado:'#6366F1' };
-const DEAL_STS = ['contato','reuniao','reuniao_agendada','negociando','vendido','perdido'];
-const DEAL_SM  = { contato:{label:'Contato Recebido',short:'Contato'}, reuniao:{label:'Reunião',short:'Reunião'}, reuniao_agendada:{label:'Reunião Agendada',short:'Agendada'}, negociando:{label:'Negociando',short:'Negociando'}, vendido:{label:'Vendido',short:'Vendidos'}, perdido:{label:'Perdido',short:'Perdidos'} };
-const DEAL_SC  = { contato:'#64748B', reuniao:'#6366F1', reuniao_agendada:'#8B5CF6', negociando:'#F59E0B', vendido:'#10B981', perdido:'#EF4444' };
-const CARD_TYPES = ['Imóvel','Veículo','Investimentos'];
+const DEAL_STS   = () => MOD().dealFunnel.stages;
+const DEAL_SM    = () => MOD().dealFunnel.meta;
+const DEAL_SC    = () => MOD().dealFunnel.colors;
+const WON        = () => MOD().dealFunnel.wonStage;
+const LOST       = () => MOD().dealFunnel.lostStage;
+const CARD_TYPES = () => MOD().cardTypes;
 // Funil próprio dos EMPRESÁRIOS no CRM (já são contatos, não usam prospecção)
-const EMP_STS = ['a_contatar','em_conversa','reuniao','negociando'];
-const EMP_SM  = { a_contatar:{label:'A Contatar',short:'A Contatar'}, em_conversa:{label:'Em Conversa',short:'Conversa'}, reuniao:{label:'Reunião',short:'Reunião'}, negociando:{label:'Negociando',short:'Negociando'} };
-const EMP_SC  = { a_contatar:'#64748B', em_conversa:'#6366F1', reuniao:'#8B5CF6', negociando:'#F59E0B' };
+// — só existe em módulos que definem empFunnel (hoje, só Consórcio).
+const hasEmpFunnel = () => !!(MOD().empFunnel);
+const EMP_STS = () => (MOD().empFunnel && MOD().empFunnel.stages) || [];
+const EMP_SM  = () => (MOD().empFunnel && MOD().empFunnel.meta) || {};
+const EMP_SC  = () => (MOD().empFunnel && MOD().empFunnel.colors) || {};
 // Mapas combinados (prospecção + empresário) p/ rótulos/cores sem quebrar
-const ALL_SM = { ...SM, ...EMP_SM };
-const ALL_SC = { ...SC, ...EMP_SC };
-const stLabel = st => (ALL_SM[st] && ALL_SM[st].label) || st || '—';
-const stShort = st => (ALL_SM[st] && ALL_SM[st].short) || stLabel(st);
+const ALL_SM = () => ({ ...SM(), ...EMP_SM() });
+const ALL_SC = () => ({ ...SC(), ...EMP_SC() });
+const stLabel = st => (ALL_SM()[st] && ALL_SM()[st].label) || st || '—';
+const stShort = st => (ALL_SM()[st] && ALL_SM()[st].short) || stLabel(st);
 const AGENDOR_BASE = 'https://api.agendor.com.br/v3';
 
 /* ---------- helpers ---------- */
@@ -178,6 +185,45 @@ function traduzErro(m){
 /* =====================================================================
    ONBOARDING
 ===================================================================== */
+// Questionário que escolhe o Módulo de Profissão (ver modules.js) para a
+// nova organização. Regras fixas, sem IA: cada opção soma pontos por
+// módulo, o maior total vence (empate cai em 'consorcio', 1º da ordem).
+const QUIZ = [
+  { id:'q1', weight:3, label:'O que você vende ou oferece?', options:[
+    { key:'a', label:'Cartas de consórcio (imóvel, veículo, investimento)', points:{consorcio:3} },
+    { key:'b', label:'Imóveis (compra, venda, aluguel)', points:{imoveis:3} },
+    { key:'c', label:'Seguros (auto, vida, residencial, saúde...)', points:{seguros:3} },
+    { key:'d', label:'Software, assinatura ou curso/infoproduto', points:{saas:3} },
+    { key:'e', label:'Outro', points:{consorcio:1,imoveis:1,seguros:1,saas:1} },
+  ]},
+  { id:'q2', weight:1, label:'Qual sua principal fonte de leads?', options:[
+    { key:'a', label:'Instagram / redes sociais (prospecção ativa)', points:{consorcio:2,imoveis:1,seguros:1,saas:1} },
+    { key:'b', label:'Indicação e carteira de clientes', points:{imoveis:2,seguros:2} },
+    { key:'c', label:'Site, anúncios pagos, inbound', points:{saas:2,imoveis:1} },
+    { key:'d', label:'Portais especializados (ex.: Zap Imóveis, comparadores)', points:{imoveis:2,seguros:2} },
+  ]},
+  { id:'q3', weight:1, label:'Quanto tempo dura, em média, do primeiro contato até fechar?', options:[
+    { key:'a', label:'Menos de 1 semana', points:{seguros:2,saas:1} },
+    { key:'b', label:'1 a 4 semanas', points:{consorcio:1,seguros:1,imoveis:1,saas:2} },
+    { key:'c', label:'1 a 3 meses', points:{consorcio:2,imoveis:2} },
+    { key:'d', label:'Mais de 3 meses', points:{imoveis:2,saas:1} },
+  ]},
+  { id:'q4', weight:1, label:'Como você chama o resultado final de uma venda fechada?', options:[
+    { key:'a', label:'Uma carta contemplada/vendida', points:{consorcio:3} },
+    { key:'b', label:'Um imóvel vendido ou alugado', points:{imoveis:3} },
+    { key:'c', label:'Uma apólice emitida', points:{seguros:3} },
+    { key:'d', label:'Um contrato assinado / cliente ativo', points:{saas:3} },
+  ]},
+];
+function scoreModule(answers){
+  const order=window.IGP_MODULE_ORDER||['consorcio'];
+  const totals={}; order.forEach(m=>totals[m]=0);
+  QUIZ.forEach(q=>{ const opt=q.options.find(o=>o.key===answers[q.id]); if(!opt) return;
+    for(const m in opt.points){ if(totals[m]!=null) totals[m]+=opt.points[m]*q.weight; } });
+  let best=order[0], bestScore=-1;
+  order.forEach(m=>{ if(totals[m]>bestScore){ best=m; bestScore=totals[m]; } });
+  return { moduleId:best, totals };
+}
 function renderOnboard(){
   $('auth').classList.add('hidden'); $('app').classList.remove('show'); $('onboard').classList.remove('hidden');
   $('onboard-card').innerHTML=`
@@ -187,24 +233,71 @@ function renderOnboard(){
     <div class="seg"><button class="active" id="sg-new">Criar espaço</button><button id="sg-join">Entrar por código</button></div>
     <div id="ob-body"></div>
     <div class="auth-err" id="ob-err"></div>`;
-  let mode='new';
+  let mode='new', orgName='';
   const body=()=>{ $('ob-body').innerHTML = mode==='new'
-    ? `<div class="field"><label>Nome do espaço</label><input class="inp" id="ob-name" placeholder="Ex.: Equipe da Chefe"></div><button class="btn-block" id="ob-go">Criar espaço</button>`
+    ? `<div class="field"><label>Nome do espaço</label><input class="inp" id="ob-name" placeholder="Ex.: Equipe da Chefe" value="${esc(orgName)}"></div><button class="btn-block" id="ob-go">Continuar</button>`
     : `<div class="field"><label>Código de convite</label><input class="inp" id="ob-code" placeholder="Ex.: 7K2P9X" style="text-transform:uppercase"></div><button class="btn-block" id="ob-go">Entrar no espaço</button>`;
-    $('ob-go').onclick = mode==='new' ? doCreateOrg : doJoinOrg;
+    $('ob-go').onclick = mode==='new' ? (()=>{ orgName=$('ob-name').value.trim()||'Meu espaço'; renderModuleQuiz(orgName); }) : doJoinOrg;
   };
   $('sg-new').onclick=()=>{ mode='new'; $('sg-new').classList.add('active'); $('sg-join').classList.remove('active'); body(); };
   $('sg-join').onclick=()=>{ mode='join'; $('sg-join').classList.add('active'); $('sg-new').classList.remove('active'); body(); };
   body();
 }
-async function doCreateOrg(){ $('ob-go').disabled=true; const { error }=await sb.rpc('create_org',{ p_name:$('ob-name').value.trim()||'Meu espaço' }); if(error){ $('ob-err').textContent=error.message; $('ob-err').classList.add('show'); $('ob-go').disabled=false; return; } toast('Espaço criado!','success'); await boot(); }
+// Tela 2 do onboarding: questionário de 1 pergunta por vez que escolhe o
+// Módulo de Profissão da nova organização.
+function renderModuleQuiz(orgName, step=0, answers={}){
+  const total=QUIZ.length;
+  if(step>=total){ renderModuleResult(orgName, answers); return; }
+  const q=QUIZ[step];
+  const dots=Array.from({length:total},(_,i)=>`<span style="width:6px;height:6px;border-radius:50%;background:${i<=step?'var(--p)':'var(--surf3)'}"></span>`).join('');
+  $('onboard-card').innerHTML=`
+    <div class="auth-logo"><div class="logo-ico"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></div><div><div class="l1">${esc(orgName)}</div><div class="l2">Pergunta ${step+1} de ${total}</div></div></div>
+    <div style="display:flex;gap:5px;margin:4px 0 16px">${dots}</div>
+    <div class="auth-h" style="font-size:1.05rem">${esc(q.label)}</div>
+    <div id="quiz-opts" style="display:flex;flex-direction:column;gap:8px;margin-top:12px">
+      ${q.options.map(o=>`<button class="btn btn-outline" style="text-align:left;justify-content:flex-start" data-opt="${o.key}">${esc(o.label)}</button>`).join('')}
+    </div>
+    <div style="display:flex;justify-content:space-between;margin-top:16px">
+      <button class="btn btn-outline btn-sm" id="quiz-back">${step===0?'Voltar':'‹ Anterior'}</button>
+      <button class="btn btn-outline btn-sm" id="quiz-skip">Pular por enquanto</button>
+    </div>`;
+  $('quiz-opts').onclick=e=>{ const b=e.target.closest('[data-opt]'); if(!b)return; renderModuleQuiz(orgName, step+1, { ...answers, [q.id]:b.dataset.opt }); };
+  $('quiz-back').onclick=()=> step===0 ? renderOnboard() : renderModuleQuiz(orgName, step-1, answers);
+  $('quiz-skip').onclick=()=> doCreateOrg(orgName, 'consorcio', answers);
+}
+// Tela 3: mostra o módulo escolhido pelo questionário, com opção de trocar
+// manualmente antes de confirmar a criação do espaço.
+function renderModuleResult(orgName, answers){
+  const { moduleId }=scoreModule(answers);
+  const order=window.IGP_MODULE_ORDER||['consorcio'];
+  const render=sel=>{
+    const m=window.IGP_MODULES[sel];
+    $('onboard-card').innerHTML=`
+      <div class="auth-logo"><div class="logo-ico"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></div><div><div class="l1">${esc(orgName)}</div><div class="l2">Módulo sugerido</div></div></div>
+      <div class="auth-h">${m.icon} Achamos que seu negócio é: ${esc(m.name)}</div>
+      <div class="auth-sub">O sistema já vem configurado com o funil, os termos e os campos certos para ${esc(m.name)}. Você pode trocar isso depois em Configurações.</div>
+      <div class="field"><label>Não é bem isso? Escolha manualmente</label><select class="inp" id="mq-sel">${order.map(id=>`<option value="${id}" ${id===sel?'selected':''}>${window.IGP_MODULES[id].icon} ${window.IGP_MODULES[id].name}</option>`).join('')}</select></div>
+      <button class="btn-block" id="mq-go">Confirmar e criar espaço</button>
+      <div class="auth-err" id="ob-err"></div>`;
+    $('mq-sel').onchange=e=>render(e.target.value);
+    $('mq-go').onclick=()=>doCreateOrg(orgName, $('mq-sel').value, answers);
+  };
+  render(moduleId);
+}
+async function doCreateOrg(orgName, moduleId, answers){
+  const btn=$('mq-go')||$('quiz-skip'); if(btn) btn.disabled=true;
+  const { data:orgId, error }=await sb.rpc('create_org',{ p_name:orgName||'Meu espaço', p_module_id:moduleId||'consorcio' });
+  if(error){ if($('ob-err')){ $('ob-err').textContent=error.message; $('ob-err').classList.add('show'); } if(btn) btn.disabled=false; return; }
+  if(orgId && answers && Object.keys(answers).length) await sb.from('orgs').update({ module_answers:answers }).eq('id',orgId);
+  toast('Espaço criado!','success'); await boot();
+}
 async function doJoinOrg(){ const code=$('ob-code').value.trim(); if(!code) return; $('ob-go').disabled=true; const { error }=await sb.rpc('join_org',{ p_code:code }); if(error){ $('ob-err').textContent='Código inválido.'; $('ob-err').classList.add('show'); $('ob-go').disabled=false; return; } toast('Você entrou no espaço!','success'); await boot(); }
 
 /* =====================================================================
    DATA LAYER (mapeia snake_case <-> camelCase)
 ===================================================================== */
-const leadFromRow = r => ({ id:r.id, name:r.name, username:r.username, phone:r.phone, email:r.email, niche:r.niche, status:r.status||'novo', tipo:r.tipo||'comum', funil:r.funil, cidade:r.cidade, estado:r.estado, cnpj:r.cnpj, notes:r.notes, followers:r.followers, following:r.following, source:r.source, addedAt:r.added_at, extId:r.ext_id, agendorPersonId:r.agendor_person_id, agendorDealId:r.agendor_deal_id, agendorFunnel:r.agendor_funnel, agendorStatus:r.agendor_status });
-const leadToRow = l => { const o={ name:l.name, username:l.username, phone:l.phone, email:l.email, niche:l.niche, status:l.status, tipo:l.tipo, notes:l.notes, followers:l.followers, following:l.following }; if(l.source)o.source=l.source; return o; };
+const leadFromRow = r => ({ id:r.id, name:r.name, username:r.username, phone:r.phone, email:r.email, niche:r.niche, status:r.status||'novo', tipo:r.tipo||'comum', funil:r.funil, cidade:r.cidade, estado:r.estado, cnpj:r.cnpj, notes:r.notes, followers:r.followers, following:r.following, source:r.source, addedAt:r.added_at, extId:r.ext_id, agendorPersonId:r.agendor_person_id, agendorDealId:r.agendor_deal_id, agendorFunnel:r.agendor_funnel, agendorStatus:r.agendor_status, customFields:r.custom_fields||{} });
+const leadToRow = l => { const o={ name:l.name, username:l.username, phone:l.phone, email:l.email, niche:l.niche, status:l.status, tipo:l.tipo, notes:l.notes, followers:l.followers, following:l.following }; if(l.source)o.source=l.source; if(l.customFields)o.custom_fields=l.customFields; return o; };
 const callFromRow = r => ({ id:r.id, leadId:r.lead_id, name:r.name, phone:r.phone, outcome:r.outcome||'nao_atendeu', duration:r.duration, at:r.at, notes:r.notes });
 const callToRow = c => ({ lead_id:c.leadId||null, name:c.name, phone:c.phone, outcome:c.outcome, duration:c.duration, at:c.at, notes:c.notes });
 const dealFromRow = r => ({ id:r.id, orgId:r.org_id, leadId:r.lead_id, createdBy:r.created_by, prospectorName:r.prospector_name, status:r.status||'contato', cardType:r.card_type, cardValue:r.card_value, commissionValue:r.commission_value, commissionPct:r.commission_pct, commissionPaid:!!r.commission_paid, notes:r.notes, closedAt:r.closed_at, createdAt:r.created_at, leadName:r.leads&&r.leads.name, leadUsername:r.leads&&r.leads.username, leadPhone:r.leads&&r.leads.phone, leadNiche:r.leads&&r.leads.niche });
@@ -242,7 +335,7 @@ function drawWeekly(data){ const cv=$('wk-chart'); if(!cv)return; const ctx=cv.g
   ctx.fillStyle=AXIS;ctx.font='9px Inter';ctx.textAlign='center'; data.forEach((d,i)=>{ ctx.fillText(d.label,P.l+i*boff+boff/2,H-7); }); }
 function drawDonut(c,total){ const cv=$('donut-chart'); if(!cv)return; const ctx=cv.getContext('2d'); const W=110,H=110,cx=55,cy=55,r=44,ir=29; cv.width=W*2;cv.height=H*2;cv.style.width=W+'px';cv.style.height=H+'px'; ctx.scale(2,2);ctx.clearRect(0,0,W,H);
   if(total===0){ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.strokeStyle=cssVar('--chart-grid');ctx.lineWidth=r-ir;ctx.stroke();return;}
-  const colors=[SC.novo,SC.chamado,SC.respondeu,SC.contato],vals=[c.novo,c.chamado,c.respondeu,c.contato]; let ang=-Math.PI/2;
+  const sc=SC(); const colors=[sc.novo,sc.chamado,sc.respondeu,sc.contato],vals=[c.novo,c.chamado,c.respondeu,c.contato]; let ang=-Math.PI/2;
   vals.forEach((v,i)=>{ if(!v)return; const sw=(v/total)*Math.PI*2; ctx.beginPath();ctx.moveTo(cx,cy);ctx.arc(cx,cy,r,ang,ang+sw);ctx.closePath();ctx.fillStyle=colors[i];ctx.fill();ang+=sw; });
   ctx.beginPath();ctx.arc(cx,cy,ir,0,Math.PI*2);ctx.fillStyle=cssVar('--chart-node');ctx.fill(); }
 
@@ -259,13 +352,13 @@ const NAV = [
   { k:'team', label:'Equipe', icon:'<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>' },
   { k:'settings', label:'Configurações', icon:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>' },
 ];
-const TAB_INFO = { dashboard:['Dashboard','Visão geral dos seus leads'], goals:['Metas do Mês','Acompanhe o progresso da equipe e bata as metas'], leads:['Leads','Gerencie e filtre sua base'], crm:['CRM · Pipeline','Arraste leads pelo funil'], deals:['Negociações · Consórcio','Acompanhe o andamento das vendas por etapa'], calls:['Ligações','Registre e acompanhe suas chamadas'], team:['Equipe','Recados e comunicados entre vocês'], settings:['Configurações','Espaço e integrações'], admin:['Painel Administrativo','Gestão da plataforma'] };
+function TAB_INFO_GET(){ const m=MOD(); return { dashboard:['Dashboard','Visão geral dos seus leads'], goals:['Metas do Mês','Acompanhe o progresso da equipe e bata as metas'], leads:['Leads','Gerencie e filtre sua base'], crm:['CRM · Pipeline','Arraste leads pelo funil'], deals:[m.labels.dealsTabTitle, m.labels.dealsTabSub], calls:['Ligações','Registre e acompanhe suas chamadas'], team:['Equipe','Recados e comunicados entre vocês'], settings:['Configurações','Espaço e integrações'], admin:['Painel Administrativo','Gestão da plataforma'] }; }
 
 function renderShell(){
   $('auth').classList.add('hidden'); $('onboard').classList.add('hidden'); $('app').classList.add('show');
   if(S.route==='team') S.unread=0;
   const isAdmin = S.profile&&S.profile.platform_role==='admin';
-  const openDeals = S.deals.filter(d=>d.status!=='vendido'&&d.status!=='perdido').length;
+  const openDeals = S.deals.filter(d=>d.status!==WON()&&d.status!==LOST()).length;
   let nav = NAV.map(n=>`<div class="nav-item ${S.route===n.k?'active':''}" data-route="${n.k}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${n.icon}</svg>${n.label}${n.k==='leads'&&S.leads.length?`<span class="nav-badge">${S.leads.length}</span>`:''}${n.k==='deals'&&openDeals?`<span class="nav-badge">${openDeals}</span>`:''}${n.k==='calls'&&S.calls.length?`<span class="nav-badge">${S.calls.length}</span>`:''}${n.k==='team'&&S.unread?`<span class="nav-badge" style="background:rgba(16,185,129,.22);color:#6EE7B7">${S.unread}</span>`:''}</div>`).join('');
   if(isAdmin) nav += `<div class="s-sec">Plataforma</div><div class="nav-item ${S.route==='admin'?'active':''}" data-route="admin"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>Admin</div>`;
   $('s-nav').innerHTML=nav;
@@ -275,7 +368,7 @@ function renderShell(){
   // Menu gaveta no celular
   const mb=$('menu-btn'); if(mb) mb.onclick=()=>$('app').classList.toggle('sb-open');
   const ov=$('sb-overlay'); if(ov) ov.onclick=()=>$('app').classList.remove('sb-open');
-  const ti=TAB_INFO[S.route]||['','']; $('tb-title').textContent=ti[0]; $('tb-sub').textContent=ti[1];
+  const ti=TAB_INFO_GET()[S.route]||['','']; $('tb-title').textContent=ti[0]; $('tb-sub').textContent=ti[1];
   const showPeriod = ['dashboard','leads','calls','deals'].includes(S.route);
   $('period-tabs').style.display = showPeriod?'flex':'none';
   $('period-tabs').querySelectorAll('.period-tab').forEach(t=>{ t.classList.toggle('active',t.dataset.period===S.period); t.onclick=()=>{ S.period=t.dataset.period; S.lf.page=1; S.cf.page=1; renderShell(); }; });
@@ -290,15 +383,16 @@ function renderDashboard(){
   const leads=inPeriod(S.leads,S.period);
   const c=metrics(leads), total=leads.length, pct=n=>total?Math.round(n/total*100):0;
   const KICO={ novo:'<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>', chamado:'<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>', respondeu:'<polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>', contato:'<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>' };
+  const sts=STS(), sm=SM(), sc=SC(), allSc=ALL_SC();
   const kpis=[ {k:'novo',cls:'kk-n',lbl:'Total de Leads',val:total,p:null,sub:`${S.leads.length} no total`}, {k:'chamado',cls:'kk-c',lbl:'Chamados',val:c.chamado,p:pct(c.chamado),sub:'do total'}, {k:'respondeu',cls:'kk-r',lbl:'Responderam',val:c.respondeu,p:pct(c.respondeu),sub:'dos chamados'}, {k:'contato',cls:'kk-o',lbl:'Convertidos',val:c.contato,p:pct(c.contato),sub:'taxa de conv.'} ];
   const kpiHtml=kpis.map(x=>`<div class="kpi-card ${x.cls}"><div class="kpi-top"><div class="kpi-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${KICO[x.k]}</svg></div></div><div class="kpi-lbl">${x.lbl}</div><div class="kpi-val">${x.val}</div><div class="kpi-sub">${x.p!=null?`<span class="kpi-pct">${x.p}%</span>`:''}${x.sub}</div></div>`).join('');
-  const maxC=Math.max(...STS.map(s=>c[s]||0),1);
-  const funnelHtml=STS.map(s=>{ const n=c[s]||0,w=Math.round(n/maxC*100); return `<div class="funnel-row"><div class="funnel-lbl"><span class="sdot" style="background:${SC[s]}"></span>${SM[s].label}</div><div class="funnel-track"><div class="funnel-fill" style="width:${w}%;background:${SC[s]};opacity:.82"><span>${n>0?pct(n)+'%':''}</span></div></div><div class="funnel-cnt">${n}</div></div>`; }).join('');
+  const maxC=Math.max(...sts.map(s=>c[s]||0),1);
+  const funnelHtml=sts.map(s=>{ const n=c[s]||0,w=Math.round(n/maxC*100); return `<div class="funnel-row"><div class="funnel-lbl"><span class="sdot" style="background:${sc[s]}"></span>${sm[s].label}</div><div class="funnel-track"><div class="funnel-fill" style="width:${w}%;background:${sc[s]};opacity:.82"><span>${n>0?pct(n)+'%':''}</span></div></div><div class="funnel-cnt">${n}</div></div>`; }).join('');
   const niches=topNiches(leads),maxN=(niches[0]&&niches[0][1])||1;
   const nichesHtml=niches.length?niches.map(([nm,n],i)=>`<div class="niche-row"><span class="niche-rank">${i+1}</span><span class="niche-nm" title="${esc(nm)}">${esc(nm)}</span><div class="niche-track"><div class="niche-fill" style="width:${Math.round(n/maxN*100)}%"></div></div><span class="niche-cnt">${n}</span></div>`).join(''):'<div style="font-size:.74rem;color:var(--t3);text-align:center;padding:14px 0">Sem dados de nicho</div>';
   const recent=[...leads].sort((a,b)=>new Date(b.addedAt||0)-new Date(a.addedAt||0)).slice(0,6);
-  const recentHtml=recent.length?recent.map(l=>`<div class="rl-item"><div class="avatar">${esc(ini(l.name||l.username))}</div><div class="rl-info"><div class="rl-name">${esc(l.name||l.username||'—')}</div><div class="rl-user">@${esc(l.username||'—')}</div></div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px"><span class="badge" style="background:${(ALL_SC[l.status||'novo']||'#64748B')}22;color:${ALL_SC[l.status||'novo']||'#94A3B8'}">${stShort(l.status||'novo')}</span><span class="rl-time">${timeAgo(l.addedAt)}</span></div></div>`).join(''):'<div style="font-size:.74rem;color:var(--t3);padding:12px 0">Nenhum lead no período.</div>';
-  const donutLgd=STS.map(s=>{ const n=c[s]||0; return `<div class="donut-row"><div class="donut-dot" style="background:${SC[s]}"></div><span class="donut-lbl">${SM[s].label}</span><span class="donut-val">${n}</span><span class="donut-pct">${pct(n)}%</span></div>`; }).join('');
+  const recentHtml=recent.length?recent.map(l=>`<div class="rl-item"><div class="avatar">${esc(ini(l.name||l.username))}</div><div class="rl-info"><div class="rl-name">${esc(l.name||l.username||'—')}</div><div class="rl-user">@${esc(l.username||'—')}</div></div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px"><span class="badge" style="background:${(allSc[l.status||'novo']||'#64748B')}22;color:${allSc[l.status||'novo']||'#94A3B8'}">${stShort(l.status||'novo')}</span><span class="rl-time">${timeAgo(l.addedAt)}</span></div></div>`).join(''):'<div style="font-size:.74rem;color:var(--t3);padding:12px 0">Nenhum lead no período.</div>';
+  const donutLgd=sts.map(s=>{ const n=c[s]||0; return `<div class="donut-row"><div class="donut-dot" style="background:${sc[s]}"></div><span class="donut-lbl">${sm[s].label}</span><span class="donut-val">${n}</span><span class="donut-pct">${pct(n)}%</span></div>`; }).join('');
   const callsP=inPeriod(S.calls,S.period,'at'), cm=callMetrics(callsP);
   const callsCard=`<div class="card"><div class="card-hd"><div class="card-title">Ligações</div><span class="text-link" style="font-size:.69rem" id="see-calls">Ver todas →</span></div><div class="card-bd"><div style="display:flex;align-items:baseline;gap:8px;margin-bottom:11px"><span style="font-family:'Plus Jakarta Sans';font-size:1.9rem;font-weight:800;line-height:1">${callsP.length}</span><span style="font-size:.7rem;color:var(--t3)">no período</span></div><div style="display:flex;flex-direction:column;gap:7px">${CALL_OUT.map(o=>cm[o]?`<div class="donut-row"><div class="donut-dot" style="background:${CC[o]}"></div><span class="donut-lbl">${COM[o]}</span><span class="donut-val">${cm[o]}</span></div>`:'').join('')||'<div style="font-size:.72rem;color:var(--t3)">Nenhuma ligação no período.</div>'}</div></div></div>`;
 
@@ -307,25 +401,28 @@ function renderDashboard(){
     $('wb-add').onclick=()=>{ S.route='leads'; renderShell(); setTimeout(()=>leadForm(),50); };
     return;
   }
-  const wp=weeklyPay();
-  const wkLbl=`${wp.ws.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'})} a ${new Date(wp.we-1).toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'})}`;
-  const unpaidRows=wp.unpaid.length?wp.unpaid.map(d=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:.72rem;padding:5px 0;border-bottom:1px dashed var(--border)"><span style="color:var(--t2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">⏳ Comissão da venda — <b>${esc(d.name)}</b>${d.closedAt?` <span style="color:var(--t3)">(${fmtDate(d.closedAt)})</span>`:''}</span><span style="color:#FCD34D;font-weight:700;white-space:nowrap">${fmtCurrency(d.value)}</span></div>`).join(''):'<div style="font-size:.72rem;color:var(--t3);padding:4px 0">Nenhuma comissão pendente.</div>';
-  const payCard=`<div class="card" style="padding:20px;border-left:3px solid #10B981;margin-bottom:18px">
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap;margin-bottom:14px">
-      <div><div style="font-weight:800;font-size:1rem">💵 A pagar nesta semana</div><div style="font-size:.72rem;color:var(--t3)">semana ${wkLbl} · ${fmtCurrency(wp.dayRate)}/dia por ${wp.target} leads (${fmtCurrency(wp.perLead)}/lead)</div></div>
-      <div style="text-align:right"><div style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:2rem;line-height:1;color:#10B981">${fmtCurrency(wp.total)}</div><div style="font-size:.7rem;color:var(--t3)">total a pagar</div></div>
-    </div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
-      <div style="background:var(--surf2);border-radius:9px;padding:12px 14px">
-        <div style="font-size:.72rem;color:var(--t3);margin-bottom:3px">Prospecção · ${wp.prospectLeads} leads na semana</div>
-        <div style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.3rem;color:#6366F1">${fmtCurrency(wp.prospectPay)}</div>
+  let payCard='';
+  if(MOD().features.weeklyPay){
+    const wp=weeklyPay();
+    const wkLbl=`${wp.ws.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'})} a ${new Date(wp.we-1).toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'})}`;
+    const unpaidRows=wp.unpaid.length?wp.unpaid.map(d=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:.72rem;padding:5px 0;border-bottom:1px dashed var(--border)"><span style="color:var(--t2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">⏳ Comissão da venda — <b>${esc(d.name)}</b>${d.closedAt?` <span style="color:var(--t3)">(${fmtDate(d.closedAt)})</span>`:''}</span><span style="color:#FCD34D;font-weight:700;white-space:nowrap">${fmtCurrency(d.value)}</span></div>`).join(''):'<div style="font-size:.72rem;color:var(--t3);padding:4px 0">Nenhuma comissão pendente.</div>';
+    payCard=`<div class="card" style="padding:20px;border-left:3px solid #10B981;margin-bottom:18px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap;margin-bottom:14px">
+        <div><div style="font-weight:800;font-size:1rem">💵 A pagar nesta semana</div><div style="font-size:.72rem;color:var(--t3)">semana ${wkLbl} · ${fmtCurrency(wp.dayRate)}/dia por ${wp.target} leads (${fmtCurrency(wp.perLead)}/lead)</div></div>
+        <div style="text-align:right"><div style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:2rem;line-height:1;color:#10B981">${fmtCurrency(wp.total)}</div><div style="font-size:.7rem;color:var(--t3)">total a pagar</div></div>
       </div>
-      <div style="background:var(--surf2);border-radius:9px;padding:12px 14px">
-        <div style="font-size:.72rem;color:var(--t3);margin-bottom:6px">Comissões não pagas · ${fmtCurrency(wp.unpaidTotal)}</div>
-        ${unpaidRows}
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+        <div style="background:var(--surf2);border-radius:9px;padding:12px 14px">
+          <div style="font-size:.72rem;color:var(--t3);margin-bottom:3px">Prospecção · ${wp.prospectLeads} leads na semana</div>
+          <div style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.3rem;color:#6366F1">${fmtCurrency(wp.prospectPay)}</div>
+        </div>
+        <div style="background:var(--surf2);border-radius:9px;padding:12px 14px">
+          <div style="font-size:.72rem;color:var(--t3);margin-bottom:6px">Comissões não pagas · ${fmtCurrency(wp.unpaidTotal)}</div>
+          ${unpaidRows}
+        </div>
       </div>
-    </div>
-  </div>`;
+    </div>`;
+  }
   $('content').innerHTML=`<div class="kpi-grid">${kpiHtml}</div>${payCard}<div class="dash-grid"><div class="dash-col">
     <div class="card"><div class="card-hd"><div class="card-title">Leads Adicionados · últimos 14 dias</div></div><div class="card-bd"><div class="chart-wrap" style="height:155px"><canvas id="tl-chart"></canvas></div></div></div>
     <div class="card"><div class="card-hd"><div class="card-title">Funil de Prospecção</div></div><div class="card-bd"><div class="funnel-wrap">${funnelHtml}</div></div></div>
@@ -365,7 +462,7 @@ function renderLeads(){
   const rows=slice.length?slice.map(l=>{ const st=l.status||'novo'; return `<tr data-id="${esc(l.id)}"${S.sel.mode&&S.sel.ids.has(l.id)?' style="background:rgba(99,102,241,.08)"':''}>
     ${selCell(l.id)}
     <td><div class="lead-cell"><div class="avatar">${esc(ini(l.name||l.username))}</div><div><div class="lead-nm">${esc(l.name||'—')}${l.tipo==='empresario'?' <span class="tag" style="background:rgba(245,158,11,.14);color:#FCD34D;border-color:rgba(245,158,11,.25)">🏢</span>':''}</div><div class="lead-un">${l.username?'@'+esc(l.username):esc(l.phone||'—')}${agendorOn()&&l.agendorPersonId?' <span style="font-size:.63rem;color:#6EE7B7;font-weight:600;white-space:nowrap">☁ Agendor</span>':''}</div></div></div></td>
-    <td><span class="badge" style="background:${(ALL_SC[st]||'#64748B')}22;color:${ALL_SC[st]||'#94A3B8'};border:1px solid ${(ALL_SC[st]||'#64748B')}44">${stLabel(st)}</span></td>
+    <td><span class="badge" style="background:${(ALL_SC()[st]||'#64748B')}22;color:${ALL_SC()[st]||'#94A3B8'};border:1px solid ${(ALL_SC()[st]||'#64748B')}44">${stLabel(st)}</span></td>
     <td>${l.niche?`<span class="tag">${esc(l.niche)}</span>`:'<span style="color:var(--t3)">—</span>'}</td>
     <td style="color:var(--t2);font-size:.73rem">${fmtDate(l.addedAt)}</td>
     <td style="font-size:.72rem;color:var(--t3);max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(l.notes||'—')}</td>
@@ -373,7 +470,7 @@ function renderLeads(){
     :`<tr><td colspan="${S.sel.mode?7:6}"><div class="empty-state"><div class="empty-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div><div class="empty-title">Nenhum lead encontrado</div><div class="empty-sub">Tente outros filtros ou cadastre um lead.</div></div></td></tr>`;
   let pag=''; if(pages>1){ pag+=`<button class="pag-btn" data-pg="${S.lf.page-1}" ${S.lf.page<=1?'disabled':''}>‹</button>`; for(let i=1;i<=pages;i++){ if(i===1||i===pages||Math.abs(i-S.lf.page)<=1)pag+=`<button class="pag-btn${i===S.lf.page?' active':''}" data-pg="${i}">${i}</button>`; else if(Math.abs(i-S.lf.page)===2)pag+='<span style="color:var(--t3);padding:0 3px">…</span>'; } pag+=`<button class="pag-btn" data-pg="${S.lf.page+1}" ${S.lf.page>=pages?'disabled':''}>›</button>`; }
   const from=(S.lf.page-1)*PAGE_SIZE+1,to=Math.min(S.lf.page*PAGE_SIZE,all.length);
-  const stOpts=['','novo','chamado','respondeu','contato',...EMP_STS].map(s=>`<option value="${s}" ${S.lf.status===s?'selected':''}>${s?stLabel(s):'Todos os status'}</option>`).join('');
+  const stOpts=['','novo','chamado','respondeu','contato',...(hasEmpFunnel()?EMP_STS():[])].map(s=>`<option value="${s}" ${S.lf.status===s?'selected':''}>${s?stLabel(s):'Todos os status'}</option>`).join('');
   const tpOpts=[['','Todos os tipos'],['empresario','Empresários'],['comum','Instagram/comum']].map(([v,l])=>`<option value="${v}" ${S.lf.tipo===v?'selected':''}>${l}</option>`).join('');
   const niOpts=['',...niches].map(n=>`<option value="${esc(n)}" ${S.lf.niche===n?'selected':''}>${n||'Todos os nichos'}</option>`).join('');
   const soOpts=[['newest','Mais recentes'],['oldest','Mais antigos'],['name','Nome A–Z']].map(([v,l])=>`<option value="${v}" ${S.lf.sort===v?'selected':''}>${l}</option>`).join('');
@@ -414,7 +511,14 @@ function leadForm(id){
   const l=id?S.leads.find(x=>x.id===id):null;
   const curSt=(l&&l.status)||'novo';
   const optg=(label,arr)=>`<optgroup label="${label}">`+arr.map(s=>`<option value="${s}" ${curSt===s?'selected':''}>${stLabel(s)}</option>`).join('')+`</optgroup>`;
-  const stOpts=optg('Instagram / Prospecção',STS)+optg('Empresário / Negociação',EMP_STS);
+  const stOpts=hasEmpFunnel() ? optg('Instagram / Prospecção',STS())+optg('Empresário / Negociação',EMP_STS()) : optg('Prospecção',STS());
+  const tipoField=hasEmpFunnel() ? `<div class="fld full"><label>Tipo</label><select id="f-tipo"><option value="comum" ${(l&&l.tipo||'comum')==='comum'?'selected':''}>Instagram / comum → Negócios</option><option value="empresario" ${l&&l.tipo==='empresario'?'selected':''}>Empresário → Empresários</option></select></div>` : '';
+  const extraFields=MOD().extraLeadFields||[];
+  const extraHtml=extraFields.map(f=>{
+    const val=(l&&l.customFields&&l.customFields[f.key])||'';
+    if(f.type==='select') return `<div class="fld"><label>${esc(f.label)}</label><select id="f-x-${f.key}">${['',...f.options].map(o=>`<option value="${esc(o)}" ${val===o?'selected':''}>${o||'Selecione'}</option>`).join('')}</select></div>`;
+    return `<div class="fld"><label>${esc(f.label)}</label><input id="f-x-${f.key}" value="${esc(val)}"></div>`;
+  }).join('');
   openModal(`<div class="modal-ov"><div class="modal-box"><div class="modal-hd"><div><div class="modal-title">${id?'Editar Lead':'Cadastrar Lead'}</div><div class="modal-sub">${id?(l&&l.agendorPersonId&&agendorOn()?'Atualize os dados · <span style="color:#6EE7B7;font-size:.75rem">☁ Já no Agendor</span>':'Atualize os dados'):'Adicione manualmente'}</div></div><div class="x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div></div>
     <div class="modal-bd"><div class="form-grid">
       <div class="fld full"><label>Nome</label><input id="f-name" value="${esc(l&&l.name||'')}" placeholder="Nome do contato"></div>
@@ -422,12 +526,14 @@ function leadForm(id){
       <div class="fld"><label>Telefone</label><input id="f-phone" value="${esc(l&&l.phone||'')}" placeholder="(11) 9..."></div>
       <div class="fld"><label>Nicho</label><input id="f-niche" value="${esc(l&&l.niche||'')}"></div>
       <div class="fld"><label>Status</label><select id="f-status">${stOpts}</select></div>
-      <div class="fld full"><label>Tipo</label><select id="f-tipo"><option value="comum" ${(l&&l.tipo||'comum')==='comum'?'selected':''}>Instagram / comum → Negócios</option><option value="empresario" ${l&&l.tipo==='empresario'?'selected':''}>Empresário → Empresários</option></select></div>
+      ${tipoField}
+      ${extraHtml}
       <div class="fld full"><label>Observações</label><textarea id="f-notes" placeholder="Notas…">${esc(l&&l.notes||'')}</textarea></div>
     </div>${agendorOn()&&!(l&&l.agendorPersonId)?`<label style="display:flex;align-items:center;gap:9px;margin-top:10px;padding:10px 12px;background:rgba(110,231,183,.07);border:1px solid rgba(110,231,183,.2);border-radius:9px;cursor:pointer"><input type="checkbox" id="f-ag-exists" style="width:16px;height:16px;accent-color:#6EE7B7;cursor:pointer"><span style="font-size:.78rem;color:var(--t2)">☁ Lead já está no Agendor (não enviar novamente)</span></label>`:''}</div>
     <div class="modal-ft"><button class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" id="f-save">${id?'Salvar':'Cadastrar'}</button></div></div></div>`);
   $('f-save').onclick=async()=>{
-    const data={ name:$('f-name').value.trim(), username:$('f-user').value.trim().replace(/^@/,''), phone:$('f-phone').value.trim(), niche:$('f-niche').value.trim(), status:$('f-status').value, tipo:$('f-tipo').value, notes:$('f-notes').value.trim() };
+    const customFields=Object.fromEntries(extraFields.map(f=>[f.key, ($('f-x-'+f.key)&&$('f-x-'+f.key).value)||'']));
+    const data={ name:$('f-name').value.trim(), username:$('f-user').value.trim().replace(/^@/,''), phone:$('f-phone').value.trim(), niche:$('f-niche').value.trim(), status:$('f-status').value, tipo:$('f-tipo')?$('f-tipo').value:(l&&l.tipo||'comum'), notes:$('f-notes').value.trim(), customFields };
     if(!data.name&&!data.username){ toast('Informe nome ou @usuário','warn'); return; }
     const markAsInAgendor = !!($('f-ag-exists')&&$('f-ag-exists').checked);
     $('f-save').disabled=true;
@@ -487,16 +593,16 @@ function importLeads(){
 function renderCRM(){
   const allP=inPeriod(S.leads,S.period);
   const nEmp=allP.filter(l=>l.tipo==='empresario').length;
-  const isEmp=S.crmTipo==='empresario';
-  const cols=isEmp?EMP_STS:STS;
-  const colSM=isEmp?EMP_SM:SM, colSC=isEmp?EMP_SC:SC;
+  const isEmp=hasEmpFunnel() && S.crmTipo==='empresario';
+  const cols=isEmp?EMP_STS():STS();
+  const colSM=isEmp?EMP_SM():SM(), colSC=isEmp?EMP_SC():SC();
   // Empresários têm funil próprio; o board de prospecção (Todos/Instagram) mostra só os do Instagram.
   let leads = isEmp ? allP.filter(l=>l.tipo==='empresario') : allP.filter(l=>(l.tipo||'comum')!=='empresario');
   const q=(S.crmQ||'').toLowerCase().trim();
   if(q) leads=leads.filter(l=>(l.name||'').toLowerCase().includes(q)||(l.username||'').toLowerCase().includes(q)||(l.phone||'').toLowerCase().includes(q)||(l.niche||'').toLowerCase().includes(q));
   const defCol = isEmp?'a_contatar':'novo';
   const bucket = l => { const s=l.status||defCol; return cols.includes(s)?s:defCol; };
-  const segs=[['','Todos',allP.length-nEmp],['empresario','🏢 Empresários',nEmp],['comum','📸 Instagram',allP.length-nEmp]].map(([v,l,n])=>`<div class="period-tab${S.crmTipo===v?' active':''}" data-crmtipo="${v}">${l} <span style="opacity:.6">(${n})</span></div>`).join('');
+  const segs=(hasEmpFunnel()?[['','Todos',allP.length-nEmp],['empresario','🏢 Empresários',nEmp],['comum','📸 Instagram',allP.length-nEmp]]:[['','Todos',allP.length]]).map(([v,l,n])=>`<div class="period-tab${S.crmTipo===v?' active':''}" data-crmtipo="${v}">${l} <span style="opacity:.6">(${n})</span></div>`).join('');
   const board=cols.map(st=>{ const items=leads.filter(l=>bucket(l)===st).sort((a,b)=>new Date(b.addedAt||0)-new Date(a.addedAt||0));
     const cards=items.length?items.map(l=>`<div class="crm-card${S.sel.mode&&S.sel.ids.has(l.id)?' sel-on':''}" draggable="${!S.sel.mode}" data-id="${esc(l.id)}"><div class="crm-card-top">${selChk(l.id)}<div class="avatar">${esc(ini(l.name||l.username))}</div><div style="min-width:0;flex:1"><div class="crm-card-nm">${esc(l.name||l.username||'—')}</div><div class="crm-card-un">${l.username?'@'+esc(l.username):esc(l.phone||'—')}</div></div></div><div class="crm-card-meta">${l.niche?`<span class="tag">${esc(l.niche)}</span>`:''}${l.phone?`<span class="info-chip">${esc(l.phone)}</span>`:''}${l.agendorPersonId&&agendorOn()?`<span class="info-chip" style="color:#6EE7B7">☁ Agendor</span>`:''}</div></div>`).join(''):'<div class="crm-card-empty">Arraste aqui</div>';
     return `<div class="crm-col" data-status="${st}"><div class="crm-col-hd"><span class="crm-col-dot" style="background:${colSC[st]}"></span><span class="crm-col-nm">${colSM[st].label}</span><span class="crm-col-cnt">${items.length}</span></div><div class="crm-col-bd">${cards}</div></div>`; }).join('');
@@ -595,8 +701,8 @@ function delCall(id){ const c=S.calls.find(x=>x.id===id);
 function renderDeals(){
   const deals = inPeriod(S.deals, S.period, 'createdAt');
   const total = deals.length;
-  const vendidos = deals.filter(d=>d.status==='vendido');
-  const ativos   = deals.filter(d=>d.status!=='vendido'&&d.status!=='perdido');
+  const vendidos = deals.filter(d=>d.status===WON());
+  const ativos   = deals.filter(d=>d.status!==WON()&&d.status!==LOST());
   const totalVenda = vendidos.reduce((acc,d)=>acc+(Number(d.cardValue)||0),0);
   const totalComm  = vendidos.reduce((acc,d)=>acc+(Number(d.commissionValue)||0),0);
   const kcs=[
@@ -608,7 +714,8 @@ function renderDeals(){
 
   const dq=(S.dealQ||'').toLowerCase().trim();
   const boardDeals = dq ? deals.filter(d=>(d.leadName||'').toLowerCase().includes(dq)||(d.leadUsername||'').toLowerCase().includes(dq)||(d.leadPhone||'').toLowerCase().includes(dq)||(d.cardType||'').toLowerCase().includes(dq)||(d.prospectorName||'').toLowerCase().includes(dq)) : deals;
-  const board = DEAL_STS.map(st=>{
+  const dealSc=DEAL_SC(), dealSm=DEAL_SM();
+  const board = DEAL_STS().map(st=>{
     const items=boardDeals.filter(d=>d.status===st).sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0));
     const cards=items.length?items.map(d=>{
       const nm=d.leadName||'—', un=d.leadUsername||'', ph=d.leadPhone||'';
@@ -616,7 +723,7 @@ function renderDeals(){
       return `<div class="crm-card${S.sel.mode&&S.sel.ids.has(d.id)?' sel-on':''}" draggable="${!S.sel.mode}" data-id="${esc(d.id)}">
         <div class="crm-card-top">
           ${selChk(d.id)}
-          <div class="avatar" style="background:${DEAL_SC[d.status]}">${esc(ini(nm))}</div>
+          <div class="avatar" style="background:${dealSc[d.status]}">${esc(ini(nm))}</div>
           <div style="min-width:0;flex:1">
             <div class="crm-card-nm">${esc(nm)}${dealLead&&dealLead.agendorPersonId&&agendorOn()?'<span style="font-size:.6rem;color:#6EE7B7;font-weight:600;margin-left:4px">☁ Agendor</span>':''}</div>
             <div class="crm-card-un">${un?'@'+esc(un):''}${un&&ph?' · ':''}${ph?esc(ph):''}</div>
@@ -628,19 +735,19 @@ function renderDeals(){
             ${d.cardValue?`<span style="font-size:.71rem;font-weight:600;color:var(--t2)">${fmtCurrency(d.cardValue)}</span>`:''}
           </div>`:''}
           ${d.commissionValue||d.commissionPct?`<div style="font-size:.7rem;color:#6EE7B7;font-weight:500">Comissão: ${d.commissionValue?fmtCurrency(d.commissionValue):''}${d.commissionPct?` (${d.commissionPct}%)`:''}</div>`:''}
-          ${d.status==='vendido'?(d.commissionPaid?`<span class="tag" style="background:rgba(16,185,129,.16);color:#6EE7B7;border-color:rgba(16,185,129,.3)">💰 Comissão paga</span>`:`<span class="tag" style="background:rgba(245,158,11,.14);color:#FCD34D;border-color:rgba(245,158,11,.3)">⏳ Comissão a pagar</span>`):''}
+          ${d.status===WON()?(d.commissionPaid?`<span class="tag" style="background:rgba(16,185,129,.16);color:#6EE7B7;border-color:rgba(16,185,129,.3)">💰 Comissão paga</span>`:`<span class="tag" style="background:rgba(245,158,11,.14);color:#FCD34D;border-color:rgba(245,158,11,.3)">⏳ Comissão a pagar</span>`):''}
           ${d.prospectorName?`<div style="font-size:.68rem;color:var(--t3)">👤 ${esc(d.prospectorName)}</div>`:''}
         </div>
       </div>`;
     }).join(''):'<div class="crm-card-empty">Arraste aqui</div>';
-    return `<div class="crm-col" data-status="${st}"><div class="crm-col-hd"><span class="crm-col-dot" style="background:${DEAL_SC[st]}"></span><span class="crm-col-nm">${DEAL_SM[st].label}</span><span class="crm-col-cnt">${items.length}</span></div><div class="crm-col-bd">${cards}</div></div>`;
+    return `<div class="crm-col" data-status="${st}"><div class="crm-col-hd"><span class="crm-col-dot" style="background:${dealSc[st]}"></span><span class="crm-col-nm">${dealSm[st].label}</span><span class="crm-col-cnt">${items.length}</span></div><div class="crm-col-bd">${cards}</div></div>`;
   }).join('');
 
   $('content').innerHTML=`
     <div class="kpi-grid">${kcs}</div>
     <div class="tbl-controls"><div class="search-wrap" style="flex:0 1 280px;min-width:160px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input class="search-inp" id="deal-q" placeholder="Buscar negociação…" value="${esc(S.dealQ)}"></div><p class="sec-sub" style="margin:0;flex:1">${S.sel.mode?'Toque nos cartões para selecionar.':'Arraste entre colunas para mudar o status, ou clique no card para editar.'}</p>${selBar()}</div>
     <div style="overflow-x:auto;margin:0 -2px">
-      <div class="crm-board" id="deal-board" style="grid-template-columns:repeat(6,minmax(190px,1fr));min-width:1140px">
+      <div class="crm-board" id="deal-board" style="grid-template-columns:repeat(${DEAL_STS().length},minmax(190px,1fr));min-width:${DEAL_STS().length*190}px">
         ${total===0?`<div style="grid-column:1/-1"><div class="empty-state"><div class="empty-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div><div class="empty-title">Nenhuma negociação ainda</div><div class="empty-sub">Quando um lead marcar "Enviou Contato" no CRM, a negociação aparece aqui automaticamente.</div></div></div>`:(dq&&!boardDeals.length)?`<div style="grid-column:1/-1"><div class="empty-state"><div class="empty-title">Nenhum resultado</div><div class="empty-sub">Nada encontrado para "${esc(S.dealQ)}".</div></div></div>`:board}
       </div>
     </div>`;
@@ -656,11 +763,11 @@ function renderDeals(){
     const ns=col.dataset.status; const deal=S.deals.find(x=>x.id===dragId);
     if(deal&&deal.status!==ns){
       const patch={status:ns,updated_at:new Date().toISOString()};
-      if((ns==='vendido'||ns==='perdido')&&!deal.closedAt) patch.closed_at=new Date().toISOString();
-      if(ns!=='vendido'&&ns!=='perdido') patch.closed_at=null;
+      if((ns===WON()||ns===LOST())&&!deal.closedAt) patch.closed_at=new Date().toISOString();
+      if(ns!==WON()&&ns!==LOST()) patch.closed_at=null;
       const{error}=await sb.from('deals').update(patch).eq('id',dragId);
       if(error){ toast(error.message,'error'); }
-      else { deal.status=ns; deal.closedAt=patch.closed_at||null; toast(`→ ${DEAL_SM[ns].label}`,'success'); }
+      else { deal.status=ns; deal.closedAt=patch.closed_at||null; toast(`→ ${DEAL_SM()[ns].label}`,'success'); }
     }
     dragId=null; renderDeals();
   });
@@ -672,8 +779,9 @@ function renderDeals(){
 function dealForm(id){
   const d=S.deals.find(x=>x.id===id); if(!d)return;
   const nm=d.leadName||'—', ph=d.leadPhone||'';
-  const stOpts=DEAL_STS.map(s=>`<option value="${s}" ${d.status===s?'selected':''}>${DEAL_SM[s].label}</option>`).join('');
-  const ctOpts=['',...CARD_TYPES].map(t=>`<option value="${esc(t)}" ${d.cardType===t?'selected':''}>${t||'Selecione o tipo'}</option>`).join('');
+  const m=MOD();
+  const stOpts=DEAL_STS().map(s=>`<option value="${s}" ${d.status===s?'selected':''}>${DEAL_SM()[s].label}</option>`).join('');
+  const ctOpts=['',...CARD_TYPES()].map(t=>`<option value="${esc(t)}" ${d.cardType===t?'selected':''}>${t||'Selecione o tipo'}</option>`).join('');
   openModal(`<div class="modal-ov"><div class="modal-box" style="max-width:520px"><div class="modal-hd">
     <div>
       <div class="modal-title">Negociação · ${esc(nm)}</div>
@@ -683,15 +791,15 @@ function dealForm(id){
     </div>
     <div class="modal-bd"><div class="form-grid">
       <div class="fld full"><label>Status da Negociação</label><select id="df-status">${stOpts}</select></div>
-      <div class="fld full"><label>Tipo de Carta</label><select id="df-cardtype">${ctOpts}</select></div>
-      <div class="fld"><label>Valor da Carta (R$)</label><input id="df-cardval" type="number" min="0" step="0.01" value="${d.cardValue!=null?d.cardValue:''}" placeholder="Ex.: 150000"></div>
+      <div class="fld full"><label>${esc(m.labels.cardTypeLabel)}</label><select id="df-cardtype">${ctOpts}</select></div>
+      <div class="fld"><label>${esc(m.labels.cardValueLabel)} (R$)</label><input id="df-cardval" type="number" min="0" step="0.01" value="${d.cardValue!=null?d.cardValue:''}" placeholder="Ex.: 150000"></div>
       <div class="fld"><label>Comissão (R$)</label><input id="df-commval" type="number" min="0" step="0.01" value="${d.commissionValue!=null?d.commissionValue:''}" placeholder="Ex.: 3000"></div>
       <div class="fld full"><label>Comissão (%)</label><input id="df-commpct" type="number" min="0" max="100" step="0.01" value="${d.commissionPct!=null?d.commissionPct:''}" placeholder="Ex.: 2"></div>
       <div class="fld full"><label>Observações</label><textarea id="df-notes" placeholder="Anotações sobre a negociação…">${esc(d.notes||'')}</textarea></div>
     </div>
-    <label id="df-paid-wrap" style="display:${d.status==='vendido'?'flex':'none'};align-items:center;gap:10px;margin-top:12px;padding:11px 13px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:10px;cursor:pointer">
+    <label id="df-paid-wrap" style="display:${d.status===WON()?'flex':'none'};align-items:center;gap:10px;margin-top:12px;padding:11px 13px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:10px;cursor:pointer">
       <input type="checkbox" id="df-paid" ${d.commissionPaid?'checked':''} style="width:19px;height:19px;accent-color:#10B981;cursor:pointer">
-      <span><span style="font-weight:700;font-size:.84rem;color:#10B981">💰 Comissão paga</span><br><span style="font-size:.7rem;color:var(--t3)">Marque quando a Brenda já tiver pago a comissão desta venda</span></span>
+      <span><span style="font-weight:700;font-size:.84rem;color:#10B981">💰 Comissão paga</span><br><span style="font-size:.7rem;color:var(--t3)">Marque quando a comissão desta venda já tiver sido paga</span></span>
     </label>
     <div style="font-size:.72rem;color:var(--t3);margin-top:10px">
       Criado em ${fmtDate(d.createdAt)}${d.closedAt?' · Fechado em '+fmtDate(d.closedAt):''}
@@ -712,7 +820,7 @@ function dealForm(id){
   $('df-commpct').addEventListener('blur',calcComm);
   $('df-cardval').addEventListener('blur',calcComm);
   // mostra o "Comissão paga" só quando o status for Vendido
-  $('df-status').addEventListener('change',e=>{ const w=$('df-paid-wrap'); if(w) w.style.display=e.target.value==='vendido'?'flex':'none'; });
+  $('df-status').addEventListener('change',e=>{ const w=$('df-paid-wrap'); if(w) w.style.display=e.target.value===WON()?'flex':'none'; });
 
   $('df-del').onclick=()=>delDeal(id);
   $('df-save').onclick=async()=>{
@@ -722,9 +830,9 @@ function dealForm(id){
     const commissionValue=$('df-commval').value;
     const commissionPct=$('df-commpct').value;
     const notes=$('df-notes').value.trim();
-    const isClosing=status==='vendido'||status==='perdido';
+    const isClosing=status===WON()||status===LOST();
     const closedAt=isClosing?(d.closedAt||new Date().toISOString()):null;
-    const commissionPaid = status==='vendido' && $('df-paid') && $('df-paid').checked;
+    const commissionPaid = status===WON() && $('df-paid') && $('df-paid').checked;
     const patch=dealToRow({status,cardType,cardValue,commissionValue,commissionPct,commissionPaid,notes,closedAt});
     $('df-save').disabled=true;
     const{error}=await sb.from('deals').update(patch).eq('id',id);
@@ -757,7 +865,7 @@ function weeklyPay(){
   const wkLeads=S.leads.filter(l=>(l.tipo||'comum')!=='empresario' && inW(l.addedAt));
   const prospectLeads=wkLeads.length;
   const prospectPay=prospectLeads*perLead;
-  const unpaid=(S.deals||[]).filter(d=>d.status==='vendido' && !d.commissionPaid)
+  const unpaid=(S.deals||[]).filter(d=>d.status===WON() && !d.commissionPaid)
     .map(d=>({ name:d.leadName||d.leadUsername||d.cardType||'Venda', value:Number(d.commissionValue)||0, closedAt:d.closedAt }));
   const unpaidTotal=unpaid.reduce((s,d)=>s+d.value,0);
   return { ws, we, dayRate, target, perLead, prospectLeads, prospectPay, unpaid, unpaidTotal, total:prospectPay+unpaidTotal };
@@ -780,7 +888,7 @@ function renderGoals(){
   const body = view==='week' ? goalsWeekly(g) : goalsMonthly(g);
   $('content').innerHTML=`
     <div class="tbl-controls">
-      <div style="flex:1"><div class="sec-title" style="margin:0">Metas</div><div class="sec-sub" style="margin:2px 0 0">${view==='week'?'Pagamento semanal da Brenda — leads do Instagram e ligações efetivas.':'Metas do mês — vendas, faturamento e comissão.'}</div></div>
+      <div style="flex:1"><div class="sec-title" style="margin:0">Metas</div><div class="sec-sub" style="margin:2px 0 0">${view==='week'?(MOD().features.weeklyPay?'Pagamento semanal da equipe — leads de prospecção e ligações efetivas.':'Atividade semanal — leads de prospecção e ligações efetivas.'):'Metas do mês — vendas, faturamento e comissão.'}</div></div>
       ${toggle}
       <button class="btn btn-primary" id="goals-edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>Definir metas</button>
     </div>
@@ -851,7 +959,7 @@ function goalsMonthly(g){
   const { s,e }=monthRange();
   const inM=iso=>{ if(!iso)return false; const d=new Date(iso); return d>=s&&d<e; };
   const contatosM = S.deals.filter(d=>inM(d.createdAt)).length;
-  const vendidosM = S.deals.filter(d=>d.status==='vendido'&&inM(d.closedAt));
+  const vendidosM = S.deals.filter(d=>d.status===WON()&&inM(d.closedAt));
   const vendasM   = vendidosM.length;
   const faturM    = vendidosM.reduce((a,d)=>a+(Number(d.cardValue)||0),0);
   const commM     = vendidosM.reduce((a,d)=>a+(Number(d.commissionValue)||0),0);
@@ -934,18 +1042,20 @@ function goalsForm(){
     <div class="x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div>
     </div>
     <div class="modal-bd">
-      <div style="font-size:.66rem;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Semanal · pagamento da Brenda</div>
+      <div style="font-size:.66rem;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Semanal · atividade de prospecção</div>
       <div class="form-grid">
         <div class="fld"><label>Leads/dia — mínimo</label><input id="gf-leadmin" type="number" min="0" value="${g.leadDailyMin}" placeholder="50"></div>
         <div class="fld"><label>Leads/dia — máximo</label><input id="gf-leadmax" type="number" min="0" value="${g.leadDailyMax}" placeholder="120"></div>
         <div class="fld full"><label>Ligações efetivas / semana</label><input id="gf-callsweek" type="number" min="0" value="${g.callsWeekly||''}" placeholder="Ex.: 150"></div>
       </div>
-      <div style="font-size:.66rem;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.05em;margin:14px 0 8px">Cálculo do pagamento (prospecção)</div>
-      <div class="form-grid">
-        <div class="fld"><label>Valor por dia (R$)</label><input id="gf-pay-rate" type="number" min="0" step="0.01" value="${g.payDayRate}" placeholder="25"></div>
-        <div class="fld"><label>Leads/dia p/ esse valor</label><input id="gf-pay-target" type="number" min="1" value="${g.payTargetPerDay}" placeholder="50"></div>
+      <div style="display:${MOD().features.weeklyPay?'block':'none'}">
+        <div style="font-size:.66rem;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.05em;margin:14px 0 8px">Cálculo do pagamento (prospecção)</div>
+        <div class="form-grid">
+          <div class="fld"><label>Valor por dia (R$)</label><input id="gf-pay-rate" type="number" min="0" step="0.01" value="${g.payDayRate}" placeholder="25"></div>
+          <div class="fld"><label>Leads/dia p/ esse valor</label><input id="gf-pay-target" type="number" min="1" value="${g.payTargetPerDay}" placeholder="50"></div>
+        </div>
+        <div style="font-size:.68rem;color:var(--t3);margin-top:6px">Ex.: R$25/dia por 50 leads = R$0,50/lead. 120 leads num dia = R$60. O dashboard soma a semana e adiciona comissões de vendas ainda não pagas.</div>
       </div>
-      <div style="font-size:.68rem;color:var(--t3);margin-top:6px">Ex.: R$25/dia por 50 leads = R$0,50/lead. 120 leads num dia = R$60. O dashboard soma a semana e adiciona comissões de vendas ainda não pagas.</div>
       <div style="height:1px;background:var(--border);margin:14px 0"></div>
       <div style="font-size:.66rem;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Mensal</div>
       <div class="form-grid">
@@ -1226,7 +1336,8 @@ function renderSettings(){
   const funnelOpts=cur=>{ const cv=cur?`${cur.funnelId}:${cur.stageId}`:''; return `<option value="">— selecione —</option>`+S._funnelStages.map(f=>{ const v=`${f.funnelId}:${f.stageId}`; return `<option value="${v}" ${v===cv?'selected':''}>${esc(f.funnelName)} · ${esc(f.stageName)}</option>`; }).join(''); };
   $('content').innerHTML=`<div class="stg">
     <div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(99,102,241,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#A5B4FC" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></div><div><div class="st-title">Seu espaço</div><div class="st-sub">${esc(S.org&&S.org.name||'—')} · você é ${owner?'dono(a)':'membro'}</div></div></div>
-      <div class="stg-bd"><div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Código de convite</div><div class="stg-ri-s">Passe para um colega entrar no mesmo espaço</div></div><span class="code-pill">${esc(S.org&&S.org.join_code||'—')}</span></div></div></div>
+      <div class="stg-bd"><div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Código de convite</div><div class="stg-ri-s">Passe para um colega entrar no mesmo espaço</div></div><span class="code-pill">${esc(S.org&&S.org.join_code||'—')}</span></div>
+        <div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Módulo de profissão</div><div class="stg-ri-s">${MOD().icon} ${esc(MOD().name)} · define funil, termos e campos usados no sistema</div></div>${owner?`<select class="stg-input" id="st-module" style="max-width:200px">${(window.IGP_MODULE_ORDER||[]).map(id=>`<option value="${id}" ${id===MOD().id?'selected':''}>${window.IGP_MODULES[id].icon} ${window.IGP_MODULES[id].name}</option>`).join('')}</select>`:''}</div></div></div>
     <div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(139,92,246,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#C084FC" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg></div><div><div class="st-title">Aparência</div><div class="st-sub">Tema do sistema · salvo neste aparelho</div></div></div>
       <div class="stg-bd"><div class="theme-seg">
         <button class="theme-opt${curTheme==='dark'?' active':''}" data-theme-set="dark"><span class="theme-prev tp-dark"><i></i><b></b></span><span>Escuro</span></button>
@@ -1266,6 +1377,12 @@ function renderSettings(){
     const parse=v=>{ if(!v) return null; const [fid,sid]=v.split(':'); const f=S._funnelStages.find(x=>String(x.funnelId)===fid&&String(x.stageId)===sid); return f?{funnelId:f.funnelId,stageId:f.stageId,funnelName:f.funnelName,stageName:f.stageName}:null; };
     const agendor_map={ empresario:parse($('ag-map-emp').value), comum:parse($('ag-map-com').value) };
     const{error}=await sb.from('orgs').update({agendor_map}).eq('id',S.org.id); if(error){toast(error.message,'error');return;} S.org={...S.org,agendor_map}; toast('Mapeamento salvo ✓','success'); renderSettings();
+  });
+  $('st-module')&&($('st-module').onchange=async e=>{
+    const module_id=e.target.value;
+    const{error}=await sb.from('orgs').update({module_id}).eq('id',S.org.id);
+    if(error){toast(error.message,'error');return;}
+    S.org={...S.org,module_id}; toast('Módulo atualizado','success'); renderShell();
   });
   $('st-logout').onclick=igpLogout;
   $('st-push-on')&&($('st-push-on').onclick=enablePush);
@@ -1318,8 +1435,8 @@ async function importExtensionLeads(incoming){
       if(existing){
         // Lead já existe: atualiza status (se avançou) e telefone (se chegou um novo).
         // Resolve o caso de marcar "Enviou Contato" na extensão e não refletir aqui.
-        const oldIdx=STS.indexOf(existing.status||'novo');
-        const newIdx=STS.indexOf(raw.status||'novo');
+        const oldIdx=STS().indexOf(existing.status||'novo');
+        const newIdx=STS().indexOf(raw.status||'novo');
         const patch={};
         if(newIdx>oldIdx) patch.status=raw.status;
         if(raw.phone && raw.phone!==(existing.phone||'')) patch.phone=raw.phone;
@@ -1382,7 +1499,7 @@ async function boot(){
 // Conserta empresários antigos que entraram com status de prospecção (chamado etc.) → "A Contatar".
 // Roda uma vez; depois que todos estão normalizados vira no-op.
 async function normalizeEmpresarios(){
-  const bad=S.leads.filter(l=>l.tipo==='empresario' && STS.includes(l.status));
+  const bad=S.leads.filter(l=>l.tipo==='empresario' && STS().includes(l.status));
   if(!bad.length) return;
   const ids=bad.map(l=>l.id);
   for(let i=0;i<ids.length;i+=200){ const { error }=await sb.from('leads').update({status:'a_contatar'}).in('id',ids.slice(i,i+200)); if(error){ console.warn('normalizeEmpresarios:',error.message); return; } }
