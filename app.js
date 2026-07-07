@@ -1392,6 +1392,18 @@ function renderSettings(){
         `:`<div class="stg-ri-s">${(agMap.empresario||agMap.comum)?`Empresário → ${agMap.empresario?esc(agMap.empresario.funnelName+' · '+agMap.empresario.stageName):'não definido'}<br>Instagram → ${agMap.comum?esc(agMap.comum.funnelName+' · '+agMap.comum.stageName):'não definido'}`:'Clique em "Carregar funis" para configurar os funis.'}</div>`}
         <div style="font-size:.72rem;color:var(--t2);margin-top:6px;padding:9px 11px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:8px">⚠️ O navegador bloqueia chamadas diretas à API do Agendor (CORS). Publique o Cloudflare Worker (arquivo <code>agendor-worker.js</code>) e cole a URL dele acima. Sem o proxy, o envio falha.</div>
       </div></div>
+    <div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(236,72,153,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#F472B6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></div><div><div class="st-title">Extensão do Instagram</div><div class="st-sub">Detecta perfis e adiciona leads direto do Instagram para o seu espaço</div></div></div>
+      <div class="stg-bd">
+        <div style="display:flex;gap:8px;flex-wrap:wrap"><a class="btn btn-primary" href="igprospect-extension.zip" download>⬇ Baixar extensão</a></div>
+        <div style="font-size:.8rem;color:var(--t2);margin-top:10px;padding:11px 13px;background:rgba(236,72,153,.08);border:1px solid rgba(236,72,153,.2);border-radius:8px;line-height:1.6">
+          <b>Como instalar (Chrome/Edge):</b><br>
+          1. Baixe e descompacte o arquivo .zip<br>
+          2. Acesse <code>chrome://extensions</code><br>
+          3. Ative o <b>Modo do desenvolvedor</b> (canto superior direito)<br>
+          4. Clique em <b>Carregar sem compactação</b> e selecione a pasta descompactada<br>
+          5. Abra o Instagram — a extensão já aparece nos perfis
+        </div>
+      </div></div>
     <div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(139,92,246,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#C084FC" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></div><div><div class="st-title">Conta</div><div class="st-sub">${esc(S.profile&&S.profile.email||'')}</div></div></div>
       <div class="stg-bd"><div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">${esc(S.profile&&S.profile.name||'')}</div><div class="stg-ri-s">${S.leads.length} leads · ${S.calls.length} ligações neste espaço</div></div><button class="btn btn-outline btn-sm" id="st-logout">Sair</button></div></div></div>
   </div>`;
