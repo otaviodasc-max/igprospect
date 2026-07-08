@@ -604,11 +604,102 @@ function delLead(id){ const l=S.leads.find(x=>x.id===id);
   };
 }
 
+/* Normaliza uma chave de coluna (remove acentos, minúsculas, só alfanumérico) */
+function normColKey(k){
+  return String(k||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().replace(/[^a-z0-9]/g,'');
+}
+const IMPORT_FIELD_ALIASES = {
+  name:['nome','nomecompleto','name','lead','contato','fullname'],
+  username:['usuario','username','instagram','perfil','handle','insta','ig','usuarioinstagram'],
+  phone:['telefone','phone','celular','whatsapp','fone','tel','contatotelefone'],
+  email:['email','emailaddress'],
+  niche:['nicho','niche','categoria','segmento'],
+  notes:['notas','observacoes','observacao','obs','notes','comentarios'],
+  cidade:['cidade','city'],
+  estado:['estado','uf','state'],
+  cnpj:['cnpj'],
+  status:['status','etapa'],
+  tipo:['tipo','type'],
+  followers:['seguidores','followers'],
+  following:['seguindo','following']
+};
+/* Converte um objeto de linha (colunas arbitrárias) num lead genérico */
+function mapImportedRow(row){
+  const out={};
+  const keys=Object.keys(row).map(k=>({raw:k,norm:normColKey(k)}));
+  for(const field in IMPORT_FIELD_ALIASES){
+    const aliases=IMPORT_FIELD_ALIASES[field];
+    const found=keys.find(k=>aliases.includes(k.norm));
+    if(found){ const v=row[found.raw]; if(v!==undefined&&v!==null&&String(v).trim()!=='') out[field]=String(v).trim(); }
+  }
+  return out;
+}
+/* Extrai leads de um texto/HTML de tabela via SheetJS (csv/tsv/xlsx/xls/ods) */
+function sheetToLeadRows(ws){
+  const json=XLSX.utils.sheet_to_json(ws,{defval:''});
+  return json.map(mapImportedRow).filter(r=>r.name||r.username);
+}
+/* Fallback para PDF: extrai texto e tenta achar @handles / telefones / emails linha a linha */
+function pdfTextToLeadRows(text){
+  const lines=text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+  const rows=[];
+  const emailRe=/[\w.+-]+@[\w-]+\.[\w.-]+/;
+  const phoneRe=/(?:\+?55)?\s*\(?\d{2}\)?\s*\d{4,5}-?\d{4}/;
+  const handleRe=/@[\w.]{2,30}/;
+  for(const line of lines){
+    const handle=line.match(handleRe);
+    const email=line.match(emailRe);
+    const phone=line.match(phoneRe);
+    if(!handle && !email) continue;
+    const username=handle?handle[0].replace('@',''):'';
+    let name=line;
+    if(handle) name=name.replace(handle[0],'');
+    if(email) name=name.replace(email[0],'');
+    if(phone) name=name.replace(phone[0],'');
+    name=name.replace(/[,;|\t]+/g,' ').trim();
+    rows.push({ name:name||username, username, email:email?email[0]:'', phone:phone?phone[0]:'' });
+  }
+  return rows;
+}
+async function parseImportFile(f){
+  const ext=(f.name.split('.').pop()||'').toLowerCase();
+  if(ext==='json'){
+    const p=JSON.parse(await f.text());
+    const arr=Array.isArray(p)?p:Array.isArray(p.leads)?p.leads:null;
+    return arr||[];
+  }
+  if(ext==='pdf'){
+    const buf=await f.arrayBuffer();
+    const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+    let text='';
+    for(let i=1;i<=pdf.numPages;i++){
+      const page=await pdf.getPage(i);
+      const content=await page.getTextContent();
+      const lines={};
+      for(const it of content.items){ const y=Math.round(it.transform[5]); (lines[y]=lines[y]||[]).push(it.str); }
+      text+=Object.keys(lines).sort((a,b)=>b-a).map(y=>lines[y].join(' ')).join('\n')+'\n';
+    }
+    return pdfTextToLeadRows(text);
+  }
+  if(ext==='html'||ext==='htm'){
+    const text=await f.text();
+    const doc=new DOMParser().parseFromString(text,'text/html');
+    const table=doc.querySelector('table');
+    if(!table) return [];
+    const ws=XLSX.utils.table_to_sheet(table);
+    return sheetToLeadRows(ws);
+  }
+  // xlsx, xls, ods, csv, tsv
+  const buf=await f.arrayBuffer();
+  const wb=XLSX.read(buf,{type:'array'});
+  const ws=wb.Sheets[wb.SheetNames[0]];
+  return sheetToLeadRows(ws);
+}
 function importLeads(){
-  const inp=document.createElement('input'); inp.type='file'; inp.accept='.json';
+  const inp=document.createElement('input'); inp.type='file'; inp.accept='.json,.csv,.tsv,.xlsx,.xls,.ods,.html,.htm,.pdf';
   inp.onchange=async e=>{
     const f=e.target.files[0]; if(!f) return;
-    let arr; try{ const p=JSON.parse(await f.text()); arr=Array.isArray(p)?p:Array.isArray(p.leads)?p.leads:null; }catch(_){}
+    let arr; try{ arr=await parseImportFile(f); }catch(err){ toast('Erro ao ler arquivo: '+err.message,'error'); return; }
     if(!arr||!arr.length){ toast('Arquivo inválido ou sem leads','error'); return; }
     const haveExt=new Set(S.leads.map(l=>l.extId).filter(Boolean));
     const haveUser=new Set(S.leads.map(l=>(l.username||'').toLowerCase()).filter(Boolean));
