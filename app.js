@@ -19,7 +19,7 @@ applyTheme(currentTheme());
 const S = { session:null, profile:null, org:null, route:'dashboard', period:'all',
   leads:[], calls:[], deals:[], messages:[], unread:0, authMode:'login',
   pipelines:[], niches:[], dealStagesCfg:null, callOutcomesCfg:null,
-  members:[], weeklyPayments:[],
+  members:[], weeklyPayments:[], features:null,
   lf:{ q:'', note:'', status:'', niche:'', pipeline:'', sort:'newest', page:1, ag:'' },
   cf:{ q:'', outcome:'', sort:'newest', page:1 },
   crmPipelineId:'', crmQ:'', dealQ:'', goalsView:'week', _funnelStages:[], sel:{ mode:false, ids:new Set() },
@@ -487,12 +487,23 @@ const NAV = [
 ];
 function TAB_INFO_GET(){ const m=MOD(); return { dashboard:['Dashboard','Visão geral dos seus leads'], goals:['Metas do Mês','Acompanhe o progresso da equipe e bata as metas'], leads:['Leads','Gerencie e filtre sua base'], crm:['CRM · Pipeline','Arraste leads pelo funil'], deals:[m.labels.dealsTabTitle, m.labels.dealsTabSub], calls:['Ligações','Registre e acompanhe suas chamadas'], relatorios:['Relatórios','Pagamentos semanais, leads, ligações e vendas — histórico permanente'], team:['Equipe','Recados e comunicados entre vocês'], settings:['Configurações','Espaço e integrações'], admin:['Painel Administrativo','Gestão da plataforma'] }; }
 
+// Carrega as abas liberadas para a equipe ativa. Se a RPC ainda não existe
+// no banco (migração não rodada), deixa S.features=null = mostra tudo.
+async function loadFeatures(){
+  try{ const { data, error }=await sb.rpc('my_features'); if(error) throw error;
+       S.features = new Set((data||[]).map(f=>f.key)); }
+  catch(_){ S.features = null; }
+}
+// Aba visível? Admin vê tudo; sem features carregadas, mostra tudo.
+function featOn(k){ if(S.profile&&S.profile.platform_role==='admin') return true; if(!S.features) return true; return S.features.has(k); }
+
 function renderShell(){
   $('auth').classList.add('hidden'); $('onboard').classList.add('hidden'); $('app').classList.add('show');
   if(S.route==='team') S.unread=0;
   const isAdmin = S.profile&&S.profile.platform_role==='admin';
+  if(S.route!=='admin' && !featOn(S.route)) S.route='dashboard';
   const openDeals = S.deals.filter(d=>d.status!==WON()&&d.status!==LOST()).length;
-  let nav = NAV.map(n=>`<div class="nav-item ${S.route===n.k?'active':''}" data-route="${n.k}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${n.icon}</svg>${n.label}${n.k==='leads'&&S.leads.length?`<span class="nav-badge">${S.leads.length}</span>`:''}${n.k==='deals'&&openDeals?`<span class="nav-badge">${openDeals}</span>`:''}${n.k==='calls'&&S.calls.length?`<span class="nav-badge">${S.calls.length}</span>`:''}${n.k==='team'&&S.unread?`<span class="nav-badge" style="background:rgba(16,185,129,.22);color:#6EE7B7">${S.unread}</span>`:''}</div>`).join('');
+  let nav = NAV.filter(n=>featOn(n.k)).map(n=>`<div class="nav-item ${S.route===n.k?'active':''}" data-route="${n.k}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${n.icon}</svg>${n.label}${n.k==='leads'&&S.leads.length?`<span class="nav-badge">${S.leads.length}</span>`:''}${n.k==='deals'&&openDeals?`<span class="nav-badge">${openDeals}</span>`:''}${n.k==='calls'&&S.calls.length?`<span class="nav-badge">${S.calls.length}</span>`:''}${n.k==='team'&&S.unread?`<span class="nav-badge" style="background:rgba(16,185,129,.22);color:#6EE7B7">${S.unread}</span>`:''}</div>`).join('');
   if(isAdmin) nav += `<div class="s-sec">Plataforma</div><div class="nav-item ${S.route==='admin'?'active':''}" data-route="admin"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>Admin</div>`;
   $('s-nav').innerHTML=nav;
   $('s-user').textContent = (S.profile&&(S.profile.name||S.profile.email))||'—';
@@ -2032,11 +2043,32 @@ async function renderAdmin(){
   const { data:orgs, error:e1 }=await sb.rpc('admin_orgs');
   const { data:users, error:e2 }=await sb.rpc('admin_users');
   if(e1||e2){ $('adm').innerHTML=`<div class="empty-state"><div class="empty-title">Erro</div><div class="empty-sub">${esc((e1||e2).message)}</div></div>`; return; }
-  const orgRows=(orgs||[]).map(o=>`<tr><td><b>${esc(o.name)}</b></td><td>${o.members}</td><td>${o.leads}</td><td>${o.calls}</td><td><span class="tag">${esc(o.join_code)}</span></td></tr>`).join('')||'<tr><td colspan="5"><div class="empty-state"><div class="empty-sub">Nenhum espaço</div></div></td></tr>';
-  const userRows=(users||[]).map(u=>`<tr><td><div class="lead-nm">${esc(u.name||'—')}</div><div class="lead-un">${esc(u.email||'')}</div></td><td>${esc(u.org_name||'—')}</td><td>${esc(u.org_role||'')}</td><td><span class="badge ${u.status==='active'?'b-contato':'b-respondeu'}">${u.status}</span></td><td><div class="tbl-acts">${u.platform_role==='admin'?'<span class="tag">admin</span>':`<button class="act-btn" data-block="${u.id}" data-st="${u.status}">${u.status==='active'?'Bloquear':'Liberar'}</button>`}</div></td></tr>`).join('');
-  $('adm').innerHTML=`<div class="card" style="margin-bottom:16px"><div class="res-bar"><span><strong>${(orgs||[]).length}</strong> espaços</span></div><table class="data-tbl"><thead><tr><th>Espaço</th><th>Membros</th><th>Leads</th><th>Ligações</th><th>Código</th></tr></thead><tbody>${orgRows}</tbody></table></div>
-    <div class="card"><div class="res-bar"><span><strong>${(users||[]).length}</strong> usuários</span></div><table class="data-tbl" id="adm-users"><thead><tr><th>Usuário</th><th>Espaço</th><th>Papel</th><th>Status</th><th></th></tr></thead><tbody>${userRows}</tbody></table></div>`;
+  const orgRows=(orgs||[]).map(o=>`<tr data-s="${esc(((o.name||'')+' '+(o.join_code||'')).toLowerCase())}"><td><b>${esc(o.name)}</b></td><td>${o.members}</td><td>${o.leads}</td><td>${o.calls}</td><td><span class="tag">${esc(o.join_code)}</span></td><td><div class="tbl-acts"><button class="act-btn" data-featorg="${o.id}" data-featname="${esc(o.name)}">Módulos</button><button class="act-btn act-del" data-delorg="${o.id}">Excluir</button></div></td></tr>`).join('')||'<tr><td colspan="6"><div class="empty-state"><div class="empty-sub">Nenhum espaço</div></div></td></tr>';
+  const userRows=(users||[]).map(u=>`<tr data-s="${esc(((u.name||'')+' '+(u.email||'')+' '+(u.org_name||'')).toLowerCase())}"><td><div class="lead-nm">${esc(u.name||'—')}</div><div class="lead-un">${esc(u.email||'')}</div></td><td>${esc(u.org_name||'—')}</td><td>${esc(u.org_role||'')}</td><td><span class="badge ${u.status==='active'?'b-contato':u.status==='pending'?'b-novo':'b-respondeu'}">${u.status}</span></td><td><div class="tbl-acts">${u.platform_role==='admin'?'<span class="tag">admin</span>':`<button class="act-btn" data-block="${u.id}" data-st="${u.status}">${u.status==='pending'?'Aprovar':u.status==='active'?'Bloquear':'Liberar'}</button><button class="act-btn act-del" data-deluser="${u.id}">Excluir</button>`}</div></td></tr>`).join('');
+  const searchBox=(id,ph,val)=>`<div class="search-wrap" style="flex:0 1 240px;min-width:140px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input class="search-inp" id="${id}" placeholder="${ph}" value="${esc(val||'')}"></div>`;
+  $('adm').innerHTML=`<div class="card" style="margin-bottom:16px"><div class="res-bar"><span><strong>${(orgs||[]).length}</strong> espaços</span>${searchBox('adm-org-q','Buscar espaço…',S.admOrgQ)}</div><table class="data-tbl" id="adm-orgs"><thead><tr><th>Espaço</th><th>Membros</th><th>Leads</th><th>Ligações</th><th>Código</th><th></th></tr></thead><tbody>${orgRows}</tbody></table></div>
+    <div class="card"><div class="res-bar"><span><strong>${(users||[]).length}</strong> usuários</span>${searchBox('adm-user-q','Buscar usuário…',S.admUserQ)}</div><table class="data-tbl" id="adm-users"><thead><tr><th>Usuário</th><th>Espaço</th><th>Papel</th><th>Status</th><th></th></tr></thead><tbody>${userRows}</tbody></table></div>
+    <div id="adm-feat"></div>`;
   $('adm').querySelectorAll('[data-block]').forEach(b=>b.onclick=async()=>{ const ns=b.dataset.st==='active'?'blocked':'active'; const{error}=await sb.from('profiles').update({status:ns}).eq('id',b.dataset.block); if(error){toast(error.message,'error');return;} toast('Usuário '+(ns==='blocked'?'bloqueado':'liberado'),'success'); renderAdmin(); });
+  $('adm').querySelectorAll('[data-delorg]').forEach(b=>b.onclick=async()=>{ if(!confirm('Excluir este espaço permanentemente? Todos os leads, ligações, negociações e mensagens da equipe serão apagados. Esta ação não pode ser desfeita.'))return; const{error}=await sb.rpc('admin_delete_org',{p_org_id:b.dataset.delorg}); if(error){toast(error.message,'error');return;} toast('Espaço excluído','success'); renderAdmin(); });
+  $('adm').querySelectorAll('[data-featorg]').forEach(b=>b.onclick=()=>renderOrgFeatures(b.dataset.featorg, b.dataset.featname));
+  $('adm').querySelectorAll('[data-deluser]').forEach(b=>b.onclick=async()=>{ if(!confirm('Excluir este usuário permanentemente? A conta e o acesso dele serão removidos (leads e ligações que ele criou permanecem na equipe). Esta ação não pode ser desfeita.'))return; const{error}=await sb.rpc('admin_delete_user',{p_user_id:b.dataset.deluser}); if(error){toast(error.message,'error');return;} toast('Usuário excluído','success'); renderAdmin(); });
+  const admFilter=(inp,tbl)=>{ const q=($(inp).value||'').toLowerCase().trim(); $(tbl).querySelectorAll('tbody tr[data-s]').forEach(tr=>{ tr.style.display=(!q||tr.dataset.s.includes(q))?'':'none'; }); };
+  $('adm-org-q').oninput=e=>{ S.admOrgQ=e.target.value; admFilter('adm-org-q','adm-orgs'); };
+  $('adm-user-q').oninput=e=>{ S.admUserQ=e.target.value; admFilter('adm-user-q','adm-users'); };
+  admFilter('adm-org-q','adm-orgs'); admFilter('adm-user-q','adm-users');
+}
+
+// Painel de módulos liberados para UMA equipe (abre abaixo das tabelas).
+async function renderOrgFeatures(orgId, orgName){
+  const box=$('adm-feat'); if(!box) return;
+  box.innerHTML=`<div class="card" style="margin-top:16px"><div class="res-bar"><span>Módulos de <strong>${esc(orgName||'')}</strong></span></div><div id="adm-feat-list">Carregando…</div></div>`;
+  box.scrollIntoView({behavior:'smooth',block:'nearest'});
+  const { data:feats, error }=await sb.rpc('admin_org_features',{p_org_id:orgId});
+  if(error){ $('adm-feat-list').innerHTML=`<div class="empty-state"><div class="empty-sub">${esc(error.message)}</div></div>`; return; }
+  const rows=(feats||[]).map(f=>`<tr><td>${esc(f.label)}${f.is_override?'':' <span class="lead-un">(padrão)</span>'}</td><td><div class="tbl-acts"><button class="act-btn ${f.enabled?'act-del':''}" data-feattoggle="${esc(f.key)}" data-cur="${f.enabled?'1':'0'}">${f.enabled?'Desligar':'Ligar'}</button></div></td></tr>`).join('');
+  $('adm-feat-list').innerHTML=`<table class="data-tbl"><thead><tr><th>Módulo / Aba</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  $('adm-feat-list').querySelectorAll('[data-feattoggle]').forEach(b=>b.onclick=async()=>{ const ns=b.dataset.cur!=='1'; const{error}=await sb.rpc('admin_set_org_feature',{p_org_id:orgId,p_key:b.dataset.feattoggle,p_enabled:ns}); if(error){toast(error.message,'error');return;} toast('Módulo '+(ns?'liberado':'ocultado')+' para '+orgName,'success'); renderOrgFeatures(orgId,orgName); });
 }
 
 /* =====================================================================
@@ -2127,8 +2159,10 @@ async function boot(){
   const { data:prof }=await sb.from('profiles').select('*').eq('id',session.user.id).single();
   S.profile=prof;
   if(prof&&prof.status==='blocked'){ $('app').classList.remove('show'); $('onboard').classList.add('hidden'); $('auth').classList.remove('hidden'); $('auth-card').innerHTML=`<div class="auth-h">Acesso bloqueado</div><div class="auth-sub">Fale com o administrador.</div><button class="btn-block" onclick="igpLogout()">Sair</button>`; return; }
+  if(prof&&prof.status==='pending'){ $('app').classList.remove('show'); $('onboard').classList.add('hidden'); $('auth').classList.remove('hidden'); $('auth-card').innerHTML=`<div class="auth-h">Cadastro em análise</div><div class="auth-sub">Seu acesso está aguardando aprovação do administrador.</div><button class="btn-block" onclick="igpLogout()">Sair</button>`; return; }
   if(!prof||!prof.org_id){ renderOnboard(); return; }
   const { data:org }=await sb.from('orgs').select('*').eq('id',prof.org_id).single(); S.org=org;
+  await loadFeatures();
   await loadOrgConfig(); await loadLeads(); await normalizeEmpresarios(); await loadCalls(); await loadDeals(); await backfillEmpresarioDeals(); await loadMessages(); await loadMembers(); await loadWeeklyPayments(); renderShell();
   bindBridge();
   subscribeMessages();
