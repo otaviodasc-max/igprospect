@@ -85,21 +85,32 @@ const ini = n => { if(!n) return '?'; const w=String(n).trim().split(/\s+/); ret
 const fmtNum = n => n!=null ? Number(n).toLocaleString('pt-BR') : '—';
 const fmtDate = iso => { if(!iso) return '—'; try{ return new Date(iso).toLocaleDateString('pt-BR'); }catch(e){ return '—'; } };
 const fmtCurrency = v => v!=null ? Number(v).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}) : '—';
-// Máscara de campo monetário (R$): formata milhar com ponto e completa os
-// centavos automaticamente (ex.: digitar "100" vira "100,00"). Se o usuário
-// digitar uma vírgula, os dígitos depois dela viram os centavos (ex.: "100,5" -> "100,50").
-// Usar em <input type="text">.
-function maskMoneyInput(el){ if(!el) return; el.addEventListener('input',()=>{
-  const raw=el.value;
-  if(!raw){ el.value=''; return; }
-  const commaIdx=raw.indexOf(',');
-  let intDigits, centDigits;
-  if(commaIdx===-1){ intDigits=raw.replace(/\D/g,''); centDigits='00'; }
-  else { intDigits=raw.slice(0,commaIdx).replace(/\D/g,''); centDigits=(raw.slice(commaIdx+1).replace(/\D/g,'')+'00').slice(0,2); }
-  intDigits=intDigits.replace(/^0+(?=\d)/,'')||'0';
-  const intPart=intDigits.replace(/\B(?=(\d{3})+(?!\d))/g,'.');
-  el.value=intPart+','+centDigits;
-}); }
+// Máscara de campo monetário (R$): separa o milhar com ponto à medida que se
+// digita (ex.: "1500" -> "1.500"), sem travar a digitação. Se o usuário digitar
+// uma vírgula, os dígitos depois dela viram os centavos, ao vivo (ex.: "1500,5"
+// -> "1.500,5"). Só ao sair do campo (blur) é que os centavos são completados
+// para 2 casas (ex.: "100" -> "100,00", "1.500,5" -> "1.500,50").
+function maskMoneyInput(el){ if(!el) return;
+  const liveFormat=raw=>{
+    if(!raw) return '';
+    const commaIdx=raw.indexOf(',');
+    if(commaIdx===-1){
+      const intPart=raw.replace(/\D/g,'').replace(/^0+(?=\d)/,'').replace(/\B(?=(\d{3})+(?!\d))/g,'.');
+      return intPart;
+    }
+    const intPart=raw.slice(0,commaIdx).replace(/\D/g,'').replace(/^0+(?=\d)/,'').replace(/\B(?=(\d{3})+(?!\d))/g,'.');
+    const decPart=raw.slice(commaIdx+1).replace(/\D/g,'').slice(0,2);
+    return (intPart||'0')+','+decPart;
+  };
+  el.addEventListener('input',()=>{ el.value=liveFormat(el.value); });
+  el.addEventListener('blur',()=>{
+    if(!el.value) return;
+    const commaIdx=el.value.indexOf(',');
+    if(commaIdx===-1){ el.value=el.value+',00'; return; }
+    let dec=el.value.slice(commaIdx+1); while(dec.length<2) dec+='0';
+    el.value=el.value.slice(0,commaIdx)+','+dec;
+  });
+}
 const moneyToNumber = s => { if(s==null||s==='') return null; const n=parseFloat(String(s).replace(/\./g,'').replace(',','.')); return isNaN(n)?null:n; };
 const numberToMoney = n => (n==null||n==='') ? '' : Number(n).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
 const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim() || '#888';
