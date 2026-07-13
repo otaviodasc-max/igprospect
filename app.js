@@ -171,6 +171,67 @@ async function bulkDeleteLeads(){
   selReset(); closeModal(); toast(`${ids.length} lead(s) excluído(s)${agLeads.length?` · ${agLeads.length} do Agendor`:''}`,'success');
   await loadLeads(); await loadDeals(); renderShell();
 }
+// Pergunta se os leads sem registro no Agendor já estão cadastrados lá (não reenviar)
+// ou se devem ser enviados agora. Retorna true=enviar, false=já estão lá, null=cancelou.
+function askAlreadyInAgendor(n){
+  return new Promise(resolve=>{
+    openModal(`<div class="modal-ov"><div class="modal-box" style="max-width:460px"><div class="modal-hd"><div><div class="modal-title">Enviar ao Agendor?</div><div class="modal-sub">${n} lead(s) selecionado(s) sem registro no Agendor</div></div><div class="x" id="ag-ask-x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div></div><div class="modal-bd"><p class="confirm-txt">Esses leads já estão cadastrados no Agendor (ex.: você importou eles de lá) ou preciso enviá-los agora?</p></div><div class="modal-ft"><button class="btn btn-outline" id="ag-ask-already">☁ Já estão no Agendor</button><button class="btn btn-primary" id="ag-ask-send">Enviar ao Agendor</button></div></div></div>`);
+    const finish=v=>{ closeModal(); resolve(v); };
+    $('ag-ask-x').onclick=()=>finish(null);
+    $('ag-ask-already').onclick=()=>finish(false);
+    $('ag-ask-send').onclick=()=>finish(true);
+  });
+}
+// Muda em massa a etapa dos leads selecionados (aba Leads). idx: 0=Novo Lead,
+// 1=Chamado, 2=Respondeu, 'last'=Enviou Contato (posição na lista de etapas
+// do FUNIL DE CADA LEAD, respeitando funis customizados). Ao mover pra "Enviou
+// Contato" a negociação é criada automaticamente (mesmo trigger do banco usado
+// no fluxo individual/CRM), e — se o Agendor estiver configurado — pergunta se
+// os leads sem registro lá já estão cadastrados, pra não duplicar.
+async function bulkSetLeadsStage(idx){
+  const ids=[...S.sel.ids]; if(!ids.length){ toast('Selecione ao menos um lead','warn'); return; }
+  const leads=ids.map(id=>S.leads.find(l=>l.id===id)).filter(Boolean);
+  const isContatoAction = idx==='last';
+  let markAsAgendor=false;
+  if(isContatoAction && agendorOn()){
+    const missing=leads.filter(l=>!l.agendorPersonId);
+    if(missing.length){
+      const wantsSend=await askAlreadyInAgendor(missing.length);
+      if(wantsSend===null) return;
+      markAsAgendor = !wantsSend;
+    }
+  }
+  const byStatus={};
+  for(const l of leads){
+    const stages=stagesOf(leadPipeline(l)); if(!stages.length) continue;
+    const i = idx==='last' ? stages.length-1 : Math.min(idx, stages.length-1);
+    (byStatus[stages[i].key]=byStatus[stages[i].key]||[]).push(l.id);
+  }
+  for(const st in byStatus){
+    const idsForSt=byStatus[st];
+    for(let i=0;i<idsForSt.length;i+=200){ const{error}=await sb.from('leads').update({status:st}).in('id',idsForSt.slice(i,i+200)); if(error){ toast(error.message,'error'); return; } }
+    idsForSt.forEach(id=>{ const l=S.leads.find(x=>x.id===id); if(l) l.status=st; });
+  }
+  if(markAsAgendor){
+    const missingIds=leads.filter(l=>!l.agendorPersonId).map(l=>l.id);
+    for(let i=0;i<missingIds.length;i+=200){ await sb.from('leads').update({agendor_person_id:'manual'}).in('id',missingIds.slice(i,i+200)); }
+    missingIds.forEach(id=>{ const l=S.leads.find(x=>x.id===id); if(l) l.agendorPersonId='manual'; });
+  }
+  const dealTargets=leads.filter(l=>isLastStage(l.status,leadPipeline(l))||l.tipo==='empresario');
+  if(dealTargets.length){
+    const prospector=(S.profile&&(S.profile.name||S.profile.email))||null;
+    const rows=dealTargets.map(l=>({ lead_id:l.id, prospector_name:prospector }));
+    for(let i=0;i<rows.length;i+=200){ const{error}=await sb.from('deals').upsert(rows.slice(i,i+200),{onConflict:'lead_id',ignoreDuplicates:true}); if(error){ console.warn('bulkSetLeadsStage deals:',error.message); } }
+    await loadDeals();
+  }
+  if(isContatoAction){
+    for(const l of leads){ if(isLastStage(l.status,leadPipeline(l))) notifyLeadContato(l); }
+    if(!markAsAgendor && agendorOn() && agendorAutoOn()){
+      for(const l of leads){ if(!l.agendorPersonId) await sendLeadToAgendor(l.id,true); }
+    }
+  }
+  selReset(); toast(`${ids.length} lead(s) atualizados`,'success'); renderShell();
+}
 async function bulkDeleteDeals(){
   const ids=[...S.sel.ids]; if(!ids.length){ closeModal(); return; }
   const error=await deleteInChunks('deals',ids);
@@ -561,6 +622,15 @@ function renderLeads(){
     <button class="btn btn-outline" id="imp-lead"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Importar</button>
     <button class="btn btn-primary" id="add-lead"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Cadastrar</button>
     ${selBar()}</div>
+    ${S.sel.mode?`<div class="tbl-controls" style="margin-bottom:10px">
+      <span style="font-size:.74rem;color:var(--t2);font-weight:600;white-space:nowrap">Mudar etapa dos selecionados:</span>
+      <div class="period-tabs" id="leads-stage-bulk">
+        <div class="period-tab" data-bulkstage="0">Novo Lead</div>
+        <div class="period-tab" data-bulkstage="1">Chamado</div>
+        <div class="period-tab" data-bulkstage="2">Respondeu</div>
+        <div class="period-tab" data-bulkstage="last">Enviou Contato</div>
+      </div>
+    </div>`:''}
     <div class="tbl-controls" style="margin-bottom:10px">
       <div class="search-wrap" style="flex:0 1 260px;min-width:150px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg><input class="search-inp" id="ls-note" placeholder="Filtrar por nota (ex.: perdido)…" value="${esc(S.lf.note)}"></div>
       <div class="period-tabs" id="leads-note-chips">${noteChips}</div>
@@ -574,6 +644,7 @@ function renderLeads(){
   $('leads-note-chips').onclick=e=>{ const t=e.target.closest('[data-note]'); if(!t)return; const v=t.dataset.note; S.lf.note=(S.lf.note||'').toLowerCase()===v.toLowerCase()?'':v; S.lf.page=1; renderLeads(); };
   $('ls-note-clear')&&($('ls-note-clear').onclick=()=>{ S.lf.note=''; S.lf.page=1; renderLeads(); });
   $('leads-ag-tabs').onclick=e=>{ const t=e.target.closest('[data-leadag]'); if(!t)return; S.lf.ag=t.dataset.leadag; S.lf.page=1; renderLeads(); };
+  $('leads-stage-bulk')&&($('leads-stage-bulk').onclick=e=>{ const b=e.target.closest('[data-bulkstage]'); if(!b)return; const v=b.dataset.bulkstage; bulkSetLeadsStage(v==='last'?'last':parseInt(v)); });
   $('ls-status').onchange=e=>{ S.lf.status=e.target.value; S.lf.page=1; renderLeads(); };
   $('ls-tipo').onchange=e=>{ S.lf.pipeline=e.target.value; S.lf.status=''; S.lf.page=1; renderLeads(); };
   $('ls-niche').onchange=e=>{ S.lf.niche=e.target.value; S.lf.page=1; renderLeads(); };
