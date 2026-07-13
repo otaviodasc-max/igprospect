@@ -85,6 +85,23 @@ const ini = n => { if(!n) return '?'; const w=String(n).trim().split(/\s+/); ret
 const fmtNum = n => n!=null ? Number(n).toLocaleString('pt-BR') : '—';
 const fmtDate = iso => { if(!iso) return '—'; try{ return new Date(iso).toLocaleDateString('pt-BR'); }catch(e){ return '—'; } };
 const fmtCurrency = v => v!=null ? Number(v).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}) : '—';
+// Máscara de campo monetário (R$): formata milhar com ponto e completa os
+// centavos automaticamente (ex.: digitar "100" vira "100,00"). Se o usuário
+// digitar uma vírgula, os dígitos depois dela viram os centavos (ex.: "100,5" -> "100,50").
+// Usar em <input type="text">.
+function maskMoneyInput(el){ if(!el) return; el.addEventListener('input',()=>{
+  const raw=el.value;
+  if(!raw){ el.value=''; return; }
+  const commaIdx=raw.indexOf(',');
+  let intDigits, centDigits;
+  if(commaIdx===-1){ intDigits=raw.replace(/\D/g,''); centDigits='00'; }
+  else { intDigits=raw.slice(0,commaIdx).replace(/\D/g,''); centDigits=(raw.slice(commaIdx+1).replace(/\D/g,'')+'00').slice(0,2); }
+  intDigits=intDigits.replace(/^0+(?=\d)/,'')||'0';
+  const intPart=intDigits.replace(/\B(?=(\d{3})+(?!\d))/g,'.');
+  el.value=intPart+','+centDigits;
+}); }
+const moneyToNumber = s => { if(s==null||s==='') return null; const n=parseFloat(String(s).replace(/\./g,'').replace(',','.')); return isNaN(n)?null:n; };
+const numberToMoney = n => (n==null||n==='') ? '' : Number(n).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
 const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim() || '#888';
 // Recoloca o foco/cursor num campo após um re-render (evita perder o foco ao digitar na busca)
 function refocus(id){ const el=$(id); if(el){ el.focus(); const v=el.value||''; try{ el.setSelectionRange(v.length,v.length); }catch(e){} } }
@@ -955,9 +972,13 @@ function dealForm(id){
     <div class="modal-bd"><div class="form-grid">
       <div class="fld full"><label>Status da Negociação</label><select id="df-status">${stOpts}</select></div>
       <div class="fld full"><label>${esc(m.labels.cardTypeLabel)}</label><select id="df-cardtype">${ctOpts}</select></div>
-      <div class="fld"><label>${esc(m.labels.cardValueLabel)} (R$)</label><input id="df-cardval" type="number" min="0" step="0.01" value="${d.cardValue!=null?d.cardValue:''}" placeholder="Ex.: 150000"></div>
-      <div class="fld"><label>Comissão (R$)</label><input id="df-commval" type="number" min="0" step="0.01" value="${d.commissionValue!=null?d.commissionValue:''}" placeholder="Ex.: 3000"></div>
+      <div class="fld"><label>${esc(m.labels.cardValueLabel)} (R$)</label><input id="df-cardval" type="text" inputmode="decimal" value="${numberToMoney(d.cardValue)}" placeholder="0,00"></div>
+      <div class="fld"><label>Comissão (R$)</label><input id="df-commval" type="text" inputmode="decimal" value="${numberToMoney(d.commissionValue)}" placeholder="0,00"></div>
       <div class="fld full"><label>Comissão (%)</label><input id="df-commpct" type="number" min="0" max="100" step="0.01" value="${d.commissionPct!=null?d.commissionPct:''}" placeholder="Ex.: 2"></div>
+      <div class="fld full" id="df-date-wrap" style="display:${(d.status===WON()||d.status===LOST())?'flex':'none'}">
+        <label>Data da venda/negociação</label>
+        <input id="df-closeddate" type="date" value="${d.closedAt?isoDate(d.closedAt):''}">
+      </div>
       <div class="fld full"><label>Observações</label><textarea id="df-notes" placeholder="Anotações sobre a negociação…">${esc(d.notes||'')}</textarea></div>
     </div>
     <label id="df-paid-wrap" style="display:${d.status===WON()?'flex':'none'};align-items:center;gap:10px;margin-top:12px;padding:11px 13px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:10px;cursor:pointer">
@@ -974,34 +995,40 @@ function dealForm(id){
       <button class="btn btn-primary" id="df-save">Salvar</button>
     </div></div></div>`);
 
+  maskMoneyInput($('df-cardval')); maskMoneyInput($('df-commval'));
   // Auto-calcular comissão R$ quando preencher o %
   const calcComm=()=>{
     const pct=parseFloat($('df-commpct').value);
-    const val=parseFloat($('df-cardval').value);
-    if(pct>0&&val>0&&!$('df-commval').value) $('df-commval').value=(val*pct/100).toFixed(2);
+    const val=moneyToNumber($('df-cardval').value);
+    if(pct>0&&val>0&&!$('df-commval').value) $('df-commval').value=numberToMoney(val*pct/100);
   };
   $('df-commpct').addEventListener('blur',calcComm);
   $('df-cardval').addEventListener('blur',calcComm);
-  // mostra o "Comissão paga" só quando o status for Vendido
-  $('df-status').addEventListener('change',e=>{ const w=$('df-paid-wrap'); if(w) w.style.display=e.target.value===WON()?'flex':'none'; });
+  // mostra "Comissão paga" e "Data da venda" só quando a negociação estiver fechada (vendida/perdida)
+  $('df-status').addEventListener('change',e=>{
+    const isClose=e.target.value===WON()||e.target.value===LOST();
+    const w=$('df-paid-wrap'); if(w) w.style.display=e.target.value===WON()?'flex':'none';
+    const dw=$('df-date-wrap'); if(dw) dw.style.display=isClose?'flex':'none';
+  });
 
   $('df-del').onclick=()=>delDeal(id);
   $('df-save').onclick=async()=>{
     const status=$('df-status').value;
     const cardType=$('df-cardtype').value||null;
-    const cardValue=$('df-cardval').value;
-    const commissionValue=$('df-commval').value;
+    const cardValue=moneyToNumber($('df-cardval').value);
+    const commissionValue=moneyToNumber($('df-commval').value);
     const commissionPct=$('df-commpct').value;
     const notes=$('df-notes').value.trim();
     const isClosing=status===WON()||status===LOST();
-    const closedAt=isClosing?(d.closedAt||new Date().toISOString()):null;
+    const closedDateVal=$('df-closeddate')?$('df-closeddate').value:'';
+    const closedAt=isClosing?(closedDateVal?new Date(closedDateVal+'T12:00:00').toISOString():(d.closedAt||new Date().toISOString())):null;
     const commissionPaid = status===WON() && $('df-paid') && $('df-paid').checked;
     const paidAt = commissionPaid ? (d.paidAt||new Date().toISOString()) : null;
     const patch=dealToRow({status,cardType,cardValue,commissionValue,commissionPct,commissionPaid,paidAt,notes,closedAt});
     $('df-save').disabled=true;
     const{error}=await sb.from('deals').update(patch).eq('id',id);
     if(error){ toast(error.message,'error'); $('df-save').disabled=false; return; }
-    Object.assign(d,{status,cardType,cardValue:cardValue?Number(cardValue):null,commissionValue:commissionValue?Number(commissionValue):null,commissionPct:commissionPct?Number(commissionPct):null,commissionPaid,paidAt,notes,closedAt});
+    Object.assign(d,{status,cardType,cardValue,commissionValue,commissionPct:commissionPct?Number(commissionPct):null,commissionPaid,paidAt,notes,closedAt});
     closeModal(); toast('Negociação atualizada!','success'); renderDeals();
   };
 }
@@ -1216,7 +1243,7 @@ function goalsForm(){
       <div style="display:${MOD().features.weeklyPay?'block':'none'}">
         <div style="font-size:.66rem;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.05em;margin:14px 0 8px">Cálculo do pagamento (prospecção)</div>
         <div class="form-grid">
-          <div class="fld"><label>Valor por dia (R$)</label><input id="gf-pay-rate" type="number" min="0" step="0.01" value="${g.payDayRate}" placeholder="25"></div>
+          <div class="fld"><label>Valor por dia (R$)</label><input id="gf-pay-rate" type="text" inputmode="decimal" value="${numberToMoney(g.payDayRate)}" placeholder="25,00"></div>
           <div class="fld"><label>Leads/dia p/ esse valor</label><input id="gf-pay-target" type="number" min="1" value="${g.payTargetPerDay}" placeholder="50"></div>
         </div>
         <div style="font-size:.68rem;color:var(--t3);margin-top:6px">Ex.: R$25/dia por 50 leads = R$0,50/lead. 120 leads num dia = R$60. O dashboard soma a semana e adiciona comissões de vendas ainda não pagas.</div>
@@ -1226,14 +1253,15 @@ function goalsForm(){
       <div class="form-grid">
         <div class="fld"><label>Meta de contatos</label><input id="gf-contacts" type="number" min="0" value="${g.contacts||''}" placeholder="Ex.: 40"></div>
         <div class="fld"><label>Meta de vendas</label><input id="gf-sales" type="number" min="0" value="${g.sales||''}" placeholder="Ex.: 5"></div>
-        <div class="fld full"><label>Meta de faturamento (R$)</label><input id="gf-revenue" type="number" min="0" step="0.01" value="${g.revenue||''}" placeholder="Ex.: 500000"></div>
-        <div class="fld full"><label>Meta de comissão (R$)</label><input id="gf-commission" type="number" min="0" step="0.01" value="${g.commission||''}" placeholder="Ex.: 10000"></div>
+        <div class="fld full"><label>Meta de faturamento (R$)</label><input id="gf-revenue" type="text" inputmode="decimal" value="${g.revenue?numberToMoney(g.revenue):''}" placeholder="500.000,00"></div>
+        <div class="fld full"><label>Meta de comissão (R$)</label><input id="gf-commission" type="text" inputmode="decimal" value="${g.commission?numberToMoney(g.commission):''}" placeholder="10.000,00"></div>
       </div>
       <div style="font-size:.72rem;color:var(--t3);margin-top:8px">Deixe em branco (ou 0) para não acompanhar aquela meta.</div>
     </div>
     <div class="modal-ft"><button class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" id="gf-save">Salvar metas</button></div></div></div>`);
+  maskMoneyInput($('gf-pay-rate')); maskMoneyInput($('gf-revenue')); maskMoneyInput($('gf-commission'));
   $('gf-save').onclick=async()=>{
-    const newGoals={ contacts:parseInt($('gf-contacts').value)||0, sales:parseInt($('gf-sales').value)||0, revenue:parseFloat($('gf-revenue').value)||0, commission:parseFloat($('gf-commission').value)||0, leadDailyMin:parseInt($('gf-leadmin').value)||0, leadDailyMax:parseInt($('gf-leadmax').value)||0, callsWeekly:parseInt($('gf-callsweek').value)||0, payDayRate:parseFloat($('gf-pay-rate').value)||0, payTargetPerDay:parseInt($('gf-pay-target').value)||50 };
+    const newGoals={ contacts:parseInt($('gf-contacts').value)||0, sales:parseInt($('gf-sales').value)||0, revenue:moneyToNumber($('gf-revenue').value)||0, commission:moneyToNumber($('gf-commission').value)||0, leadDailyMin:parseInt($('gf-leadmin').value)||0, leadDailyMax:parseInt($('gf-leadmax').value)||0, callsWeekly:parseInt($('gf-callsweek').value)||0, payDayRate:moneyToNumber($('gf-pay-rate').value)||0, payTargetPerDay:parseInt($('gf-pay-target').value)||50 };
     const settings={ ...(S.org.settings||{}), goals:newGoals };
     $('gf-save').disabled=true;
     const{error}=await sb.from('orgs').update({ settings }).eq('id',S.org.id);
