@@ -1932,7 +1932,11 @@ function renderSettings(){
         </div>
       </div></div>
     <div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(139,92,246,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#C084FC" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></div><div><div class="st-title">Conta</div><div class="st-sub">${esc(S.profile&&S.profile.email||'')}</div></div></div>
-      <div class="stg-bd"><div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">${esc(S.profile&&S.profile.name||'')}</div><div class="stg-ri-s">${S.leads.length} leads · ${S.calls.length} ligações neste espaço</div></div><button class="btn btn-outline btn-sm" id="st-logout">Sair</button></div></div></div>
+      <div class="stg-bd">
+        <div class="stg-field"><label class="stg-label">Seu nome de usuário</label><input class="stg-input" id="st-name" value="${esc(S.profile&&S.profile.name||'')}" placeholder="Como você quer aparecer" maxlength="60" style="max-width:340px"></div>
+        <div class="stg-ri-s" style="margin-bottom:10px">É assim que seu nome aparece para a equipe (recados, lista de membros, etc.).</div>
+        <div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">${S.leads.length} leads · ${S.calls.length} ligações neste espaço</div></div><div class="tbl-acts" style="opacity:1"><button class="btn btn-primary btn-sm" id="st-name-save">Salvar nome</button><button class="btn btn-outline btn-sm" id="st-logout">Sair</button></div></div>
+      </div></div>
   </div>`;
   $('st-save')&&($('st-save').onclick=async()=>{ const settings={ ...(S.org.settings||{}), agendorAuto: $('st-auto')?$('st-auto').checked:true }; const patch={ agendor_token:$('st-token').value.trim(), settings }; const{error}=await sb.from('orgs').update(patch).eq('id',S.org.id); if(error){toast(error.message,'error');return;} S.org={...S.org,...patch}; toast('Integração salva','success'); });
   $('ag-test')&&($('ag-test').onclick=testAgendor);
@@ -2011,6 +2015,15 @@ function renderSettings(){
     });
   });
   $('st-logout').onclick=igpLogout;
+  $('st-name-save')&&($('st-name-save').onclick=async()=>{
+    const name=$('st-name').value.trim();
+    if(!name){ toast('Digite um nome','error'); return; }
+    const{error}=await sb.from('profiles').update({name}).eq('id',S.session.user.id);
+    if(error){toast(error.message,'error');return;}
+    S.profile={...S.profile,name};
+    const mi=S.members.findIndex(m=>m.id===S.session.user.id); if(mi>=0) S.members[mi]={...S.members[mi],name};
+    toast('Nome atualizado','success'); renderShell();
+  });
   $('st-push-on')&&($('st-push-on').onclick=enablePush);
   $('st-push-off')&&($('st-push-off').onclick=disablePush);
   document.querySelectorAll('[data-theme-set]').forEach(b=>b.onclick=()=>setTheme(b.dataset.themeSet));
