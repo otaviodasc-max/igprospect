@@ -1906,8 +1906,8 @@ function renderSettings(){
       </div></div>
     ${owner?`<div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(99,102,241,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#A5B4FC" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></div><div><div class="st-title">Personalização</div><div class="st-sub">Funis, nichos, negociações e ligações do seu jeito · só o dono edita</div></div></div>
       <div class="stg-bd">
-        <div class="stg-ri-t">Funis de Lead</div>
-        <div class="stg-ri-s" style="margin-bottom:8px">Cada funil tem suas próprias etapas. Leads pertencem a um funil (ex.: "Instagram", "Empresários", "Indicação").</div>
+        <div class="stg-ri-t">Etapas do CRM (Funis de Lead)</div>
+        <div class="stg-ri-s" style="margin-bottom:8px">Controla as colunas da aba CRM. Cada funil tem suas próprias etapas — leads pertencem a um funil (ex.: "Instagram", "Empresários", "Indicação"). Clique em "Editar etapas" para renomear, recolorir, reordenar ou adicionar colunas do CRM.</div>
         ${S.pipelines.map(p=>`<div class="stg-row" data-pl="${p.id}"><div class="stg-ri"><div class="stg-ri-t">${esc(p.icon||'')} ${esc(p.name)}${p.is_default?' <span class="tag">padrão</span>':''}</div><div class="stg-ri-s">${STS(p).length} etapa(s)</div></div><div class="tbl-acts">${!p.is_default?`<button class="act-btn" data-pl-default="${p.id}">★ Tornar padrão</button>`:''}<button class="act-btn" data-pl-edit="${p.id}">Editar etapas</button><button class="act-btn" data-pl-rename="${p.id}">Renomear</button><button class="act-btn act-del" data-pl-del="${p.id}">Excluir</button></div></div>`).join('')||'<div class="empty-sub">Nenhum funil ainda.</div>'}
         <button class="btn btn-outline btn-sm" id="pl-add" style="align-self:flex-start;margin-top:6px">+ Novo funil</button>
         <div style="height:1px;background:rgba(255,255,255,.06);margin:10px 0"></div>
