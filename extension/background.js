@@ -105,16 +105,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'pull_org_leads') {
     const code = String(msg.code || '').trim();
     (async () => {
-      const all = []; const pageSize = 2000; let offset = 0;
+      // 500 (não 2000): a API do Supabase tem um teto padrão de linhas por
+      // resposta (1000) que corta silenciosamente qualquer p_limit maior —
+      // pedir 2000 e receber 1000 de volta parecia "acabou" e a paginação
+      // parava cedo. Pedindo um valor abaixo do teto, uma página cheia
+      // sempre vem completa de verdade, e dá pra confiar no page.length
+      // pra saber quando parar.
+      const all = []; const pageSize = 500; let offset = 0; let guard = 0;
       try {
-        while (true) {
+        while (guard++ < 200) { // trava de segurança: até 100.000 leads
           const r = await callRpc('org_leads_by_join_code', { p_code: code, p_limit: pageSize, p_offset: offset });
           const data = await r.json().catch(() => null);
           if (!r.ok) { sendResponse({ ok: false, error: (data && data.message) || `HTTP ${r.status}` }); return; }
           const page = Array.isArray(data) ? data : [];
           all.push(...page);
           if (page.length < pageSize) break;
-          offset += pageSize;
+          offset += page.length;
         }
         sendResponse({ ok: true, leads: all });
       } catch (err) { sendResponse({ ok: false, error: err.message }); }
