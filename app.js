@@ -648,6 +648,7 @@ function renderLeads(){
     <div class="search-wrap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input class="search-inp" id="ls-q" placeholder="Buscar por nome, @usuário, nicho…" value="${esc(S.lf.q)}"></div>
     <select class="flt-sel" id="ls-status">${stOpts}</select><select class="flt-sel" id="ls-tipo">${tpOpts}</select><select class="flt-sel" id="ls-niche">${niOpts}</select><select class="flt-sel" id="ls-sort">${soOpts}</select>
     <button class="btn btn-outline" id="imp-lead"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Importar</button>
+    <button class="btn btn-outline" id="exp-lead" title="${S.sel.mode&&S.sel.ids.size?'Exporta só os selecionados':'Exporta os leads filtrados abaixo'}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Exportar</button>
     <button class="btn btn-primary" id="add-lead"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Cadastrar</button>
     ${selBar()}</div>
     ${S.sel.mode?`<div class="tbl-controls" style="margin-bottom:10px">
@@ -676,6 +677,7 @@ function renderLeads(){
   $('ls-sort').onchange=e=>{ S.lf.sort=e.target.value; renderLeads(); };
   $('add-lead').onclick=()=>leadForm();
   $('imp-lead').onclick=importLeads;
+  $('exp-lead').onclick=()=>exportLeads(all);
   $('pag-btns')&&($('pag-btns').onclick=e=>{ const b=e.target.closest('[data-pg]'); if(!b||b.disabled)return; S.lf.page=parseInt(b.dataset.pg); renderLeads(); });
   $('leads-tbl').onclick=e=>{ if(S.sel.mode){ const chk=e.target.closest('.rowchk'); const tr=e.target.closest('tr[data-id]'); if(chk){selToggle(chk.dataset.sel);renderLeads();return;} if(tr){selToggle(tr.dataset.id);renderLeads();return;} return; } const agrm=e.target.closest('[data-agrm]'),ag=e.target.closest('[data-ag]'),ed=e.target.closest('[data-edit]'),dl=e.target.closest('[data-del]'); if(agrm){removeLeadFromAgendor(agrm.dataset.agrm);return;} if(ag){sendLeadToAgendor(ag.dataset.ag);return;} if(dl){delLead(dl.dataset.del);return;} if(ed){leadForm(ed.dataset.edit);return;} const tr=e.target.closest('tr[data-id]'); if(tr)leadForm(tr.dataset.id); };
   bindSelBar(all.map(l=>l.id), renderLeads, bulkDeleteLeads);
@@ -937,6 +939,27 @@ function importLeads(){
     if(unmatchedStatus) toast(`${unmatchedStatus} tinham uma situação que não bate com nenhuma etapa do funil — guardada nas notas do lead`,'warn');
   };
   inp.click();
+}
+// Exporta leads pra um arquivo .json que o botão "Importar" (desta mesma
+// equipe ou de outra) lê de volta sem perder nada — cada campo aqui é o
+// mesmo que importLeads() espera. Se houver seleção ativa, exporta só os
+// selecionados; senão, exporta a lista já filtrada na tela (respeitando
+// busca/status/nicho aplicados).
+function exportLeads(list){
+  const source = (S.sel.mode && S.sel.ids.size) ? list.filter(l=>S.sel.ids.has(l.id)) : list;
+  if(!source.length){ toast('Nenhum lead para exportar','warn'); return; }
+  const leads = source.map(l=>({
+    name:l.name||'', username:l.username||'', phone:l.phone||'', email:l.email||'',
+    niche:l.niche||'', notes:l.notes||'', status:stLabel(l), tipo:l.tipo||'comum',
+    cidade:l.cidade||'', estado:l.estado||'', cnpj:l.cnpj||'',
+    followers:l.followers||'', following:l.following||'', addedAt:l.addedAt||'',
+  }));
+  const blob=new Blob([JSON.stringify({ leads },null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download=`igprospect-leads-${isoDate(new Date())}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  toast(`${leads.length} lead(s) exportado(s) — use "Importar" na outra equipe com esse arquivo`,'success');
 }
 
 /* =====================================================================
