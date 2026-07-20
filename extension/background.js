@@ -92,7 +92,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .then(async r => {
         const data = await r.json().catch(() => null);
         const pipeline = Array.isArray(data) && data[0] ? data[0] : null;
-        sendResponse({ ok: r.ok && !!pipeline, pipeline, error: r.ok ? null : ((data && data.message) || `HTTP ${r.status}`) });
+        // r.ok=true com pipeline=null é uma equipe sem nenhum funil salvo em
+        // org_pipelines ainda (não é erro de rede/RPC) — mensagem própria
+        // pra não aparecer só "null" no console.
+        const error = !r.ok ? ((data && data.message) || `HTTP ${r.status}`) : (!pipeline ? 'Equipe sem funil configurado em org_pipelines' : null);
+        sendResponse({ ok: r.ok && !!pipeline, pipeline, error });
       })
       .catch(err => sendResponse({ ok: false, error: err.message }));
     return true;
