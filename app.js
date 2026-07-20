@@ -217,11 +217,14 @@ async function bulkSetLeadsStage(idx){
     for(let i=0;i<missingIds.length;i+=200){ await sb.from('leads').update({agendor_person_id:'manual'}).in('id',missingIds.slice(i,i+200)); }
     missingIds.forEach(id=>{ const l=S.leads.find(x=>x.id===id); if(l) l.agendorPersonId='manual'; });
   }
-  const dealTargets=leads.filter(l=>isLastStage(l.status,leadPipeline(l))||l.tipo==='empresario');
+  // Um lead pode ganhar vários negócios ao longo do tempo (ver "+ Novo negócio"
+  // na ficha do lead) — aqui só garante o PRIMEIRO automático, por isso o
+  // filtro !S.deals.some(...) em vez de upsert com onConflict(lead_id).
+  const dealTargets=leads.filter(l=>(isLastStage(l.status,leadPipeline(l))||l.tipo==='empresario') && !S.deals.some(d=>d.leadId===l.id));
   if(dealTargets.length){
     const prospector=(S.profile&&(S.profile.name||S.profile.email))||null;
     const rows=dealTargets.map(l=>({ lead_id:l.id, prospector_name:prospector }));
-    for(let i=0;i<rows.length;i+=200){ const{error}=await sb.from('deals').upsert(rows.slice(i,i+200),{onConflict:'lead_id',ignoreDuplicates:true}); if(error){ console.warn('bulkSetLeadsStage deals:',error.message); } }
+    for(let i=0;i<rows.length;i+=200){ const{error}=await sb.from('deals').insert(rows.slice(i,i+200)); if(error){ console.warn('bulkSetLeadsStage deals:',error.message); } }
     await loadDeals();
   }
   if(isContatoAction){
@@ -691,6 +694,16 @@ function leadForm(id){
     if(f.type==='select') return `<div class="fld"><label>${esc(f.label)}</label><select id="f-x-${f.key}">${['',...f.options].map(o=>`<option value="${esc(o)}" ${val===o?'selected':''}>${o||'Selecione'}</option>`).join('')}</select></div>`;
     return `<div class="fld"><label>${esc(f.label)}</label><input id="f-x-${f.key}" value="${esc(val)}"></div>`;
   }).join('');
+  // Negócios do lead — uma pessoa pode fechar vários ao longo do tempo (ex.:
+  // carta de imóvel hoje, de veículo meses depois), então lista todos aqui
+  // em vez de travar em 1 negócio por lead.
+  const leadDeals = id&&featOn('deals') ? S.deals.filter(d=>d.leadId===id).sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0)) : null;
+  const dealsSection = leadDeals ? `<div style="height:1px;background:var(--border);margin:16px 0"></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <div style="font-size:.66rem;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.05em">Negócios (${leadDeals.length})</div>
+      <button class="btn btn-outline btn-sm" id="lf-add-deal">+ Novo negócio</button>
+    </div>
+    ${leadDeals.length?leadDeals.map(d=>`<div class="stg-row" data-dealrow="${esc(d.id)}" style="cursor:pointer;padding:9px 0;border-bottom:1px solid var(--border)"><div class="stg-ri"><div class="stg-ri-t">${esc(d.cardType||'Negócio sem tipo')}${d.cardValue?` · ${fmtCurrency(d.cardValue)}`:''}</div><div class="stg-ri-s">${esc((DEAL_SM()[d.status]||{}).label||d.status)} · criado em ${fmtDate(d.createdAt)}</div></div><span class="text-link" style="font-size:.72rem">Ver →</span></div>`).join(''):'<div class="empty-sub">Nenhum negócio cadastrado ainda.</div>'}`:'';
   openModal(`<div class="modal-ov"><div class="modal-box"><div class="modal-hd"><div><div class="modal-title">${id?'Editar Lead':'Cadastrar Lead'}</div><div class="modal-sub">${id?(l&&l.agendorPersonId&&agendorOn()?'Atualize os dados · <span style="color:#6EE7B7;font-size:.75rem">☁ Já no Agendor</span>':'Atualize os dados'):'Adicione manualmente'}</div></div><div class="x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div></div>
     <div class="modal-bd"><div class="form-grid">
       <div class="fld full"><label>Nome</label><input id="f-name" value="${esc(l&&l.name||'')}" placeholder="Nome do contato"></div>
@@ -701,9 +714,11 @@ function leadForm(id){
       <div class="fld"><label>Status</label><select id="f-status">${stOptsFor(curPl)}</select></div>
       ${extraHtml}
       <div class="fld full"><label>Observações</label><textarea id="f-notes" placeholder="Notas…">${esc(l&&l.notes||'')}</textarea></div>
-    </div>${agendorOn()&&!(l&&l.agendorPersonId)?`<label style="display:flex;align-items:center;gap:9px;margin-top:10px;padding:10px 12px;background:rgba(110,231,183,.07);border:1px solid rgba(110,231,183,.2);border-radius:9px;cursor:pointer"><input type="checkbox" id="f-ag-exists" style="width:16px;height:16px;accent-color:#6EE7B7;cursor:pointer"><span style="font-size:.78rem;color:var(--t2)">☁ Lead já está no Agendor (não enviar novamente)</span></label>`:''}</div>
+    </div>${agendorOn()&&!(l&&l.agendorPersonId)?`<label style="display:flex;align-items:center;gap:9px;margin-top:10px;padding:10px 12px;background:rgba(110,231,183,.07);border:1px solid rgba(110,231,183,.2);border-radius:9px;cursor:pointer"><input type="checkbox" id="f-ag-exists" style="width:16px;height:16px;accent-color:#6EE7B7;cursor:pointer"><span style="font-size:.78rem;color:var(--t2)">☁ Lead já está no Agendor (não enviar novamente)</span></label>`:''}${dealsSection}</div>
     <div class="modal-ft"><button class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" id="f-save">${id?'Salvar':'Cadastrar'}</button></div></div></div>`);
   $('f-pipeline')&&($('f-pipeline').onchange=e=>{ const p=pipelineById(e.target.value); $('f-status').innerHTML=stOptsFor(p); });
+  $('lf-add-deal')&&($('lf-add-deal').onclick=()=>addDealForLead(id));
+  document.querySelectorAll('[data-dealrow]').forEach(row=>row.onclick=()=>dealForm(row.dataset.dealrow));
   $('f-save').onclick=async()=>{
     const customFields=Object.fromEntries(extraFields.map(f=>[f.key, ($('f-x-'+f.key)&&$('f-x-'+f.key).value)||'']));
     const pipeline=pipelineById($('f-pipeline')?$('f-pipeline').value:(curPl&&curPl.id));
@@ -967,15 +982,30 @@ function renderCRM(){
   bindSelBar(leads.map(l=>l.id), renderCRM, bulkDeleteLeads);
 }
 
-// Garante que exista uma negociação para um lead que virou "contato".
+// Garante que exista PELO MENOS UMA negociação para um lead que virou "contato".
 // O trigger do banco já cria automaticamente; isto é um fallback caso a
-// migração SQL (supabase-deals.sql) ainda não tenha sido executada.
+// migração SQL (supabase-deals.sql) ainda não tenha sido executada. Um lead
+// pode ter vários negócios (ver "+ Novo negócio" na ficha do lead) — por
+// isso o guard é feito aqui no app (S.deals.some), não mais por constraint
+// única no banco (ver supabase-deals-multi.sql).
 async function ensureDealForLead(leadId){
   if(S.deals.some(d=>d.leadId===leadId)) return;
   const prospector=(S.profile&&(S.profile.name||S.profile.email))||null;
-  const { error }=await sb.from('deals').upsert({ lead_id:leadId, prospector_name:prospector }, { onConflict:'lead_id', ignoreDuplicates:true });
+  const { error }=await sb.from('deals').insert({ lead_id:leadId, prospector_name:prospector });
   if(error){ console.warn('ensureDealForLead:',error.message); return; }
   await loadDeals();
+}
+// Cria um negócio ADICIONAL pra um lead que já tem negociação(ões) — ex.: a
+// pessoa fechou uma carta de imóvel e, meses depois, uma de veículo. Abre
+// direto no formulário de edição pra já preencher tipo/valor.
+async function addDealForLead(leadId){
+  const l=S.leads.find(x=>x.id===leadId); if(!l) return;
+  const prospector=(S.profile&&(S.profile.name||S.profile.email))||null;
+  const { data, error }=await sb.from('deals').insert({ lead_id:leadId, prospector_name:prospector }).select('*, leads(name,username,phone,niche)').single();
+  if(error){ toast(error.message,'error'); return; }
+  S.deals.unshift(dealFromRow(data));
+  toast('Negócio criado — preencha os detalhes','success');
+  dealForm(data.id);
 }
 
 /* =====================================================================
@@ -2420,7 +2450,7 @@ async function backfillEmpresarioDeals(){
   if(!missing.length) return;
   const prospector=(S.profile&&(S.profile.name||S.profile.email))||null;
   const rows=missing.map(l=>({ lead_id:l.id, prospector_name:prospector }));
-  for(let i=0;i<rows.length;i+=200){ const { error }=await sb.from('deals').upsert(rows.slice(i,i+200),{ onConflict:'lead_id', ignoreDuplicates:true }); if(error){ console.warn('backfillEmpresarioDeals:',error.message); return; } }
+  for(let i=0;i<rows.length;i+=200){ const { error }=await sb.from('deals').insert(rows.slice(i,i+200)); if(error){ console.warn('backfillEmpresarioDeals:',error.message); return; } }
   await loadDeals();
 }
 async function igpLogout(){ if(sb)await sb.auth.signOut(); location.reload(); }
