@@ -1976,7 +1976,7 @@ function renderSettings(){
       <div class="stg-bd">
         <div class="stg-ri-t">Etapas do CRM (Funis de Lead)</div>
         <div class="stg-ri-s" style="margin-bottom:8px">Controla as colunas da aba CRM. Cada funil tem suas próprias etapas — leads pertencem a um funil (ex.: "Instagram", "Empresários", "Indicação"). Clique em "Editar etapas" para renomear, recolorir, reordenar ou adicionar colunas do CRM.</div>
-        ${S.pipelines.map(p=>`<div class="stg-row" data-pl="${p.id}"><div class="stg-ri"><div class="stg-ri-t">${esc(p.icon||'')} ${esc(p.name)}${p.is_default?' <span class="tag">padrão</span>':''} <span class="tag" title="Sigla usada no rail do CRM/Negociações">${esc(pipelineSigla(p))}</span></div><div class="stg-ri-s">${STS(p).length} etapa(s)</div></div><div class="tbl-acts">${!p.is_default?`<button class="act-btn" data-pl-default="${p.id}">★ Tornar padrão</button>`:''}<button class="act-btn" data-pl-edit="${p.id}">Editar etapas</button><button class="act-btn" data-pl-rename="${p.id}">Renomear</button><button class="act-btn" data-pl-sigla="${p.id}">Sigla</button><button class="act-btn act-del" data-pl-del="${p.id}">Excluir</button></div></div>`).join('')||'<div class="empty-sub">Nenhum funil ainda.</div>'}
+        ${S.pipelines.map(p=>`<div class="stg-row" data-pl="${p.id}"><div class="stg-ri"><div class="stg-ri-t">${esc(p.icon||'')} ${esc(p.name)}${p.is_default?' <span class="tag">padrão</span>':''} <span class="tag" title="Sigla usada no rail do CRM/Negociações">${esc(pipelineSigla(p))}</span></div><div class="stg-ri-s">${STS(p).length} etapa(s)</div></div><div class="tbl-acts">${!p.is_default?`<button class="act-btn" data-pl-default="${p.id}">★ Tornar padrão</button>`:''}<button class="act-btn" data-pl-edit="${p.id}">Editar etapas</button><button class="act-btn" data-pl-rename="${p.id}">Renomear</button><button class="act-btn" data-pl-sigla="${p.id}">Sigla</button><button class="act-btn" data-pl-icon="${p.id}">Ícone</button><button class="act-btn act-del" data-pl-del="${p.id}">Excluir</button></div></div>`).join('')||'<div class="empty-sub">Nenhum funil ainda.</div>'}
         <button class="btn btn-outline btn-sm" id="pl-add" style="align-self:flex-start;margin-top:6px">+ Novo funil</button>
         <div style="height:1px;background:rgba(255,255,255,.06);margin:10px 0"></div>
         <div class="stg-ri-t">Nichos</div>
@@ -2048,6 +2048,13 @@ function renderSettings(){
     if(!raw||raw===(p.sigla||'')) return;
     const{error}=await sb.from('org_pipelines').update({sigla:raw}).eq('id',p.id);
     if(error){toast(error.message,'error');return;} await loadPipelines(); toast('Sigla atualizada','success'); renderSettings();
+  });
+  document.querySelectorAll('[data-pl-icon]').forEach(b=>b.onclick=async()=>{
+    const p=S.pipelines.find(x=>x.id===b.dataset.plIcon); if(!p)return;
+    const raw=(prompt('Ícone do funil (cole um emoji, ex.: 📸 🏢 📋):',p.icon||'')||'').trim().slice(0,4);
+    if(!raw||raw===(p.icon||'')) return;
+    const{error}=await sb.from('org_pipelines').update({icon:raw}).eq('id',p.id);
+    if(error){toast(error.message,'error');return;} await loadPipelines(); toast('Ícone atualizado','success'); renderSettings();
   });
   document.querySelectorAll('[data-pl-default]').forEach(b=>b.onclick=async()=>{
     const id=b.dataset.plDefault;
