@@ -541,7 +541,7 @@
       wasNew=true;
       lead={ id:Date.now().toString(), name:d.name||d.username||'Lead', username:d.username||'',
         profileUrl:d.username?`https://instagram.com/${d.username}`:'', niche:'', notes:'', mutualFriends:'',
-        status:firstStatusKey(), addedAt:new Date().toISOString(), orgId:S.org&&S.org.id };
+        status:firstStatusKey(), addedAt:new Date().toISOString(), orgId:S.org&&S.org.id, synced:false };
       S.leads.unshift(lead);
     }
     if(!lead){ toast('Abra o perfil do lead primeiro','info'); return; }
@@ -1076,7 +1076,7 @@
     const lead={
       id:Date.now().toString(), ...S.form,
       profileUrl: p&&p.username===S.form.username ? p.url : '',
-      status:firstStatusKey(), addedAt:new Date().toISOString(), orgId:S.org&&S.org.id
+      status:firstStatusKey(), addedAt:new Date().toISOString(), orgId:S.org&&S.org.id, synced:false
     };
     S.leads.unshift(lead);
     S.form={name:'',username:'',niche:'',notes:'',mutualFriends:''};
@@ -1100,7 +1100,7 @@
       name:realName, username:p.username,
       profileUrl:p.url,
       niche:'', notes:'', mutualFriends:'',
-      status:firstStatusKey(), addedAt:new Date().toISOString(), orgId:S.org&&S.org.id
+      status:firstStatusKey(), addedAt:new Date().toISOString(), orgId:S.org&&S.org.id, synced:false
     };
     S.leads.unshift(lead);
     db.save({igp_l:S.leads});
@@ -1139,6 +1139,7 @@
   function doDeleteLead(lid){
     S.leads=S.leads.filter(l=>l.id!==lid);
     db.save({igp_l:S.leads});
+    syncLeadDeleteDirect(lid);
     renderBody();
   }
 
@@ -1214,11 +1215,16 @@
         return { ...loc,
           id:l.ext_id, name:l.name||l.username||'Lead', username:l.username||'',
           phone:l.phone||'', niche:l.niche||'', status:l.status||firstStatusKey(),
-          addedAt:l.added_at||loc.addedAt||new Date().toISOString(),
+          addedAt:l.added_at||loc.addedAt||new Date().toISOString(), synced:true,
         };
       });
       const serverIds=new Set(server.map(l=>l.ext_id));
-      const localOnly=S.leads.filter(l=>!serverIds.has(String(l.id))); // capturas locais ainda não sincronizadas
+      // Some do servidor mas synced!==false (já tinha sido confirmado antes,
+      // ou é um lead antigo de antes desse controle existir) = foi apagado
+      // no sistema — some daqui também. Só mantém o que ainda está pendente
+      // de sincronizar pela primeira vez (synced===false), pra não perder
+      // captura recente antes dela sequer ter tido a chance de ir pro banco.
+      const localOnly=S.leads.filter(l=>!serverIds.has(String(l.id)) && l.synced===false);
       S.leads=[...merged, ...localOnly];
       db.save({igp_l:S.leads});
       if(showToast) toast(`${server.length} lead(s) trazido(s) do sistema`,'ok');
@@ -1243,13 +1249,25 @@
   function syncLeadAddDirect(lead){
     if(!S.org||!S.org.code) return;
     chrome.runtime.sendMessage({ type:'add_lead_direct', code:S.org.code, lead, userId:S.org.userId||null }, res=>{
-      if(!res||!res.ok) console.warn('IGProspect: falha ao sincronizar lead direto', res&&res.error);
+      if(!res||!res.ok){ console.warn('IGProspect: falha ao sincronizar lead direto', res&&res.error); return; }
+      // Confirmado no banco — marca como sincronizado, senão o próximo pull
+      // (que usa "sincronizado mas sumiu do servidor" = apagado) apagaria
+      // esse lead local achando que ele nunca chegou a existir lá.
+      const l=S.leads.find(x=>x.id===lead.id); if(l){ l.synced=true; db.save({igp_l:S.leads}); }
     });
   }
   function syncLeadUpdateDirect(extId, patch){
     if(!S.org||!S.org.code||!extId) return;
     chrome.runtime.sendMessage({ type:'update_lead_direct', code:S.org.code, extId, status:patch.status, phone:patch.phone, name:patch.name }, res=>{
       if(!res||!res.ok) console.warn('IGProspect: falha ao atualizar lead direto', res&&res.error);
+    });
+  }
+  // Apagar aqui apaga no sistema também (mão dupla — a outra direção, apagar
+  // no sistema e a extensão perceber, é resolvida no pullLeads).
+  function syncLeadDeleteDirect(extId){
+    if(!S.org||!S.org.code||!extId) return;
+    chrome.runtime.sendMessage({ type:'delete_lead_direct', code:S.org.code, extId }, res=>{
+      if(!res||!res.ok) console.warn('IGProspect: falha ao apagar lead no sistema', res&&res.error);
     });
   }
 

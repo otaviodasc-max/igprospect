@@ -84,6 +84,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  // Apagar na extensão apaga no sistema também (mão dupla — ver pullLeads em
+  // content.js pro caminho contrário: apagar no sistema soma no próximo pull).
+  if (msg.type === 'delete_lead_direct') {
+    const { code, extId } = msg;
+    callRpc('extension_delete_lead', { p_code: code, p_ext_id: String(extId || '') })
+      .then(async r => { sendResponse({ ok: r.ok, error: r.ok ? null : await r.text().catch(()=>'') }); })
+      .catch(err => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
   // Etapas DE VERDADE do funil da equipe (Configurações → Personalização),
   // pra extensão parar de usar Novo Lead/Chamado/Respondeu/Enviou Contato fixos.
   if (msg.type === 'pull_org_pipeline') {
