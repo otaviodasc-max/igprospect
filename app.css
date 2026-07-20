@@ -337,6 +337,8 @@ canvas{display:block}
 .org-card.active .org-card-badge{background:rgba(99,102,241,.22);color:var(--sb-atx)}
 .org-card-hide{position:absolute;bottom:10px;right:10px;width:24px;height:24px;border-radius:50%;background:var(--surf3);border:1px solid var(--border);color:#EF4444;display:flex;align-items:center;justify-content:center;cursor:pointer;opacity:0;transition:opacity var(--tr)}
 .org-card:hover .org-card-hide{opacity:1}
+.org-select-card{max-width:760px!important}
+@media(max-width:820px){.org-select-card{max-width:94vw!important;padding:26px 20px}}
 .x{cursor:pointer;color:var(--t3);padding:4px}.x:hover{color:var(--t1)}
 .toast-ctr{position:fixed;bottom:20px;right:20px;display:flex;flex-direction:column;gap:7px;z-index:9999}
 .toast{background:var(--surf3);color:var(--t1);border:1px solid var(--border2);padding:10px 16px;border-radius:var(--r10);font-size:.76rem;font-weight:500;box-shadow:var(--shx);max-width:320px}
