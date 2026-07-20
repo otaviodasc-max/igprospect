@@ -59,11 +59,6 @@
     /* Filters */
     .fbtn{background:transparent;border:1px solid #222;border-radius:20px;padding:4px 9px;color:#444;cursor:pointer;font-size:11px;white-space:nowrap}
     .fbtn.factive{font-weight:500}
-    /* Audio */
-    .play-btn{width:38px;height:38px;border-radius:50%;background:rgba(192,132,252,0.1);border:1px solid #c084fc;color:#c084fc;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-    .play-btn.playing{background:rgba(244,114,182,0.15);border-color:#f472b6;color:#f472b6}
-    .upload-zone{background:#141414;border:2px dashed #252525;border-radius:12px;padding:30px 16px;text-align:center;cursor:pointer;margin-bottom:14px}
-    .upload-zone:hover{border-color:#444}
     /* Toast */
     #igp-toast{position:fixed;bottom:84px;right:22px;padding:10px 16px;border-radius:10px;font-size:13px;font-weight:500;pointer-events:none;opacity:0;transition:opacity .3s;z-index:2;max-width:280px;line-height:1.4}
     #igp-toast.show{opacity:1}
@@ -100,7 +95,7 @@
   // STATE
   // ═══════════════════════════════════════════════
   let S = {
-    leads: [], audios: [], goal: 20,
+    leads: [], goal: 20,
     tab: 'dash', filter: 'all', search: '', noteSearch: '',
     showAdd: false,
     form: { name: '', username: '', niche: '', notes: '', mutualFriends: '' },
@@ -108,7 +103,6 @@
     goalInput: 20,
     open: false,
     openStatusId: null,
-    playingId: null,
     detectedProfile: null,
     directDetect: null,        // { phone, leadId, name, username }
     directDismissed: '',       // key do número que o usuário ignorou
@@ -120,15 +114,15 @@
     dateDay: new Date().toISOString().slice(0,10),    // YYYY-MM-DD
     dateMonth: new Date().getMonth(),                 // 0-11
     dateYear: new Date().getFullYear(),
-    org: null,   // {id,name} da equipe ativa no painel — ver igp_org em bridge.js
+    org: null,       // {id,name,locked} — equipe vinculada por código (ver doLinkOrg)
+    orgCodeInput: '',
   };
-  let audioEls = {};
 
   // ═══════════════════════════════════════════════
   // STORAGE
   // ═══════════════════════════════════════════════
   const db = {
-    load: () => new Promise(r => chrome.storage.local.get(['igp_l','igp_a','igp_g','igp_tok','igp_org'], r)),
+    load: () => new Promise(r => chrome.storage.local.get(['igp_l','igp_g','igp_tok','igp_org'], r)),
     save: d  => new Promise(r => chrome.storage.local.set(d, r)),
   };
 
@@ -495,6 +489,7 @@
     const d=S.directDetect; if(!d) return;
     let lead=d.leadId?S.leads.find(l=>l.id===d.leadId):null;
     if(!lead && createNew){
+      if(!requireOrg()) return;
       lead={ id:Date.now().toString(), name:d.name||d.username||'Lead', username:d.username||'',
         profileUrl:d.username?`https://instagram.com/${d.username}`:'', niche:'', notes:'', mutualFriends:'',
         status:'novo', addedAt:new Date().toISOString(), orgId:S.org&&S.org.id };
@@ -577,7 +572,6 @@
       {k:'dash',    label:'📊 Dashboard'},
       {k:'leads',   label:'👥 Leads'},
       {k:'contacts',label:'📱 Contatos'+(cv>0?` <em>${cv}</em>`:'')},
-      {k:'audios',  label:'🎙 Áudios'},
       {k:'settings',label:'⚙️ Config'},
     ];
 
@@ -600,7 +594,7 @@
           ${tabs.map(t=>`<button class="nav-btn${S.tab===t.k?' active':''}" data-tab="${t.k}">${t.label}</button>`).join('')}
         </div>
         <div id="igp-body">
-          ${S.tab==='dash'?renderDash(m):S.tab==='leads'?renderLeads():S.tab==='contacts'?renderContacts(m):S.tab==='audios'?renderAudios():renderSettings(m)}
+          ${S.tab==='dash'?renderDash(m):S.tab==='leads'?renderLeads():S.tab==='contacts'?renderContacts(m):renderSettings(m)}
         </div>
       </div>
     `;
@@ -648,10 +642,8 @@
     if(gi) gi.addEventListener('input',e=>{S.goalInput=Number(e.target.value);});
     const ti=shadow.getElementById('igp-ti');
     if(ti) ti.addEventListener('input',e=>{S.agendorTokenInput=e.target.value;});
-    const af=shadow.getElementById('igp-af');
-    if(af) af.addEventListener('change',handleAudioFile);
-    const imp=shadow.getElementById('igp-import-file');
-    if(imp) imp.addEventListener('change',handleImportFile);
+    const oc=shadow.getElementById('igp-orgcode');
+    if(oc) oc.addEventListener('input',e=>{S.orgCodeInput=e.target.value;});
 
     // Date filter pickers
     const dayPick=shadow.getElementById('igp-day-pick');
@@ -666,7 +658,7 @@
     const body=shadow.getElementById('igp-body');
     if(!body)return;
     const m=metrics();
-    body.innerHTML=S.tab==='dash'?renderDash(m):S.tab==='leads'?renderLeads():S.tab==='contacts'?renderContacts(m):S.tab==='audios'?renderAudios():renderSettings(m);
+    body.innerHTML=S.tab==='dash'?renderDash(m):S.tab==='leads'?renderLeads():S.tab==='contacts'?renderContacts(m):renderSettings(m);
     postRender(focus===undefined?'search':focus);
     updateProfileBar();
     updateDirectBar();
@@ -899,34 +891,6 @@
   }
 
   // ═══════════════════════════════════════════════
-  // TAB: AUDIOS
-  // ═══════════════════════════════════════════════
-  function renderAudios(){
-    return `
-      <div style="font-weight:700;font-size:15px;color:#fff;margin-bottom:4px">Áudios de Resposta</div>
-      <div style="font-size:12px;color:#444;margin-bottom:14px">Upload dos áudios para enviar quando o lead responder.</div>
-      <div class="upload-zone" data-a="pick-audio">
-        <div style="font-size:32px;margin-bottom:8px">🎙</div>
-        <div style="font-size:13px;color:#555;margin-bottom:4px">Clique para fazer upload</div>
-        <div style="font-size:11px;color:#333">MP3, M4A, OGG, WAV · máx. 3MB</div>
-      </div>
-      <input type="file" id="igp-af" accept="audio/*" style="display:none"/>
-      ${S.audios.length===0?`<div style="text-align:center;padding:20px 0;font-size:12px;color:#444">Nenhum áudio ainda.</div>`
-      :S.audios.map(a=>`
-        <div style="background:#1a1a1a;border:1px solid #222;border-radius:10px;padding:12px 14px;margin-bottom:7px;display:flex;align-items:center;gap:10px">
-          <button class="${S.playingId===a.id?'play-btn playing':'play-btn'}" data-a="play" data-aid="${a.id}">${S.playingId===a.id?'⏸':'▶'}</button>
-          <div style="flex:1;min-width:0">
-            <div style="font-size:13px;font-weight:500;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.name)}</div>
-            <div style="font-size:10px;color:#444;margin-top:2px">${a.size} · ${new Date(a.addedAt).toLocaleDateString('pt-BR')}</div>
-          </div>
-          <button data-a="del-audio" data-aid="${a.id}" style="background:transparent;border:none;color:#333;cursor:pointer;font-size:16px">✕</button>
-        </div>
-      `).join('')}
-      ${S.audios.length>0?`<div style="background:#141414;border:1px solid #252525;border-radius:10px;padding:12px 14px;margin-top:8px"><div style="font-size:12px;font-weight:600;color:#fbbf24;margin-bottom:5px">⚡ Como usar</div><div style="font-size:12px;color:#555;line-height:1.5">Quando um lead mudar para <span style="color:#34d399">Respondeu</span>, ouça aqui e envie pelo Direct do Instagram.</div></div>`:''}
-    `;
-  }
-
-  // ═══════════════════════════════════════════════
   // TAB: SETTINGS
   // ═══════════════════════════════════════════════
   function renderSettings(m){
@@ -934,6 +898,15 @@
     const needFixNames=S.leads.filter(l=>{ const u=(l.username||'').toLowerCase(); const n=(l.name||'').trim().toLowerCase(); return u && (!l.name || n===u || n==='@'+u); }).length;
     return `
       <div style="font-weight:700;font-size:15px;color:#fff;margin-bottom:18px">Configurações</div>
+
+      <div class="card" style="margin-bottom:10px;border-color:${S.org?'rgba(74,222,128,0.25)':'rgba(248,113,113,0.35)'}">
+        <div style="font-weight:600;font-size:13px;color:${S.org?'#4ade80':'#f87171'};margin-bottom:4px">${S.org?'✓ Equipe conectada: '+esc(S.org.name):'⚠ Nenhuma equipe conectada'}</div>
+        <div style="font-size:12px;color:#555;margin-bottom:10px;line-height:1.5">${S.org?'Todo lead capturado aqui vai pra essa equipe, sempre — mesmo com o painel fechado ou aberto em outra equipe.':'Cole o código da equipe pra essa extensão saber pra onde mandar os leads. Sem isso, nada é capturado. O código fica em Configurações → Equipe, dentro do sistema.'}</div>
+        <div style="display:flex;gap:7px">
+          <input id="igp-orgcode" class="inp" placeholder="Código da equipe (ex.: A1B2C3)" style="flex:1;font-size:12px;text-transform:uppercase" maxlength="12" value="${esc(S.orgCodeInput||'')}"/>
+          <button class="btn-grad" data-a="link-org" style="padding:8px 14px;font-size:12px">${S.org?'Trocar':'Conectar'}</button>
+        </div>
+      </div>
 
       <div class="card" style="margin-bottom:10px">
         <div style="font-weight:600;font-size:13px;color:#fff;margin-bottom:12px">Meta diária de chamadas</div>
@@ -946,7 +919,7 @@
 
       <div class="card" style="margin-bottom:10px;border-color:rgba(74,222,128,0.2)">
         <div style="font-weight:600;font-size:13px;color:#4ade80;margin-bottom:4px">☁ Integração Agendor CRM</div>
-        <div style="font-size:12px;color:#555;margin-bottom:10px;line-height:1.5">Quando um lead enviar o contato, ele é criado automaticamente no seu Agendor.</div>
+        <div style="font-size:12px;color:#555;margin-bottom:10px;line-height:1.5">${S.org?'Puxado automaticamente da equipe ao conectar. Só precisa colar aqui se quiser usar um token diferente do configurado no sistema.':'Conecte a uma equipe acima pra puxar o token automaticamente, ou cole o seu abaixo.'}</div>
         <label style="font-size:11px;color:#555;display:block;margin-bottom:4px">Token de API</label>
         <div style="display:flex;gap:7px;margin-bottom:8px">
           <input id="igp-ti" class="inp" placeholder="Cole o token aqui..." value="${S.agendorToken?tokMasked:esc(S.agendorTokenInput)}" style="flex:1;font-size:12px;${S.agendorToken?'color:#4ade80;border-color:rgba(74,222,128,0.3)':''}" ${S.agendorToken?'data-masked="1"':''}/>
@@ -960,21 +933,10 @@
         <div style="font-weight:600;font-size:13px;color:#fff;margin-bottom:8px">Conversão = contato recebido</div>
         <div style="font-size:12px;color:#555;line-height:1.6;margin-bottom:12px">Somente leads com status <span style="color:#f472b6">Enviou Contato 📱</span> entram na taxa de conversão.</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px">
-          ${[['Total de leads',S.leads.length,''],['Chamados',m.totalCalled,''],['Responderam',m.responded,''],['Enviaram contato 📱',m.converted,'#f472b6'],['Taxa de conversão',m.convRate+'%','#f472b6'],['Áudios salvos',S.audios.length,'']].map(([l,v,c])=>`
+          ${[['Total de leads',S.leads.length,''],['Chamados',m.totalCalled,''],['Responderam',m.responded,''],['Enviaram contato 📱',m.converted,'#f472b6'],['Taxa de conversão',m.convRate+'%','#f472b6']].map(([l,v,c])=>`
             <div style="background:#141414;border-radius:8px;padding:10px 12px"><div style="font-size:10px;color:#444;margin-bottom:3px">${l}</div><div style="font-size:18px;font-weight:700;color:${c||'#fff'}">${v}</div></div>
           `).join('')}
         </div>
-      </div>
-
-      <div class="card" style="margin-bottom:10px;border-color:rgba(251,191,36,0.2)">
-        <div style="font-weight:600;font-size:13px;color:#fbbf24;margin-bottom:4px">💾 Backup de Leads</div>
-        <div style="font-size:12px;color:#555;margin-bottom:12px;line-height:1.5">Exporte seus leads em um arquivo para não perder nada. Importe quando precisar restaurar.</div>
-        <div style="display:flex;gap:7px;flex-wrap:wrap">
-          <button class="btn-grad" data-a="export-leads" style="padding:8px 14px;font-size:12px">⬇ Exportar leads</button>
-          <button class="btn-ghost" data-a="import-leads" style="padding:8px 14px;font-size:12px">⬆ Importar leads</button>
-        </div>
-        <input type="file" id="igp-import-file" accept=".json" style="display:none"/>
-        <div style="font-size:10px;color:#444;margin-top:8px">${S.leads.length} lead(s) salvos atualmente</div>
       </div>
 
       <div class="card" style="margin-bottom:10px;border-color:rgba(129,140,248,0.2)">
@@ -1027,15 +989,11 @@
       case 'copy-phone':
         navigator.clipboard?.writeText(el.dataset.phone).then(()=>{el.textContent='✓';setTimeout(()=>{el.textContent='Copiar';},2000);});
         break;
-      case 'play':         doPlay(aid); break;
-      case 'del-audio':    doDeleteAudio(aid); break;
-      case 'pick-audio':   shadow.getElementById('igp-af')?.click(); break;
+      case 'link-org':      doLinkOrg(); break;
       case 'save-goal':    doSaveGoal(); break;
       case 'save-token':   doSaveToken(); break;
       case 'clear-token':  S.agendorToken=''; S.agendorTokenInput=''; db.save({igp_tok:''}); renderBody(); break;
       case 'fix-open-name': { const p=S.detectedProfile; if(p){ const nm=findRealName(p.username); maybeFixLeadName(p.username,nm,p.url); if(nm.toLowerCase()===p.username.toLowerCase()) toast('Não achei o nome real nesta página','info'); renderBody(); } break; }
-      case 'export-leads': doExportLeads(); break;
-      case 'import-leads': shadow.getElementById('igp-import-file')?.click(); break;
       case 'clear-leads':
         if(confirm('Apagar todos os leads? Não pode ser desfeito.')){ S.leads=[]; db.save({igp_l:S.leads}); renderBody(); }
         break;
@@ -1065,8 +1023,17 @@
   // ═══════════════════════════════════════════════
   // ACTIONS
   // ═══════════════════════════════════════════════
+  // Sem equipe conectada, não captura nada — evita o lead ir pra equipe errada
+  // (ou pra nenhuma). Manda o usuário direto pra tela de conectar.
+  function requireOrg(){
+    if(S.org) return true;
+    toast('Conecte a equipe primeiro em ⚙️ Config','err');
+    S.tab='settings'; render();
+    return false;
+  }
   function doAddLead(){
     if(!S.form.name.trim()) return;
+    if(!requireOrg()) return;
     const p=S.detectedProfile;
     const lead={
       id:Date.now().toString(), ...S.form,
@@ -1084,6 +1051,7 @@
   function doAddDetected(){
     const p=S.detectedProfile;
     if(!p) return;
+    if(!requireOrg()) return;
     if(S.leads.some(l=>l.username===p.username)){ toast('Lead já cadastrado','info'); return; }
     // tenta o nome real de novo na hora de salvar (caso a página tenha terminado de carregar)
     let realName=p.name;
@@ -1132,21 +1100,28 @@
     renderBody();
   }
 
-  function doPlay(aid){
-    const audio=S.audios.find(a=>a.id===aid);
-    if(!audio) return;
-    if(S.playingId===aid){ audioEls[aid]?.pause(); S.playingId=null; renderBody(); return; }
-    if(S.playingId&&audioEls[S.playingId]) audioEls[S.playingId].pause();
-    if(!audioEls[aid]){ audioEls[aid]=new Audio(audio.data); audioEls[aid].onended=()=>{S.playingId=null;renderBody();}; }
-    audioEls[aid].play(); S.playingId=aid; renderBody();
-  }
-
-  function doDeleteAudio(aid){
-    if(audioEls[aid]){ audioEls[aid].pause(); delete audioEls[aid]; }
-    if(S.playingId===aid) S.playingId=null;
-    S.audios=S.audios.filter(a=>a.id!==aid);
-    db.save({igp_a:S.audios});
-    renderBody();
+  // Resolve o código da equipe (Configurações → Equipe, no sistema) via
+  // background.js — a extensão não faz login, só usa a chave pública do
+  // Supabase pra achar id/nome/token daquela equipe. Uma vez conectada,
+  // fica travada aqui: nenhuma sincronização do painel sobrescreve mais
+  // (ver bridge.js e o listener de storage no fim deste arquivo).
+  function doLinkOrg(){
+    const inp=shadow.getElementById('igp-orgcode');
+    const code=((inp&&inp.value)||S.orgCodeInput||'').trim();
+    if(!code){ toast('Digite o código da equipe','info'); return; }
+    toast('Verificando código…','info');
+    chrome.runtime.sendMessage({ type:'resolve_org_code', code }, res=>{
+      if(!res||!res.ok||!res.org){ toast('Código inválido — confira em Configurações → Equipe no sistema','err'); return; }
+      S.org={ id:res.org.id, name:res.org.name, locked:true };
+      S.orgCodeInput='';
+      db.save({igp_org:S.org});
+      if(res.org.agendor_token){
+        S.agendorToken=res.org.agendor_token; S.agendorTokenInput='';
+        db.save({igp_tok:res.org.agendor_token});
+      }
+      renderBody();
+      toast(`✓ Conectado à equipe "${res.org.name}"`,'ok');
+    });
   }
 
   function doSaveGoal(){
@@ -1167,72 +1142,21 @@
     toast('Token Agendor salvo!','ok');
   }
 
-  function handleAudioFile(e){
-    const file=e.target.files[0];
-    if(!file) return;
-    if(file.size>3*1024*1024){ alert('Arquivo muito grande. Máximo 3MB.'); return; }
-    const reader=new FileReader();
-    reader.onload=async ev=>{
-      S.audios.push({id:Date.now().toString(),name:file.name,size:(file.size/1024).toFixed(0)+' KB',data:ev.target.result,addedAt:new Date().toISOString()});
-      await db.save({igp_a:S.audios});
-      renderBody();
-    };
-    reader.readAsDataURL(file);
-    e.target.value='';
-  }
-
-  function doExportLeads(){
-    if(S.leads.length===0){ toast('Nenhum lead para exportar','info'); return; }
-    const data = JSON.stringify(S.leads, null, 2);
-    const blob = new Blob([data], {type:'application/json'});
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    const date = new Date().toLocaleDateString('pt-BR').replace(/\//g,'-');
-    a.href = url;
-    a.download = `igprospect-leads-${date}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast(`✓ ${S.leads.length} leads exportados!`,'ok');
-  }
-
-  function handleImportFile(e){
-    const file=e.target.files[0];
-    if(!file) return;
-    const reader=new FileReader();
-    reader.onload=async ev=>{
-      try {
-        const imported=JSON.parse(ev.target.result);
-        if(!Array.isArray(imported)) throw new Error('Formato inválido');
-        const existing=new Set(S.leads.map(l=>l.id));
-        const novos=imported.filter(l=>!existing.has(l.id));
-        S.leads=[...novos,...S.leads];
-        await db.save({igp_l:S.leads});
-        renderBody();
-        toast(`✓ ${novos.length} leads importados!`,'ok');
-      } catch(err){
-        toast('Erro ao importar — arquivo inválido','err');
-      }
-    };
-    reader.readAsText(file);
-    e.target.value='';
-  }
-
   // ═══════════════════════════════════════════════
   // ═══════════════════════════════════════════════
   db.load().then(d=>{
     if(d.igp_l) S.leads=d.igp_l;
-    if(d.igp_a) S.audios=d.igp_a;
     if(d.igp_g){ S.goal=d.igp_g; S.goalInput=d.igp_g; }
     if(d.igp_tok){ S.agendorToken=d.igp_tok; S.agendorTokenInput=d.igp_tok; }
     if(d.igp_org) S.org=d.igp_org;
     render();
     extractProfile();
   });
-  // Painel pode anunciar/trocar a equipe ativa a qualquer momento (troca de equipe
-  // sem fechar a aba) — mantém S.org atualizado pros próximos leads capturados.
+  // O painel (se aberto, na mesma equipe) ainda pode SUGERIR a equipe ativa —
+  // mas nunca sobrescreve uma equipe travada aqui via código (ver doLinkOrg).
   try{
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === 'local' && changes.igp_org) S.org = changes.igp_org.newValue || null;
+      if (area === 'local' && changes.igp_org && !(S.org&&S.org.locked)) S.org = changes.igp_org.newValue || null;
     });
   } catch(e) { /* sem permissão de storage — ignora */ }
 

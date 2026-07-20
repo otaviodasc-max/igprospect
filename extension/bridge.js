@@ -26,7 +26,16 @@
     if (ev.source !== window) return;
     const d = ev.data;
     if (d && d.source === 'igp-dashboard' && d.type === 'request-leads') {
-      if (d.orgId) chrome.storage.local.set({ igp_org: { id: d.orgId, name: d.orgName || '' } });
+      // Se a equipe já foi travada na extensão via código (Configurações →
+      // Equipe, dentro dela), NUNCA sobrescreve — só o próprio usuário troca,
+      // digitando outro código lá. Sem isso, trocar de equipe aqui no painel
+      // reintroduziria o bug de leads indo pra equipe errada.
+      if (d.orgId) {
+        chrome.storage.local.get('igp_org', cur => {
+          if (cur && cur.igp_org && cur.igp_org.locked) return;
+          chrome.storage.local.set({ igp_org: { id: d.orgId, name: d.orgName || '' } });
+        });
+      }
       pushCurrent();
     }
     // 1b) O painel confirma quais leads já gravou/conferiu — some da fila local
