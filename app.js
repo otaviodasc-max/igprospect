@@ -636,10 +636,7 @@ function renderLeads(){
     ${S.sel.mode?`<div class="tbl-controls" style="margin-bottom:10px">
       <span style="font-size:.74rem;color:var(--t2);font-weight:600;white-space:nowrap">Mudar etapa dos selecionados:</span>
       <div class="period-tabs" id="leads-stage-bulk">
-        <div class="period-tab" data-bulkstage="0">Novo Lead</div>
-        <div class="period-tab" data-bulkstage="1">Chamado</div>
-        <div class="period-tab" data-bulkstage="2">Respondeu</div>
-        <div class="period-tab" data-bulkstage="last">Enviou Contato</div>
+        ${stagesOf(defaultPipeline()).map((s,i)=>`<div class="period-tab" data-bulkstage="${i}">${esc(s.label)}</div>`).join('')}
       </div>
     </div>`:''}
     <div class="tbl-controls" style="margin-bottom:10px">
