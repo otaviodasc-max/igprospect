@@ -288,7 +288,7 @@ async function doAuth(){
       const { error } = await sb.auth.signInWithPassword({ email, password:pass });
       if(error) throw error;
     }
-    await boot();
+    await boot(true);
   }catch(err){ authErr(traduzErro(err.message)); $('au-go').disabled=false; }
 }
 function traduzErro(m){
@@ -1874,24 +1874,56 @@ window.enablePush=enablePush; window.disablePush=disablePush;
 /* =====================================================================
    SELETOR DE EQUIPES — mesmo login pode pertencer a várias organizações
 ===================================================================== */
+// "Excluir equipe" no seletor NÃO sai da equipe nem apaga nada — só some da
+// lista deste computador (guardado em localStorage, por navegador/aparelho).
+// Continua sendo membro; a equipe volta a aparecer sozinha se um dia virar
+// a equipe ativa de novo (ver boot()).
+function hiddenOrgIds(){ try{ return new Set(JSON.parse(localStorage.getItem('igp_hidden_orgs')||'[]')); }catch(e){ return new Set(); } }
+function isOrgHiddenHere(id){ return hiddenOrgIds().has(id); }
+function hideOrgHere(id){ const s=hiddenOrgIds(); s.add(id); try{ localStorage.setItem('igp_hidden_orgs',JSON.stringify([...s])); }catch(e){} }
+function unhideOrgHere(id){ const s=hiddenOrgIds(); if(!s.has(id))return; s.delete(id); try{ localStorage.setItem('igp_hidden_orgs',JSON.stringify([...s])); }catch(e){} }
+
 async function renderOrgSwitcher(){
-  openModal(`<div class="modal-ov"><div class="modal-box" style="max-width:420px"><div class="modal-hd"><div><div class="modal-title">Minhas equipes</div><div class="modal-sub">Troque de equipe ou crie/entre em outra</div></div><div class="x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div></div>
-    <div class="modal-bd"><div id="org-sw-list" style="display:flex;flex-direction:column;gap:8px"><div style="font-size:.8rem;color:var(--t3)">Carregando…</div></div></div>
+  openModal(`<div class="modal-ov"><div class="modal-box" style="max-width:720px"><div class="modal-hd"><div><div class="modal-title">Minhas equipes</div><div class="modal-sub">Selecione a equipe que quer acessar</div></div><div class="x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div></div>
+    <div class="modal-bd">
+      <div class="search-wrap" style="margin-bottom:14px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input class="search-inp" id="org-sw-q" placeholder="Buscar equipe…"></div>
+      <div id="org-sw-list" class="org-grid"><div style="font-size:.8rem;color:var(--t3)">Carregando…</div></div>
+    </div>
     <div class="modal-ft"><button class="btn btn-outline" onclick="closeModal()">Fechar</button><button class="btn btn-primary" id="org-sw-add">+ Criar ou entrar em outra equipe</button></div></div></div>`);
   $('org-sw-add').onclick=()=>{ closeModal(); renderOnboard(); };
   const { data:orgs, error }=await sb.rpc('my_orgs');
   if(!$('org-sw-list')) return; // modal já foi fechado
   if(error){ $('org-sw-list').innerHTML=`<div style="font-size:.8rem;color:#EF4444">${esc(error.message)}</div>`; return; }
-  $('org-sw-list').innerHTML=(orgs||[]).map(o=>`
-    <button class="btn ${o.is_current?'btn-primary':'btn-outline'}" data-org="${esc(o.id)}" style="justify-content:space-between;display:flex;align-items:center" ${o.is_current?'disabled':''}>
-      <span>${esc(o.name)}</span><span style="font-size:.68rem;opacity:.75">${o.is_current?'atual':(o.role==='owner'?'dono(a)':'membro')}</span>
-    </button>`).join('') || '<div style="font-size:.8rem;color:var(--t3)">Nenhuma equipe encontrada.</div>';
-  $('org-sw-list').querySelectorAll('[data-org]').forEach(b=>b.onclick=async()=>{
-    b.disabled=true;
-    const { error }=await sb.rpc('switch_org',{ p_org_id:b.dataset.org });
-    if(error){ toast(error.message,'error'); b.disabled=false; return; }
-    closeModal(); toast('Equipe trocada','success'); await boot();
-  });
+  const hidden=hiddenOrgIds();
+  const all=(orgs||[]).filter(o=>o.is_current||!hidden.has(o.id));
+  const paint=()=>{
+    const q=(($('org-sw-q')&&$('org-sw-q').value)||'').toLowerCase().trim();
+    const visible=q?all.filter(o=>o.name.toLowerCase().includes(q)):all;
+    $('org-sw-list').innerHTML=visible.map(o=>`
+      <div class="org-card ${o.is_current?'active':''}" data-org="${esc(o.id)}" ${o.is_current?'':'tabindex="0"'}>
+        <span class="org-card-badge">${o.is_current?'Atual':(o.role==='owner'?'Dono(a)':'Membro')}</span>
+        <div class="org-card-ico">${esc(ini(o.name))}</div>
+        <div class="org-card-name">${esc(o.name)}</div>
+        <div class="org-card-meta">${o.members||0} membro(s) · ${o.leads||0} lead(s)</div>
+        <div class="org-card-owners">Dono(a): ${o.owners?esc(o.owners):'—'}</div>
+        ${o.is_current?'':`<div class="org-card-hide" data-hide-org="${esc(o.id)}" data-hide-name="${esc(o.name)}" title="Remover desta lista (só neste computador — você continua na equipe)"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></div>`}
+      </div>`).join('') || '<div style="font-size:.8rem;color:var(--t3)">Nenhuma equipe encontrada.</div>';
+    $('org-sw-list').querySelectorAll('.org-card[data-org]:not(.active)').forEach(c=>c.onclick=async e=>{
+      if(e.target.closest('[data-hide-org]')) return;
+      c.style.pointerEvents='none';
+      const { error }=await sb.rpc('switch_org',{ p_org_id:c.dataset.org });
+      if(error){ toast(error.message,'error'); c.style.pointerEvents=''; return; }
+      closeModal(); toast('Equipe trocada','success'); await boot();
+    });
+    $('org-sw-list').querySelectorAll('[data-hide-org]').forEach(b=>b.onclick=e=>{
+      e.stopPropagation();
+      if(!confirm(`Remover "${b.dataset.hideName}" desta lista neste computador?\n\nVocê continua fazendo parte da equipe — isso só esconde ela daqui. Se um dia ela virar sua equipe ativa de novo, volta a aparecer sozinha.`)) return;
+      hideOrgHere(b.dataset.hideOrg);
+      renderOrgSwitcher();
+    });
+  };
+  paint();
+  $('org-sw-q').oninput=paint;
 }
 
 /* =====================================================================
@@ -2272,7 +2304,10 @@ async function importExtensionLeads(incoming){
 /* =====================================================================
    BOOT
 ===================================================================== */
-async function boot(){
+// freshLogin=true SÓ quando vem direto do formulário de login/cadastro (ver
+// authSubmit) — é o sinal de "acabou de entrar", diferente de um F5 que
+// só retoma a sessão já salva. É o que decide se pergunta qual equipe abrir.
+async function boot(freshLogin){
   if(!sb){ renderAuth(); return; }
   const { data:{ session } }=await sb.auth.getSession(); S.session=session;
   if(!session){ renderAuth(); return; }
@@ -2282,21 +2317,21 @@ async function boot(){
   if(prof&&prof.status==='pending'){ $('app').classList.remove('show'); $('onboard').classList.add('hidden'); $('auth').classList.remove('hidden'); $('auth-card').innerHTML=`<div class="auth-h">Cadastro em análise</div><div class="auth-sub">Seu acesso está aguardando aprovação do administrador.</div><button class="btn-block" onclick="igpLogout()">Sair</button>`; return; }
   if(!prof||!prof.org_id){ renderOnboard(); return; }
   const { data:org }=await sb.from('orgs').select('*').eq('id',prof.org_id).single(); S.org=org;
+  if(S.org) unhideOrgHere(S.org.id); // virou a equipe ativa de novo → sai da lista de escondidas
   await loadFeatures();
   await loadOrgConfig(); await loadLeads(); await normalizeEmpresarios(); await loadCalls(); await loadDeals(); await backfillEmpresarioDeals(); await loadMessages(); await loadMembers(); await loadWeeklyPayments(); renderShell();
   bindBridge();
   subscribeMessages();
   ensurePushSubscription();   // re-inscreve este aparelho se já tem permissão
-  askOrgIfMultiple();
+  if(freshLogin) askOrgIfMultiple();
 }
-// Login novo (1ª vez nesta aba) + usuário pertence a mais de uma equipe →
-// pergunta qual quer acessar, em vez de simplesmente abrir a última usada.
+// Login novo + usuário pertence a mais de uma equipe → pergunta qual quer
+// acessar, em vez de simplesmente abrir a última usada.
 async function askOrgIfMultiple(){
-  const flagKey='igp_org_asked_'+(S.session&&S.session.user.id);
-  try{ if(sessionStorage.getItem(flagKey)) return; }catch(e){}
   const { data:orgs, error }=await sb.rpc('my_orgs');
-  if(error||!orgs||orgs.length<2) return;
-  try{ sessionStorage.setItem(flagKey,'1'); }catch(e){}
+  if(error||!orgs) return;
+  const visible=orgs.filter(o=>!isOrgHiddenHere(o.id));
+  if(visible.length<2) return;
   renderOrgSwitcher();
 }
 // Conserta empresários antigos que entraram com status de prospecção (chamado etc.) → "A Contatar".
