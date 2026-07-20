@@ -1159,10 +1159,15 @@
           : 'Código inválido — confira em Configurações → Equipe no sistema';
         toast(msg,'err'); return;
       }
+      // A extensão só pode estar vinculada a UMA equipe por vez — trocar de
+      // equipe zera os leads locais daqui. Sem isso, leads de uma equipe
+      // ficavam "presos" como se fossem captura local não sincronizada e
+      // somavam com os da equipe nova ao trocar.
+      S.leads=[];
       S.org={ id:res.org.id, name:res.org.name, code, locked:true, userId:null, userName:'' };
       S.orgMembers=[];
       S.orgCodeInput='';
-      db.save({igp_org:S.org});
+      db.save({igp_org:S.org, igp_l:S.leads, igp_leads_pulled_at:0});
       if(res.org.agendor_token){
         S.agendorToken=res.org.agendor_token;
         db.save({igp_tok:res.org.agendor_token});
