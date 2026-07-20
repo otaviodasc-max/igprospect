@@ -485,6 +485,9 @@ const NAV = [
   { k:'team', label:'Equipe', icon:'<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>' },
   { k:'settings', label:'Configurações', icon:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>' },
 ];
+// As 4 abas mais usadas no dia a dia — aparecem fixas na barra inferior do
+// celular; o resto vive atrás do botão "Mais" (abre a gaveta lateral).
+const BOTTOM_NAV_KEYS=['dashboard','leads','crm','calls'];
 function TAB_INFO_GET(){ const m=MOD(); return { dashboard:['Dashboard','Visão geral dos seus leads'], goals:['Metas do Mês','Acompanhe o progresso da equipe e bata as metas'], leads:['Leads','Gerencie e filtre sua base'], crm:['CRM · Pipeline','Arraste leads pelo funil'], deals:[m.labels.dealsTabTitle, m.labels.dealsTabSub], calls:['Ligações','Registre e acompanhe suas chamadas'], relatorios:['Relatórios','Pagamentos semanais, leads, ligações e vendas — histórico permanente'], team:['Equipe','Recados e comunicados entre vocês'], settings:['Configurações','Espaço e integrações'], admin:['Painel Administrativo','Gestão da plataforma'] }; }
 
 // Carrega as abas liberadas para a equipe ativa. Se a RPC ainda não existe
@@ -514,6 +517,17 @@ function renderShell(){
   // Menu gaveta no celular
   const mb=$('menu-btn'); if(mb) mb.onclick=()=>$('app').classList.toggle('sb-open');
   const ov=$('sb-overlay'); if(ov) ov.onclick=()=>$('app').classList.remove('sb-open');
+  // Barra de navegação inferior (só existe no celular via CSS) — 4 abas mais
+  // usadas + "Mais" abrindo a mesma gaveta lateral pro resto (Metas,
+  // Negociações, Relatórios, Equipe, Configurações).
+  const bn=$('bottom-nav');
+  if(bn){
+    const bnItems=BOTTOM_NAV_KEYS.filter(featOn).map(k=>NAV.find(n=>n.k===k)).filter(Boolean);
+    bn.innerHTML = bnItems.map(n=>`<button class="bn-item${S.route===n.k?' active':''}" data-route="${n.k}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${n.icon}</svg><span>${n.label}</span></button>`).join('')
+      + `<button class="bn-item${!bnItems.some(n=>n.k===S.route)?' active':''}" id="bn-more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg><span>Mais</span></button>`;
+    bn.querySelectorAll('[data-route]').forEach(el=>el.onclick=()=>{ S.route=el.dataset.route; selReset(); $('app').classList.remove('sb-open'); renderShell(); });
+    $('bn-more').onclick=()=>$('app').classList.toggle('sb-open');
+  }
   const ti=TAB_INFO_GET()[S.route]||['','']; $('tb-title').textContent=ti[0]; $('tb-sub').textContent=ti[1];
   const showPeriod = ['dashboard','leads','calls','deals'].includes(S.route);
   $('period-tabs').style.display = showPeriod?'flex':'none';
@@ -555,7 +569,7 @@ function renderDashboard(){
     const unpaidRows=wp.unpaid.length?wp.unpaid.map(d=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:.72rem;padding:5px 0;border-bottom:1px dashed var(--border)"><span style="color:var(--t2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">⏳ Comissão da venda — <b>${esc(d.name)}</b>${d.closedAt?` <span style="color:var(--t3)">(${fmtDate(d.closedAt)})</span>`:''}</span><span style="color:#FCD34D;font-weight:700;white-space:nowrap">${fmtCurrency(d.value)}</span></div>`).join(''):'<div style="font-size:.72rem;color:var(--t3);padding:4px 0">Nenhuma comissão pendente.</div>';
     payCard=`<div class="card" style="padding:20px;border-left:3px solid #10B981;margin-bottom:18px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap;margin-bottom:14px">
-        <div><div style="font-weight:800;font-size:1rem">💵 A pagar nesta semana</div><div style="font-size:.72rem;color:var(--t3)">semana ${wkLbl} · ${fmtCurrency(wp.dayRate)}/dia por ${wp.target} leads (${fmtCurrency(wp.perLead)}/lead)</div></div>
+        <div><div style="font-weight:800;font-size:1rem">💵 A pagar nesta semana</div><div style="font-size:.72rem;color:var(--t3)">semana ${wkLbl} · ${fmtCurrency(wp.dayRate)}/dia por ${wp.target} leads (${fmtCurrency(wp.perLead)}/lead)${wp.recipientId?` · só leads de <b style="color:var(--t2)">${esc(payRecipientName())}</b>`:''}</div></div>
         <div style="text-align:right"><div style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:2rem;line-height:1;color:#10B981">${fmtCurrency(wp.total)}</div><div style="font-size:.7rem;color:var(--t3)">total a pagar</div></div>
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
@@ -608,12 +622,12 @@ function renderLeads(){
   const niches=[...new Set(S.leads.map(l=>l.niche||'').filter(Boolean))].sort();
   const rows=slice.length?slice.map(l=>{ const pl=leadPipeline(l); return `<tr data-id="${esc(l.id)}"${S.sel.mode&&S.sel.ids.has(l.id)?' style="background:rgba(99,102,241,.08)"':''}>
     ${selCell(l.id)}
-    <td><div class="lead-cell"><div class="avatar">${esc(ini(l.name||l.username))}</div><div><div class="lead-nm">${esc(l.name||'—')}${S.pipelines.length>1?` <span class="tag" style="background:rgba(99,102,241,.14);color:#A5B4FC;border-color:rgba(99,102,241,.25)">${esc(pl?pl.icon:'')} ${esc(pl?pl.name:'')}</span>`:''}</div><div class="lead-un">${l.username?'@'+esc(l.username):esc(l.phone||'—')}${agendorOn()&&l.agendorPersonId?' <span style="font-size:.63rem;color:#6EE7B7;font-weight:600;white-space:nowrap">☁ Agendor</span>':''}</div></div></div></td>
-    <td><span class="badge" style="background:${stColor(l)}22;color:${stColor(l)};border:1px solid ${stColor(l)}44">${stLabel(l)}</span></td>
-    <td>${l.niche?`<span class="tag">${esc(l.niche)}</span>`:'<span style="color:var(--t3)">—</span>'}</td>
-    <td style="color:var(--t2);font-size:.73rem">${fmtDate(l.addedAt)}</td>
-    <td style="font-size:.72rem;color:var(--t3);max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(l.notes||'—')}</td>
-    <td><div class="tbl-acts">${agendorOn()?(l.agendorPersonId?`<button class="act-btn" data-agrm="${esc(l.id)}" style="color:#6EE7B7" title="Remover do Agendor (mantém no sistema)">☁ Tirar do Agendor</button>`:`<button class="act-btn" data-ag="${esc(l.id)}" style="color:#6EE7B7">→ Agendor</button>`):''}<button class="act-btn" data-edit="${esc(l.id)}">Editar</button><button class="act-btn act-del" data-del="${esc(l.id)}">Excluir</button></div></td></tr>`; }).join('')
+    <td class="tdcell-hd"><div class="lead-cell"><div class="avatar">${esc(ini(l.name||l.username))}</div><div><div class="lead-nm">${esc(l.name||'—')}${S.pipelines.length>1?` <span class="tag" style="background:rgba(99,102,241,.14);color:#A5B4FC;border-color:rgba(99,102,241,.25)">${esc(pl?pl.icon:'')} ${esc(pl?pl.name:'')}</span>`:''}</div><div class="lead-un">${l.username?'@'+esc(l.username):esc(l.phone||'—')}${agendorOn()&&l.agendorPersonId?' <span style="font-size:.63rem;color:#6EE7B7;font-weight:600;white-space:nowrap">☁ Agendor</span>':''}</div></div></div></td>
+    <td data-label="Status"><span class="badge" style="background:${stColor(l)}22;color:${stColor(l)};border:1px solid ${stColor(l)}44">${stLabel(l)}</span></td>
+    <td data-label="Nicho">${l.niche?`<span class="tag">${esc(l.niche)}</span>`:'<span style="color:var(--t3)">—</span>'}</td>
+    <td data-label="Adicionado" style="color:var(--t2);font-size:.73rem">${fmtDate(l.addedAt)}</td>
+    <td data-label="Notas" style="font-size:.72rem;color:var(--t3);max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(l.notes||'—')}</td>
+    <td class="tdcell-acts"><div class="tbl-acts">${agendorOn()?(l.agendorPersonId?`<button class="act-btn" data-agrm="${esc(l.id)}" style="color:#6EE7B7" title="Remover do Agendor (mantém no sistema)">☁ Tirar do Agendor</button>`:`<button class="act-btn" data-ag="${esc(l.id)}" style="color:#6EE7B7">→ Agendor</button>`):''}<button class="act-btn" data-edit="${esc(l.id)}">Editar</button><button class="act-btn act-del" data-del="${esc(l.id)}">Excluir</button></div></td></tr>`; }).join('')
     :`<tr><td colspan="${S.sel.mode?7:6}"><div class="empty-state"><div class="empty-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div><div class="empty-title">Nenhum lead encontrado</div><div class="empty-sub">Tente outros filtros ou cadastre um lead.</div></div></td></tr>`;
   let pag=''; if(pages>1){ pag+=`<button class="pag-btn" data-pg="${S.lf.page-1}" ${S.lf.page<=1?'disabled':''}>‹</button>`; for(let i=1;i<=pages;i++){ if(i===1||i===pages||Math.abs(i-S.lf.page)<=1)pag+=`<button class="pag-btn${i===S.lf.page?' active':''}" data-pg="${i}">${i}</button>`; else if(Math.abs(i-S.lf.page)===2)pag+='<span style="color:var(--t3);padding:0 3px">…</span>'; } pag+=`<button class="pag-btn" data-pg="${S.lf.page+1}" ${S.lf.page>=pages?'disabled':''}>›</button>`; }
   const from=(S.lf.page-1)*PAGE_SIZE+1,to=Math.min(S.lf.page*PAGE_SIZE,all.length);
@@ -645,7 +659,7 @@ function renderLeads(){
       ${S.lf.note?`<button class="btn btn-outline" id="ls-note-clear"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Limpar nota</button>`:''}
     </div>
     <div class="card"><div class="res-bar"><span>${all.length>0?`<strong>${from}–${to}</strong> de <strong>${all.length}</strong> leads`:'<strong>0</strong> leads'}</span><span style="color:var(--t3)">${S.leads.length} no total</span></div>
-    <table class="data-tbl" id="leads-tbl"><thead><tr>${S.sel.mode?'<th class="sel-td"></th>':''}<th>Lead</th><th>Status</th><th>Nicho</th><th>Adicionado</th><th>Notas</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+    <table class="data-tbl tbl-responsive" id="leads-tbl"><thead><tr>${S.sel.mode?'<th class="sel-td"></th>':''}<th>Lead</th><th>Status</th><th>Nicho</th><th>Adicionado</th><th>Notas</th><th></th></tr></thead><tbody>${rows}</tbody></table>
     ${pages>1?`<div class="pagination"><span>${all.length} leads</span><div class="pag-btns" id="pag-btns">${pag}</div></div>`:''}</div>`;
   $('ls-q').oninput=e=>{ S.lf.q=e.target.value; S.lf.page=1; renderLeads(); refocus('ls-q'); };
   $('ls-note').oninput=e=>{ S.lf.note=e.target.value; S.lf.page=1; renderLeads(); refocus('ls-note'); };
@@ -974,13 +988,13 @@ function renderCalls(){
   const pages=Math.max(1,Math.ceil(all.length/PAGE_SIZE)); S.cf.page=Math.min(S.cf.page,pages); const slice=all.slice((S.cf.page-1)*PAGE_SIZE,S.cf.page*PAGE_SIZE);
   const kc=[ {lbl:'Ligações',val:total,sub:'no período',cls:'kk-c'},{lbl:'Interessados',val:cm.interessado,sub:'querem a oferta',cls:'kk-o'},{lbl:'A retornar',val:cm.retornar,sub:'callback',cls:'kk-r'},{lbl:'Aproveitamento',val:rate+'%',sub:'interesse+fechado',cls:'kk-n'} ].map(k=>`<div class="kpi-card ${k.cls}"><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div><div class="kpi-sub">${k.sub}</div></div>`).join('');
   const comMap=COM();
-  const rows=slice.length?slice.map(k=>{ const o=k.outcome||'nao_atendeu'; return `<tr data-id="${esc(k.id)}"${S.sel.mode&&S.sel.ids.has(k.id)?' style="background:rgba(99,102,241,.08)"':''}>${selCell(k.id)}<td><div class="lead-cell"><div class="avatar">${esc(ini(k.name||k.phone))}</div><div><div class="lead-nm">${esc(k.name||'—')}</div><div class="lead-un">${esc(k.phone||'—')}</div></div></div></td><td><span class="call-out co-${o}">${comMap[o]||o}</span></td><td style="color:var(--t2);font-size:.73rem">${k.duration?esc(k.duration)+' min':'—'}</td><td style="color:var(--t2);font-size:.73rem">${fmtDate(k.at)}</td><td style="font-size:.72rem;color:var(--t3);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(k.notes||'—')}</td><td><div class="tbl-acts"><button class="act-btn" data-edit="${esc(k.id)}">Editar</button><button class="act-btn act-del" data-del="${esc(k.id)}">Excluir</button></div></td></tr>`; }).join('')
+  const rows=slice.length?slice.map(k=>{ const o=k.outcome||'nao_atendeu'; return `<tr data-id="${esc(k.id)}"${S.sel.mode&&S.sel.ids.has(k.id)?' style="background:rgba(99,102,241,.08)"':''}>${selCell(k.id)}<td class="tdcell-hd"><div class="lead-cell"><div class="avatar">${esc(ini(k.name||k.phone))}</div><div><div class="lead-nm">${esc(k.name||'—')}</div><div class="lead-un">${esc(k.phone||'—')}</div></div></div></td><td data-label="Resultado"><span class="call-out co-${o}">${comMap[o]||o}</span></td><td data-label="Duração" style="color:var(--t2);font-size:.73rem">${k.duration?esc(k.duration)+' min':'—'}</td><td data-label="Data" style="color:var(--t2);font-size:.73rem">${fmtDate(k.at)}</td><td data-label="Notas" style="font-size:.72rem;color:var(--t3);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(k.notes||'—')}</td><td class="tdcell-acts"><div class="tbl-acts"><button class="act-btn" data-edit="${esc(k.id)}">Editar</button><button class="act-btn act-del" data-del="${esc(k.id)}">Excluir</button></div></td></tr>`; }).join('')
     :`<tr><td colspan="${S.sel.mode?7:6}"><div class="empty-state"><div class="empty-title">Nenhuma ligação registrada</div><div class="empty-sub">Clique em "Registrar Ligação".</div></div></td></tr>`;
   let pag=''; if(pages>1){ pag+=`<button class="pag-btn" data-pg="${S.cf.page-1}" ${S.cf.page<=1?'disabled':''}>‹</button>`; for(let i=1;i<=pages;i++)pag+=`<button class="pag-btn${i===S.cf.page?' active':''}" data-pg="${i}">${i}</button>`; pag+=`<button class="pag-btn" data-pg="${S.cf.page+1}" ${S.cf.page>=pages?'disabled':''}>›</button>`; }
   const outOpts=['',...CALL_OUT()].map(o=>`<option value="${o}" ${S.cf.outcome===o?'selected':''}>${o?comMap[o]:'Todos os resultados'}</option>`).join('');
   const soOpts=[['newest','Mais recentes'],['oldest','Mais antigas']].map(([v,l])=>`<option value="${v}" ${S.cf.sort===v?'selected':''}>${l}</option>`).join('');
   $('content').innerHTML=`<div class="kpi-grid">${kc}</div><div class="tbl-controls"><div class="search-wrap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input class="search-inp" id="cs-q" placeholder="Buscar por nome, telefone, nota…" value="${esc(S.cf.q)}"></div><select class="flt-sel" id="cs-out">${outOpts}</select><select class="flt-sel" id="cs-sort">${soOpts}</select><button class="btn btn-primary" id="add-call"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Registrar Ligação</button>${selBar()}</div>
-    <div class="card"><div class="res-bar"><span><strong>${all.length}</strong> ligação(ões)</span><span style="color:var(--t3)">${S.calls.length} no total</span></div><table class="data-tbl" id="calls-tbl"><thead><tr>${S.sel.mode?'<th class="sel-td"></th>':''}<th>Contato</th><th>Resultado</th><th>Duração</th><th>Data</th><th>Notas</th><th></th></tr></thead><tbody>${rows}</tbody></table>${pages>1?`<div class="pagination"><span>${all.length} ligações</span><div class="pag-btns" id="cpag">${pag}</div></div>`:''}</div>`;
+    <div class="card"><div class="res-bar"><span><strong>${all.length}</strong> ligação(ões)</span><span style="color:var(--t3)">${S.calls.length} no total</span></div><table class="data-tbl tbl-responsive" id="calls-tbl"><thead><tr>${S.sel.mode?'<th class="sel-td"></th>':''}<th>Contato</th><th>Resultado</th><th>Duração</th><th>Data</th><th>Notas</th><th></th></tr></thead><tbody>${rows}</tbody></table>${pages>1?`<div class="pagination"><span>${all.length} ligações</span><div class="pag-btns" id="cpag">${pag}</div></div>`:''}</div>`;
   $('cs-q').oninput=e=>{ S.cf.q=e.target.value; S.cf.page=1; renderCalls(); refocus('cs-q'); };
   $('cs-out').onchange=e=>{ S.cf.outcome=e.target.value; S.cf.page=1; renderCalls(); };
   $('cs-sort').onchange=e=>{ S.cf.sort=e.target.value; renderCalls(); };
@@ -1206,7 +1220,11 @@ function delDeal(id){
 /* =====================================================================
    METAS (GOALS) — motivação da equipe (mensais, compartilhadas no espaço)
 ===================================================================== */
-function getGoals(){ const g=(S.org&&S.org.settings&&S.org.settings.goals)||{}; return { contacts:Number(g.contacts)||0, sales:Number(g.sales)||0, revenue:Number(g.revenue)||0, commission:Number(g.commission)||0, leadDailyMin:g.leadDailyMin!=null?Number(g.leadDailyMin):50, leadDailyMax:g.leadDailyMax!=null?Number(g.leadDailyMax):120, callsWeekly:Number(g.callsWeekly)||0, payDayRate:g.payDayRate!=null?Number(g.payDayRate):25, payTargetPerDay:g.payTargetPerDay!=null?Number(g.payTargetPerDay):50, commissionPct:g.commissionPct!=null?Number(g.commissionPct):0.1 }; }
+function getGoals(){ const g=(S.org&&S.org.settings&&S.org.settings.goals)||{}; return { contacts:Number(g.contacts)||0, sales:Number(g.sales)||0, revenue:Number(g.revenue)||0, commission:Number(g.commission)||0, leadDailyMin:g.leadDailyMin!=null?Number(g.leadDailyMin):50, leadDailyMax:g.leadDailyMax!=null?Number(g.leadDailyMax):120, callsWeekly:Number(g.callsWeekly)||0, payDayRate:g.payDayRate!=null?Number(g.payDayRate):25, payTargetPerDay:g.payTargetPerDay!=null?Number(g.payTargetPerDay):50, commissionPct:g.commissionPct!=null?Number(g.commissionPct):0.1, payRecipientId:g.payRecipientId||'' }; }
+// Nome de quem está configurado pra receber o valor da prospecção (aba Configurações,
+// só o dono vê/edita) — quando setado, leads de outras pessoas (ex.: o dono usando a
+// extensão só pra cadastrar leads de terceiros) não entram na conta do pagamento.
+function payRecipientName(){ const id=getGoals().payRecipientId; if(!id) return ''; const m=S.members.find(x=>x.id===id); return m?memberLabel(m):''; }
 
 // Cálculo do valor a pagar na semana ao prospector.
 // Modelo: paga-se "payDayRate" por dia ao prospectar "payTargetPerDay" leads do Instagram.
@@ -1214,16 +1232,17 @@ function getGoals(){ const g=(S.org&&S.org.settings&&S.org.settings.goals)||{}; 
 // Ex.: 25/dia p/ 50 leads → R$0,50/lead; 120 leads num dia = R$60. Soma por dia da semana.
 function weeklyPay(){
   const g=getGoals(); const { ws,we }=weekRange();
+  const rid=g.payRecipientId;
   const inW=iso=>{ if(!iso)return false; const d=new Date(iso); return d>=ws&&d<we; };
   const dayRate=g.payDayRate||0, target=g.payTargetPerDay||0;
   const perLead = target>0 ? dayRate/target : 0;
-  const wkLeads=S.leads.filter(l=>(l.tipo||'comum')!=='empresario' && inW(l.addedAt));
+  const wkLeads=S.leads.filter(l=>(l.tipo||'comum')!=='empresario' && inW(l.addedAt) && (!rid||l.createdBy===rid));
   const prospectLeads=wkLeads.length;
   const prospectPay=prospectLeads*perLead;
-  const unpaid=(S.deals||[]).filter(d=>d.status===WON() && !d.commissionPaid)
+  const unpaid=(S.deals||[]).filter(d=>d.status===WON() && !d.commissionPaid && (!rid||d.createdBy===rid))
     .map(d=>({ name:d.leadName||d.leadUsername||d.cardType||'Venda', value:Number(d.commissionValue)||0, closedAt:d.closedAt }));
   const unpaidTotal=unpaid.reduce((s,d)=>s+d.value,0);
-  return { ws, we, dayRate, target, perLead, prospectLeads, prospectPay, unpaid, unpaidTotal, total:prospectPay+unpaidTotal };
+  return { ws, we, dayRate, target, perLead, prospectLeads, prospectPay, unpaid, unpaidTotal, total:prospectPay+unpaidTotal, recipientId:rid };
 }
 function monthRange(){ const n=new Date(); return { s:new Date(n.getFullYear(),n.getMonth(),1), e:new Date(n.getFullYear(),n.getMonth()+1,1) }; }
 // offset=0 → semana atual; offset=-1 → semana anterior; etc. (usado pela aba Relatórios p/ navegar semanas passadas)
@@ -1244,7 +1263,7 @@ function renderGoals(){
   const body = view==='week' ? goalsWeekly(g) : goalsMonthly(g);
   $('content').innerHTML=`
     <div class="tbl-controls">
-      <div style="flex:1"><div class="sec-title" style="margin:0">Metas</div><div class="sec-sub" style="margin:2px 0 0">${view==='week'?(MOD().features.weeklyPay?'Pagamento semanal da equipe — leads de prospecção e ligações efetivas.':'Atividade semanal — leads de prospecção e ligações efetivas.'):'Metas do mês — vendas, faturamento e comissão.'}</div></div>
+      <div style="flex:1"><div class="sec-title" style="margin:0">Metas</div><div class="sec-sub" style="margin:2px 0 0">${view==='week'?(MOD().features.weeklyPay?'Pagamento semanal da equipe — leads de prospecção e ligações efetivas.':'Atividade semanal — leads de prospecção e ligações efetivas.'):'Metas do mês — vendas, faturamento e comissão.'}${view==='week'&&g.payRecipientId?` <b style="color:var(--p)">· cálculo de pagamento considera só leads de ${esc(payRecipientName()||'—')}</b>`:''}</div></div>
       ${toggle}
       <button class="btn btn-primary" id="goals-edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>Definir metas</button>
     </div>
@@ -1255,8 +1274,9 @@ function renderGoals(){
 
 function goalsWeekly(g){
   const { ws,we }=weekRange();
+  const rid=g.payRecipientId;
   const inW=iso=>{ if(!iso)return false; const d=new Date(iso); return d>=ws&&d<we; };
-  const wkLeads=S.leads.filter(l=>(l.tipo||'comum')!=='empresario' && inW(l.addedAt));
+  const wkLeads=S.leads.filter(l=>(l.tipo||'comum')!=='empresario' && inW(l.addedAt) && (!rid||l.createdBy===rid));
   const totalLeads=wkLeads.length;
   const dayNames=['Seg','Ter','Qua','Qui','Sex','Sáb','Dom'];
   const perDay=Array.from({length:7},(_,i)=>{ const ds=new Date(ws); ds.setDate(ds.getDate()+i); const de=new Date(ds); de.setDate(de.getDate()+1); return wkLeads.filter(l=>{ const t=new Date(l.addedAt); return t>=ds&&t<de; }).length; });
@@ -1887,7 +1907,7 @@ function unhideOrgHere(id){ const s=hiddenOrgIds(); if(!s.has(id))return; s.dele
 // modal "Trocar equipe" quanto pela tela cheia de seleção antes de entrar).
 // onPick(orgId) decide o que fazer ao escolher uma equipe (não-atual).
 // onHideRepaint é chamado depois de esconder uma equipe, pra redesenhar.
-function paintOrgGrid(listId, searchId, orgs, onPick, onHideRepaint){
+function paintOrgGrid(listId, searchId, orgs, onPick, onHideRepaint, allowActiveClick){
   const hidden=hiddenOrgIds();
   const all=(orgs||[]).filter(o=>o.is_current||!hidden.has(o.id));
   const paint=()=>{
@@ -1895,7 +1915,7 @@ function paintOrgGrid(listId, searchId, orgs, onPick, onHideRepaint){
     const q=(($(searchId)&&$(searchId).value)||'').toLowerCase().trim();
     const visible=q?all.filter(o=>o.name.toLowerCase().includes(q)):all;
     $(listId).innerHTML=visible.map(o=>`
-      <div class="org-card ${o.is_current?'active':''}" data-org="${esc(o.id)}" ${o.is_current?'':'tabindex="0"'}>
+      <div class="org-card ${o.is_current?'active':''}${o.is_current&&allowActiveClick?' clickable':''}" data-org="${esc(o.id)}" ${o.is_current&&!allowActiveClick?'':'tabindex="0"'}>
         <span class="org-card-badge">${o.is_current?'Atual':(o.role==='owner'?'Dono(a)':'Membro')}</span>
         <div class="org-card-ico">${esc(ini(o.name))}</div>
         <div class="org-card-name">${esc(o.name)}</div>
@@ -1903,7 +1923,8 @@ function paintOrgGrid(listId, searchId, orgs, onPick, onHideRepaint){
         <div class="org-card-owners">Dono(a): ${o.owners?esc(o.owners):'—'}</div>
         ${o.is_current?'':`<div class="org-card-hide" data-hide-org="${esc(o.id)}" data-hide-name="${esc(o.name)}" title="Remover desta lista (só neste computador — você continua na equipe)"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></div>`}
       </div>`).join('') || '<div style="font-size:.8rem;color:var(--t3)">Nenhuma equipe encontrada.</div>';
-    $(listId).querySelectorAll('.org-card[data-org]:not(.active)').forEach(c=>c.onclick=async e=>{
+    const clickableSel=allowActiveClick?'.org-card[data-org]':'.org-card[data-org]:not(.active)';
+    $(listId).querySelectorAll(clickableSel).forEach(c=>c.onclick=async e=>{
       if(e.target.closest('[data-hide-org]')) return;
       c.style.pointerEvents='none';
       await onPick(c.dataset.org);
@@ -1959,7 +1980,7 @@ function renderOrgSelectScreen(orgs){
       if(error){ toast(error.message,'error'); return; }
     }
     await boot();
-  }, repaint);
+  }, repaint, true);
 }
 
 /* =====================================================================
@@ -2037,6 +2058,11 @@ function renderSettings(){
         <div style="font-size:.72rem;color:var(--t2);margin-top:6px;padding:9px 11px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:8px">⚠️ O navegador bloqueia chamadas diretas à API do Agendor (CORS) — por isso o envio passa por um proxy (Cloudflare Worker) já configurado no sistema.</div>
       `}
       </div></div>
+    ${owner&&MOD().features.weeklyPay?(()=>{ const g=getGoals(); return `<div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(16,185,129,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#6EE7B7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div><div><div class="st-title">Pagamento da meta</div><div class="st-sub">Só o dono vê · escolhe quem recebe o valor calculado na aba Metas</div></div></div>
+      <div class="stg-bd">
+        <div class="fld"><label>Quem deve receber o valor</label><select class="stg-input" id="st-pay-recipient" style="max-width:320px"><option value="">Todo mundo (padrão — soma leads da equipe inteira)</option>${S.members.map(m=>`<option value="${esc(m.id)}" ${g.payRecipientId===m.id?'selected':''}>${esc(memberLabel(m))}</option>`).join('')}</select></div>
+        <div style="font-size:.72rem;color:var(--t3);line-height:1.5">Quando escolhe uma pessoa, o valor "a pagar" (Dashboard e Metas) passa a contar só os leads cadastrados por ela. Assim, se outra pessoa (ex.: o dono) usar a extensão só pra colocar leads no sistema, isso não infla o valor de quem realmente prospectou. Na extensão, quem cadastra escolhe "quem é você" ao conectar a equipe — é esse campo que decide de quem é cada lead.</div>
+      </div></div>`; })():''}
     ${owner?`<div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(99,102,241,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#A5B4FC" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></div><div><div class="st-title">Personalização</div><div class="st-sub">Funis, nichos, negociações e ligações do seu jeito · só o dono edita</div></div></div>
       <div class="stg-bd">
         <div class="stg-ri-t">Etapas do CRM (Funis de Lead)</div>
@@ -2174,6 +2200,13 @@ function renderSettings(){
   $('st-push-on')&&($('st-push-on').onclick=enablePush);
   $('st-push-off')&&($('st-push-off').onclick=disablePush);
   document.querySelectorAll('[data-theme-set]').forEach(b=>b.onclick=()=>setTheme(b.dataset.themeSet));
+  $('st-pay-recipient')&&($('st-pay-recipient').onchange=async e=>{
+    const payRecipientId=e.target.value;
+    const settings={ ...(S.org.settings||{}), goals:{ ...getGoals(), payRecipientId } };
+    const{error}=await sb.from('orgs').update({ settings }).eq('id',S.org.id);
+    if(error){ toast(error.message,'error'); return; }
+    S.org.settings=settings; toast(payRecipientId?'Destinatário do pagamento definido':'Voltou a somar a equipe inteira','success');
+  });
   // ---- Equipe (owner-only): promover a dono / remover membro ----
   document.querySelectorAll('[data-promote]').forEach(b=>b.onclick=async()=>{
     const m=S.members.find(x=>x.id===b.dataset.promote); if(!m)return;

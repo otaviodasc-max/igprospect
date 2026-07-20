@@ -329,6 +329,8 @@ canvas{display:block}
 .org-card:hover{border-color:var(--border2);box-shadow:var(--sh);transform:translateY(-1px)}
 .org-card.active{border-color:var(--p);background:rgba(99,102,241,.08);cursor:default}
 .org-card.active:hover{transform:none}
+.org-card.active.clickable{cursor:pointer}
+.org-card.active.clickable:hover{border-color:var(--p);box-shadow:var(--sh);transform:translateY(-1px)}
 .org-card-ico{width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,#833ab4,#6366F1);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.8rem;margin-bottom:8px}
 .org-card-name{font-size:.86rem;font-weight:700;color:var(--t1)}
 .org-card-meta{font-size:.68rem;color:var(--t3);margin-top:2px}
@@ -376,21 +378,43 @@ canvas{display:block}
 .menu-btn{display:none;width:36px;height:36px;border-radius:var(--r6);background:var(--surf2);border:1px solid var(--border2);color:var(--t1);align-items:center;justify-content:center;flex-shrink:0}
 .menu-btn svg{width:18px;height:18px}
 .sb-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:150}
+/* Barra de navegação inferior — só existe no celular; visual de app nativo,
+   diferente da sidebar do desktop. Ver renderShell() em app.js. */
+.bottom-nav{display:none}
+.bn-item{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;flex:1;padding:6px 2px 4px;color:var(--sb-txt);font-size:.6rem;font-weight:700;border-radius:10px;transition:color var(--tr),background var(--tr);min-width:0}
+.bn-item svg{width:20px;height:20px}
+.bn-item span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.bn-item.active{color:var(--sb-atx);background:var(--sb-act)}
 
 @media(max-width:960px){.dash-grid{grid-template-columns:1fr}.kpi-grid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:860px){
   .menu-btn{display:flex}
-  /* barra lateral vira gaveta deslizante */
+  /* barra lateral vira gaveta deslizante (acessada pelo botão "Mais" da bottom-nav) */
   .sidebar{transform:translateX(-100%);width:min(80vw,290px);z-index:200;border-right:1px solid var(--border2);box-shadow:var(--shx);transition:transform .26s cubic-bezier(.22,1,.36,1)}
   .app.sb-open .sidebar{transform:translateX(0)}
   .app.sb-open .sb-overlay{display:block}
   .main{margin-left:0;width:100%}
-  .content{padding:16px}
+  .content{padding:14px 14px calc(78px + env(safe-area-inset-bottom))}
   .topbar{padding:0 14px;gap:10px}
-  /* tabelas: rolagem horizontal + ações sempre visíveis (não há hover no toque) */
+  .bottom-nav{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:130;background:var(--sb-bg);border-top:1px solid var(--sb-bdr);padding:5px 4px calc(5px + env(safe-area-inset-bottom));justify-content:space-around;box-shadow:0 -6px 24px rgba(0,0,0,.4)}
+  /* tabelas comuns (admin etc): mantém rolagem horizontal */
   .card{overflow-x:auto}
   .data-tbl{min-width:540px}
   .tbl-acts{opacity:1}
+  /* Leads/Ligações: tabela vira lista de cartões empilhados no celular —
+     nada de rolagem horizontal nem texto cortado (ver classe tbl-responsive). */
+  .data-tbl.tbl-responsive{min-width:0;width:100%}
+  .data-tbl.tbl-responsive thead{display:none}
+  .data-tbl.tbl-responsive,.data-tbl.tbl-responsive tbody{display:block;width:100%}
+  .data-tbl.tbl-responsive tr{display:block;position:relative;padding:13px 14px 11px;border-bottom:1px solid var(--border)}
+  .data-tbl.tbl-responsive tr:last-child{border-bottom:none}
+  .data-tbl.tbl-responsive td{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 0;border:none;white-space:normal!important;text-align:right;font-size:.78rem}
+  .data-tbl.tbl-responsive td[data-label]::before{content:attr(data-label);font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--t3);flex-shrink:0;text-align:left}
+  .data-tbl.tbl-responsive td[data-label="Notas"]{max-width:none!important;overflow:visible!important;text-overflow:clip!important}
+  .data-tbl.tbl-responsive td.tdcell-hd{display:block;padding:0 0 11px;margin-bottom:5px;border-bottom:1px dashed var(--border)}
+  .data-tbl.tbl-responsive td.tdcell-acts{display:block;padding:9px 0 0;margin-top:3px;border-top:1px solid var(--border)}
+  .data-tbl.tbl-responsive td.tdcell-acts .tbl-acts{justify-content:flex-start;flex-wrap:wrap}
+  .data-tbl.tbl-responsive td.sel-td{position:absolute;top:11px;right:12px;width:auto!important;padding:0}
   /* modais ocupam a tela e rolam */
   .modal-ov{padding:12px;align-items:flex-start;padding-top:20px;overflow-y:auto}
   .modal-box{max-width:100%;max-height:92vh;overflow-y:auto}
@@ -403,7 +427,12 @@ canvas{display:block}
 }
 @media(max-width:600px){
   .kpi-grid{grid-template-columns:1fr 1fr}
-  .crm-col{width:78vw}
+  /* Kanban (CRM/Negociações): 1 coluna por vez, com scroll-snap tipo "swipe"
+     de app — no desktop continua lado a lado, aqui vira paginado. */
+  .crm-board-wrap{scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch}
+  .crm-col{width:88vw;scroll-snap-align:center}
+  .crm-col-bd{max-height:calc(100vh - 400px)}
+  .crm-card-nm,.crm-card-un{white-space:normal;overflow:visible;text-overflow:clip}
   .crm-layout{flex-direction:column}
   .crm-rail{flex-direction:row;overflow-x:auto}
   .kpi-val{font-size:1.8rem}
