@@ -81,12 +81,34 @@
   // ═══════════════════════════════════════════════
   // CONSTANTS
   // ═══════════════════════════════════════════════
-  const STATUSES = [
+  // Fallback só até a equipe conectar e a extensão puxar o funil de verdade
+  // (ver pull_org_pipeline / doLinkOrg) — nunca é o que fica valendo de fato.
+  const DEFAULT_STATUSES = [
     { key: 'novo',      label: 'Novo Lead',       color: '#818cf8', bg: 'rgba(129,140,248,0.12)' },
     { key: 'chamado',   label: 'Chamado',          color: '#fbbf24', bg: 'rgba(251,191,36,0.12)'  },
     { key: 'respondeu', label: 'Respondeu',        color: '#34d399', bg: 'rgba(52,211,153,0.12)'  },
     { key: 'contato',   label: 'Enviou Contato 📱', color: '#f472b6', bg: 'rgba(244,114,182,0.12)' },
   ];
+  function hexToRgba(hex, a){
+    const m=String(hex||'#818cf8').replace('#','');
+    const full = m.length===3 ? m.split('').map(c=>c+c).join('') : m;
+    const r=parseInt(full.slice(0,2),16)||0, g=parseInt(full.slice(2,4),16)||0, b=parseInt(full.slice(4,6),16)||0;
+    return `rgba(${r},${g},${b},${a})`;
+  }
+  // Converte as etapas reais do funil (org_pipelines.stages: {key,label,short,
+  // color,order}) pro formato que a extensão usa pra desenhar (label+color+bg).
+  function mapPipelineStages(stages){
+    return (stages||[]).slice().sort((a,b)=>(a.order||0)-(b.order||0))
+      .map(s=>({ key:s.key, label:s.label||s.key, color:s.color||'#818cf8', bg:hexToRgba(s.color,0.12) }));
+  }
+  // Etapas de VERDADE da equipe conectada — cai pro fallback só se ainda não
+  // tiver puxado nada (equipe não conectada, ou pull falhou).
+  function currentStatuses(){ return (S.pipelineStages&&S.pipelineStages.length)?S.pipelineStages:DEFAULT_STATUSES; }
+  function statusIdx(key){ const i=currentStatuses().findIndex(s=>s.key===key); return i<0?0:i; }
+  function isFirstStatus(key){ return statusIdx(key)===0; }
+  function isLastStatus(key){ return statusIdx(key)===currentStatuses().length-1; }
+  function firstStatusKey(){ return currentStatuses()[0].key; }
+  function lastStatusKey(){ const a=currentStatuses(); return a[a.length-1].key; }
   const RESERVED = new Set(['explore','reel','reels','p','tv','stories','accounts','direct','notifications','ar','challenges','audio','shop','about','privacy','help','']);
   // Títulos genéricos de seção do Instagram que às vezes acabam parando onde
   // deveria estar o nome da pessoa (fallback de heading pego errado no Direct).
@@ -98,19 +120,17 @@
   // STATE
   // ═══════════════════════════════════════════════
   let S = {
-    leads: [], goal: 20,
+    leads: [],
     tab: 'dash', filter: 'all', search: '', noteSearch: '',
     showAdd: false,
     form: { name: '', username: '', niche: '', notes: '', mutualFriends: '' },
     phoneLeadId: null, phoneInput: '',
-    goalInput: 20,
     open: false,
     openStatusId: null,
     detectedProfile: null,
     directDetect: null,        // { phone, leadId, name, username }
     directDismissed: '',       // key do número que o usuário ignorou
-    agendorToken: '',
-    agendorTokenInput: '',
+    agendorToken: '',          // sempre puxado da equipe (doLinkOrg) — não editável na extensão
     agendorStatus: {},
     // DATE FILTER STATE
     dateMode: 'today',   // 'today' | 'day' | 'month' | 'all'
@@ -120,13 +140,14 @@
     org: null,       // {id,name,code,locked,userId,userName} — equipe vinculada por código (ver doLinkOrg)
     orgCodeInput: '',
     orgMembers: [],  // membros da equipe conectada, pra escolher "quem é você" (doPickProspector)
+    pipelineStages: null, // etapas reais do funil da equipe (ver currentStatuses/mapPipelineStages)
   };
 
   // ═══════════════════════════════════════════════
   // STORAGE
   // ═══════════════════════════════════════════════
   const db = {
-    load: () => new Promise(r => chrome.storage.local.get(['igp_l','igp_g','igp_tok','igp_org'], r)),
+    load: () => new Promise(r => chrome.storage.local.get(['igp_l','igp_tok','igp_org','igp_stages','igp_leads_pulled_at'], r)),
     save: d  => new Promise(r => chrome.storage.local.set(d, r)),
   };
 
@@ -231,24 +252,27 @@
   // METRICS (now period-aware)
   // ═══════════════════════════════════════════════
   function metrics() {
+    // "Respondeu" é um corte de posição (a partir da 3ª etapa), não uma etapa
+    // fixa chamada "respondeu" — assim continua fazendo sentido mesmo com um
+    // funil renomeado/redimensionado pela equipe.
+    const respFrom = Math.min(2, currentStatuses().length-1);
     const today = new Date().toDateString();
     const tl = S.leads.filter(l => new Date(l.addedAt).toDateString()===today);
-    const ct = tl.filter(l=>l.status!=='novo').length;
-    const tc = S.leads.filter(l=>l.status!=='novo').length;
-    const re = S.leads.filter(l=>['respondeu','contato'].includes(l.status)).length;
-    const cv = S.leads.filter(l=>l.status==='contato').length;
+    const ct = tl.filter(l=>!isFirstStatus(l.status)).length;
+    const tc = S.leads.filter(l=>!isFirstStatus(l.status)).length;
+    const re = S.leads.filter(l=>statusIdx(l.status)>=respFrom).length;
+    const cv = S.leads.filter(l=>isLastStatus(l.status)).length;
 
     // Period-filtered metrics
     const pl = leadsInPeriod(S.leads);
-    const pCalled = pl.filter(l=>l.status!=='novo').length;
-    const pResp   = pl.filter(l=>['respondeu','contato'].includes(l.status)).length;
-    const pConv   = pl.filter(l=>l.status==='contato').length;
+    const pCalled = pl.filter(l=>!isFirstStatus(l.status)).length;
+    const pResp   = pl.filter(l=>statusIdx(l.status)>=respFrom).length;
+    const pConv   = pl.filter(l=>isLastStatus(l.status)).length;
 
     return {
       todayLeads:tl, calledToday:ct, totalCalled:tc, responded:re, converted:cv,
       convRate: tc>0?Math.round(cv/tc*100):0,
       respRate: tc>0?Math.round(re/tc*100):0,
-      pct: S.goal>0?Math.min(100,Math.round(ct/S.goal*100)):0,
       // period
       periodLeads: pl, periodCalled: pCalled, periodResp: pResp, periodConv: pConv,
       periodConvRate: pCalled>0?Math.round(pConv/pCalled*100):0,
@@ -490,7 +514,7 @@
     const d=S.directDetect;
     if(!d){ bar.className=''; bar.innerHTML=''; return; }
     const lead=d.leadId?S.leads.find(l=>l.id===d.leadId):null;
-    const already=lead && lead.status==='contato' && (lead.phone||'').replace(/\D/g,'')===d.phone.replace(/\D/g,'');
+    const already=lead && isLastStatus(lead.status) && (lead.phone||'').replace(/\D/g,'')===d.phone.replace(/\D/g,'');
     bar.innerHTML=`
       <div style="font-size:12px;font-weight:600;color:#f472b6">📱 Número detectado na conversa</div>
       <div style="font-size:15px;font-weight:700;color:#fff;margin-top:3px">${esc(d.phone)}</div>
@@ -517,15 +541,15 @@
       wasNew=true;
       lead={ id:Date.now().toString(), name:d.name||d.username||'Lead', username:d.username||'',
         profileUrl:d.username?`https://instagram.com/${d.username}`:'', niche:'', notes:'', mutualFriends:'',
-        status:'novo', addedAt:new Date().toISOString(), orgId:S.org&&S.org.id };
+        status:firstStatusKey(), addedAt:new Date().toISOString(), orgId:S.org&&S.org.id };
       S.leads.unshift(lead);
     }
     if(!lead){ toast('Abra o perfil do lead primeiro','info'); return; }
     const now=new Date().toISOString();
-    S.leads=S.leads.map(l=>l.id===lead.id?{...l,status:'contato',phone:d.phone,convertedAt:l.convertedAt||now}:l);
+    S.leads=S.leads.map(l=>l.id===lead.id?{...l,status:lastStatusKey(),phone:d.phone,convertedAt:l.convertedAt||now}:l);
     db.save({igp_l:S.leads});
-    if(wasNew) syncLeadAddDirect({...lead,status:'contato',phone:d.phone});
-    else syncLeadUpdateDirect(lead.id,{status:'contato',phone:d.phone});
+    if(wasNew) syncLeadAddDirect({...lead,status:lastStatusKey(),phone:d.phone});
+    else syncLeadUpdateDirect(lead.id,{status:lastStatusKey(),phone:d.phone});
     const updated=S.leads.find(l=>l.id===lead.id);
     S.directDetect=null; _lastDirectKey='';
     if(S.open) renderBody(); else updateDirectBar();
@@ -665,10 +689,6 @@
       pi.addEventListener('keydown',e=>{if(e.key==='Enter')doConfirmPhone();});
       setTimeout(()=>pi.focus(),50);
     }
-    const gi=shadow.getElementById('igp-gi');
-    if(gi) gi.addEventListener('input',e=>{S.goalInput=Number(e.target.value);});
-    const ti=shadow.getElementById('igp-ti');
-    if(ti) ti.addEventListener('input',e=>{S.agendorTokenInput=e.target.value;});
     const oc=shadow.getElementById('igp-orgcode');
     if(oc) oc.addEventListener('input',e=>{S.orgCodeInput=e.target.value;});
     const pr=shadow.getElementById('igp-prospector');
@@ -703,15 +723,6 @@
 
       ${renderDateFilter()}
 
-      <div class="card" style="margin-bottom:10px">
-        <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:8px">
-          <span style="font-weight:600;color:#fff">Meta diária</span>
-          <span style="color:${m.calledToday>=S.goal?'#34d399':'#666'}">${m.calledToday} / ${S.goal}</span>
-        </div>
-        <div style="background:#252525;border-radius:20px;height:6px"><div style="width:${m.pct}%;height:100%;background:linear-gradient(90deg,#833ab4,#fd1d1d,#fcb045);border-radius:20px;transition:width .4s"></div></div>
-        <div style="font-size:11px;color:#444;margin-top:6px;text-align:right">${m.calledToday>=S.goal?'✅ Meta atingida!':'Faltam '+(S.goal-m.calledToday)+' chamadas'}</div>
-      </div>
-
       <div style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">📊 ${periodLabel()}</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
         ${[
@@ -731,7 +742,7 @@
 
       <div style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Funil geral</div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:14px">
-        ${STATUSES.map(s=>{const c=S.leads.filter(l=>l.status===s.key).length;const p2=S.leads.length>0?Math.round(c/S.leads.length*100):0;return`<div class="card" style="text-align:center;padding:10px 6px"><div style="font-size:20px;font-weight:700;color:${s.color}">${c}</div><div style="font-size:10px;color:#555;margin-top:3px;line-height:1.2">${s.label.replace(' 📱','')}</div><div style="font-size:10px;color:#333;margin-top:2px">${p2}%</div></div>`;}).join('')}
+        ${currentStatuses().map(s=>{const c=S.leads.filter(l=>l.status===s.key).length;const p2=S.leads.length>0?Math.round(c/S.leads.length*100):0;return`<div class="card" style="text-align:center;padding:10px 6px"><div style="font-size:20px;font-weight:700;color:${s.color}">${c}</div><div style="font-size:10px;color:#555;margin-top:3px;line-height:1.2">${s.label.replace(' 📱','')}</div><div style="font-size:10px;color:#333;margin-top:2px">${p2}%</div></div>`;}).join('')}
       </div>
 
       ${pl.length===0?`<div style="text-align:center;padding:20px 0;font-size:12px;color:#444">Nenhuma prospecção em ${periodLabel()}.</div>`:
@@ -740,10 +751,10 @@
         ${pl.slice(0,5).map(l=>`
           <div style="background:#1a1a1a;border:1px solid #1e1e1e;border-radius:10px;padding:10px 12px;margin-bottom:5px;display:flex;align-items:center;justify-content:space-between">
             <div style="display:flex;align-items:center;gap:8px">
-              <div style="width:28px;height:28px;border-radius:50%;background:${l.status==='contato'?'linear-gradient(135deg,#f472b6,#9333ea)':'linear-gradient(135deg,#833ab4,#fd1d1d)'};display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff;flex-shrink:0">${l.name.charAt(0).toUpperCase()}</div>
+              <div style="width:28px;height:28px;border-radius:50%;background:${isLastStatus(l.status)?'linear-gradient(135deg,#f472b6,#9333ea)':'linear-gradient(135deg,#833ab4,#fd1d1d)'};display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff;flex-shrink:0">${l.name.charAt(0).toUpperCase()}</div>
               <div>
                 <div style="font-size:13px;font-weight:500;color:#fff">${esc(l.name)}</div>
-                ${l.status==='contato'&&l.phone?`<div style="font-size:11px;color:#f472b6">📱 ${esc(l.phone)}</div>`:l.username?`<div style="font-size:11px;color:#444">@${esc(l.username)}</div>`:''}
+                ${isLastStatus(l.status)&&l.phone?`<div style="font-size:11px;color:#f472b6">📱 ${esc(l.phone)}</div>`:l.username?`<div style="font-size:11px;color:#444">@${esc(l.username)}</div>`:''}
               </div>
             </div>
             <div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px">
@@ -790,8 +801,8 @@
       `:''}
       <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
         <input id="igp-search" class="inp" placeholder="🔍 Buscar..." value="${esc(S.search)}" style="font-size:12px;padding:6px 10px;flex:1;min-width:100px"/>
-        ${['all',...STATUSES.map(s=>s.key)].map(k=>{
-          const s=STATUSES.find(x=>x.key===k);
+        ${['all',...currentStatuses().map(s=>s.key)].map(k=>{
+          const s=currentStatuses().find(x=>x.key===k);
           const cnt=k==='all'?S.leads.length:S.leads.filter(l=>l.status===k).length;
           const active=S.filter===k;
           return`<button class="fbtn${active?' factive':''}" data-fil="${k}" style="${active?`border-color:${s?.color||'#555'};color:${s?.color||'#fff'};background:${s?.bg||'rgba(255,255,255,0.07)'}`:''}">${k==='all'?'Todos':s?.label.replace(' 📱','')} (${cnt})</button>`;
@@ -816,15 +827,15 @@
     const wa=ph?`https://wa.me/55${ph}`:'';
     const agSt=S.agendorStatus[l.id];
     return `
-      <div class="lead-card${l.status==='contato'?' cv':''}" data-lid="${l.id}">
+      <div class="lead-card${isLastStatus(l.status)?' cv':''}" data-lid="${l.id}">
         <div style="display:flex;align-items:flex-start;gap:10px">
-          <div style="width:34px;height:34px;border-radius:50%;background:${l.status==='contato'?'linear-gradient(135deg,#f472b6,#9333ea)':'linear-gradient(135deg,#833ab4,#fd1d1d)'};display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:#fff;flex-shrink:0">${l.name.charAt(0).toUpperCase()}</div>
+          <div style="width:34px;height:34px;border-radius:50%;background:${isLastStatus(l.status)?'linear-gradient(135deg,#f472b6,#9333ea)':'linear-gradient(135deg,#833ab4,#fd1d1d)'};display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:#fff;flex-shrink:0">${l.name.charAt(0).toUpperCase()}</div>
           <div style="flex:1;min-width:0">
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
               <span style="font-weight:600;font-size:13px;color:#fff">${esc(l.name)}</span>
               ${l.profileUrl?`<a href="${esc(l.profileUrl)}" target="_blank" style="font-size:11px;color:#818cf8;text-decoration:none">@${esc(l.username||'')} ↗</a>`:l.username?`<span style="font-size:11px;color:#555">@${esc(l.username)}</span>`:''}
             </div>
-            ${l.status==='contato'&&l.phone?`
+            ${isLastStatus(l.status)&&l.phone?`
               <div style="display:flex;align-items:center;gap:6px;margin-top:7px;padding:6px 10px;background:rgba(244,114,182,0.08);border:1px solid rgba(244,114,182,0.2);border-radius:8px">
                 <span>📱</span><span style="font-weight:600;font-size:13px;color:#f472b6">${esc(l.phone)}</span>
                 ${wa?`<a href="${wa}" target="_blank" style="margin-left:auto;font-size:11px;color:#25d366;background:rgba(37,211,102,0.1);border:1px solid rgba(37,211,102,0.2);border-radius:6px;padding:2px 8px;text-decoration:none;font-weight:600">WhatsApp ↗</a>`:''}
@@ -849,7 +860,7 @@
               </button>
               ${S.openStatusId===l.id?`
                 <div style="position:absolute;right:0;top:108%;background:#1e1e1e;border:1px solid #2a2a2a;border-radius:9px;z-index:999;min-width:165px;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,0.6)">
-                  ${STATUSES.map((s,i)=>`<button class="smenu-opt" data-a="set-status" data-lid="${l.id}" data-st="${s.key}" style="color:${s.color};border-bottom:${i<STATUSES.length-1?'1px solid #252525':'none'}">${s.label}</button>`).join('')}
+                  ${currentStatuses().map((s,i)=>`<button class="smenu-opt" data-a="set-status" data-lid="${l.id}" data-st="${s.key}" style="color:${s.color};border-bottom:${i<currentStatuses().length-1?'1px solid #252525':'none'}">${s.label}</button>`).join('')}
                 </div>
               `:''}
             </div>
@@ -877,7 +888,7 @@
   // TAB: CONTACTS
   // ═══════════════════════════════════════════════
   function renderContacts(m){
-    const contacts=S.leads.filter(l=>l.status==='contato');
+    const contacts=S.leads.filter(l=>isLastStatus(l.status));
     return `
       <div style="font-weight:700;font-size:15px;color:#fff;margin-bottom:4px">Contatos Recebidos 📱</div>
       <div style="font-size:12px;color:#444;margin-bottom:14px">Pessoas que enviaram o número — sua conversão real.</div>
@@ -923,7 +934,6 @@
   // TAB: SETTINGS
   // ═══════════════════════════════════════════════
   function renderSettings(m){
-    const tokMasked=S.agendorToken?S.agendorToken.slice(0,8)+'••••••••••••••••••••••••••••':'';
     const needFixNames=S.leads.filter(l=>{ const u=(l.username||'').toLowerCase(); const n=(l.name||'').trim().toLowerCase(); return u && (!l.name || n===u || n==='@'+u); }).length;
     return `
       <div style="font-weight:700;font-size:15px;color:#fff;margin-bottom:18px">Configurações</div>
@@ -942,28 +952,18 @@
           <option value="">— selecione —</option>
           ${S.orgMembers.map(m=>`<option value="${esc(m.user_id)}" ${S.org.userId===m.user_id?'selected':''}>${esc(m.name)}</option>`).join('')}
         </select>
-        `:''}
-      </div>
-
-      <div class="card" style="margin-bottom:10px">
-        <div style="font-weight:600;font-size:13px;color:#fff;margin-bottom:12px">Meta diária de chamadas</div>
-        <div style="display:flex;gap:8px;align-items:center">
-          <input type="number" id="igp-gi" class="inp" min="1" max="999" value="${S.goalInput}" style="width:75px;font-size:14px"/>
-          <span style="color:#555;font-size:12px">chamadas / dia</span>
-          <button class="btn-grad" data-a="save-goal" style="margin-left:auto;padding:7px 14px;font-size:12px">Salvar</button>
+        <div style="height:1px;background:#252525;margin:12px 0"></div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:11px;color:#555">${currentStatuses().length} etapa(s) de funil · ${S.leads.length} lead(s) na extensão</span>
+          <button class="btn-ghost" data-a="sync-org-now" style="padding:6px 10px;font-size:11px">↻ Sincronizar agora</button>
         </div>
+        `:''}
       </div>
 
       <div class="card" style="margin-bottom:10px;border-color:rgba(74,222,128,0.2)">
         <div style="font-weight:600;font-size:13px;color:#4ade80;margin-bottom:4px">☁ Integração Agendor CRM</div>
-        <div style="font-size:12px;color:#555;margin-bottom:10px;line-height:1.5">${S.org?'Puxado automaticamente da equipe ao conectar. Só precisa colar aqui se quiser usar um token diferente do configurado no sistema.':'Conecte a uma equipe acima pra puxar o token automaticamente, ou cole o seu abaixo.'}</div>
-        <label style="font-size:11px;color:#555;display:block;margin-bottom:4px">Token de API</label>
-        <div style="display:flex;gap:7px;margin-bottom:8px">
-          <input id="igp-ti" class="inp" placeholder="Cole o token aqui..." value="${S.agendorToken?tokMasked:esc(S.agendorTokenInput)}" style="flex:1;font-size:12px;${S.agendorToken?'color:#4ade80;border-color:rgba(74,222,128,0.3)':''}" ${S.agendorToken?'data-masked="1"':''}/>
-          <button class="btn-agendor" data-a="save-token" style="padding:8px 12px">Salvar</button>
-          ${S.agendorToken?`<button class="btn-danger" data-a="clear-token" style="padding:7px 10px;font-size:11px">✕</button>`:''}
-        </div>
-        ${S.agendorToken?`<div style="font-size:11px;color:#4ade80">✓ Token configurado — sincronização automática ativa</div>`:`<div style="font-size:11px;color:#555">Sem token configurado. Encontre o token em: <a href="https://app.agendor.com.br/api" target="_blank" style="color:#818cf8">app.agendor.com.br/api</a></div>`}
+        <div style="font-size:12px;color:#555;line-height:1.5">O token já é o mesmo configurado nas Configurações do sistema — puxado sozinho ao conectar a equipe acima, não precisa colar de novo aqui.</div>
+        ${S.agendorToken?`<div style="font-size:11px;color:#4ade80;margin-top:8px">✓ Token configurado — sincronização automática ativa</div>`:`<div style="font-size:11px;color:#555;margin-top:8px">Sem token — configure a integração com o Agendor no sistema (Configurações) e reconecte a equipe aqui.</div>`}
       </div>
 
       <div class="card" style="margin-bottom:10px">
@@ -1027,9 +1027,7 @@
         navigator.clipboard?.writeText(el.dataset.phone).then(()=>{el.textContent='✓';setTimeout(()=>{el.textContent='Copiar';},2000);});
         break;
       case 'link-org':      doLinkOrg(); break;
-      case 'save-goal':    doSaveGoal(); break;
-      case 'save-token':   doSaveToken(); break;
-      case 'clear-token':  S.agendorToken=''; S.agendorTokenInput=''; db.save({igp_tok:''}); renderBody(); break;
+      case 'sync-org-now':  if(S.org&&S.org.code){ pullPipeline(S.org.code); pullLeads(S.org.code, true); db.save({igp_leads_pulled_at:Date.now()}); } break;
       case 'fix-open-name': { const p=S.detectedProfile; if(p){ const nm=findRealName(p.username); maybeFixLeadName(p.username,nm,p.url); if(nm.toLowerCase()===p.username.toLowerCase()) toast('Não achei o nome real nesta página','info'); renderBody(); } break; }
       case 'clear-leads':
         if(confirm('Apagar todos os leads? Não pode ser desfeito.')){ S.leads=[]; db.save({igp_l:S.leads}); renderBody(); }
@@ -1078,7 +1076,7 @@
     const lead={
       id:Date.now().toString(), ...S.form,
       profileUrl: p&&p.username===S.form.username ? p.url : '',
-      status:'novo', addedAt:new Date().toISOString(), orgId:S.org&&S.org.id
+      status:firstStatusKey(), addedAt:new Date().toISOString(), orgId:S.org&&S.org.id
     };
     S.leads.unshift(lead);
     S.form={name:'',username:'',niche:'',notes:'',mutualFriends:''};
@@ -1102,7 +1100,7 @@
       name:realName, username:p.username,
       profileUrl:p.url,
       niche:'', notes:'', mutualFriends:'',
-      status:'novo', addedAt:new Date().toISOString(), orgId:S.org&&S.org.id
+      status:firstStatusKey(), addedAt:new Date().toISOString(), orgId:S.org&&S.org.id
     };
     S.leads.unshift(lead);
     db.save({igp_l:S.leads});
@@ -1114,7 +1112,7 @@
 
   function doSetStatus(lid,st){
     S.openStatusId=null;
-    if(st==='contato'){
+    if(isLastStatus(st)){
       const lead=S.leads.find(l=>l.id===lid);
       if(lead){ S.phoneLeadId=lid; S.phoneInput=lead.phone||''; renderBody(); }
     } else {
@@ -1128,9 +1126,9 @@
   function doConfirmPhone(){
     if(!S.phoneInput.trim()||!S.phoneLeadId) return;
     const now=new Date().toISOString();
-    S.leads=S.leads.map(l=>l.id===S.phoneLeadId?{...l,status:'contato',phone:S.phoneInput.trim(),convertedAt:now}:l);
+    S.leads=S.leads.map(l=>l.id===S.phoneLeadId?{...l,status:lastStatusKey(),phone:S.phoneInput.trim(),convertedAt:now}:l);
     db.save({igp_l:S.leads});
-    syncLeadUpdateDirect(S.phoneLeadId,{status:'contato',phone:S.phoneInput.trim()});
+    syncLeadUpdateDirect(S.phoneLeadId,{status:lastStatusKey(),phone:S.phoneInput.trim()});
     const lead=S.leads.find(l=>l.id===S.phoneLeadId);
     S.phoneLeadId=null; S.phoneInput='';
     renderBody();
@@ -1166,7 +1164,7 @@
       S.orgCodeInput='';
       db.save({igp_org:S.org});
       if(res.org.agendor_token){
-        S.agendorToken=res.org.agendor_token; S.agendorTokenInput='';
+        S.agendorToken=res.org.agendor_token;
         db.save({igp_tok:res.org.agendor_token});
       }
       renderBody();
@@ -1179,6 +1177,47 @@
         }
         renderBody();
       });
+      pullPipeline(code);
+      pullLeads(code, true);
+    });
+  }
+
+  // Etapas de verdade do funil (Configurações → Personalização, no sistema) —
+  // sem isso a extensão usa o fallback genérico (novo/chamado/respondeu/contato).
+  function pullPipeline(code){
+    chrome.runtime.sendMessage({ type:'pull_org_pipeline', code }, res=>{
+      if(!res||!res.ok||!res.pipeline){ console.warn('IGProspect: falha ao puxar etapas do funil', res&&res.error); return; }
+      S.pipelineStages=mapPipelineStages(res.pipeline.stages);
+      db.save({igp_stages:S.pipelineStages});
+      if(S.open) renderBody();
+    });
+  }
+
+  // Traz os leads que já existem no sistema pra dentro da extensão — assim
+  // ela não começa vazia toda vez que conecta uma equipe. showToast=true só
+  // na conexão manual (evita popup toda vez que a extensão só reabre sozinha).
+  function pullLeads(code, showToast){
+    chrome.runtime.sendMessage({ type:'pull_org_leads', code }, res=>{
+      if(!res||!res.ok){ console.warn('IGProspect: falha ao puxar leads do sistema', res&&res.error); return; }
+      const server=res.leads||[];
+      // Mescla por cima do que já existe localmente — preserva campos que só
+      // vivem na extensão (notas, marcação manual de Agendor, etc.) em vez de
+      // substituir o lead inteiro pela versão "enxuta" que vem do servidor.
+      const localById=new Map(S.leads.map(l=>[String(l.id),l]));
+      const merged=server.map(l=>{
+        const loc=localById.get(l.ext_id)||{};
+        return { ...loc,
+          id:l.ext_id, name:l.name||l.username||'Lead', username:l.username||'',
+          phone:l.phone||'', niche:l.niche||'', status:l.status||firstStatusKey(),
+          addedAt:l.added_at||loc.addedAt||new Date().toISOString(),
+        };
+      });
+      const serverIds=new Set(server.map(l=>l.ext_id));
+      const localOnly=S.leads.filter(l=>!serverIds.has(String(l.id))); // capturas locais ainda não sincronizadas
+      S.leads=[...merged, ...localOnly];
+      db.save({igp_l:S.leads});
+      if(showToast) toast(`${server.length} lead(s) trazido(s) do sistema`,'ok');
+      if(S.open) renderBody();
     });
   }
 
@@ -1209,31 +1248,14 @@
     });
   }
 
-  function doSaveGoal(){
-    S.goal=S.goalInput;
-    db.save({igp_g:S.goal});
-    renderBody();
-    toast('Meta salva!','ok');
-  }
-
-  function doSaveToken(){
-    const ti=shadow.getElementById('igp-ti');
-    const val=ti&&!ti.dataset.masked?ti.value.trim():S.agendorTokenInput.trim();
-    if(!val||val.includes('•')) return;
-    S.agendorToken=val;
-    S.agendorTokenInput='';
-    db.save({igp_tok:val});
-    renderBody();
-    toast('Token Agendor salvo!','ok');
-  }
 
   // ═══════════════════════════════════════════════
   // ═══════════════════════════════════════════════
   db.load().then(d=>{
     if(d.igp_l) S.leads=d.igp_l;
-    if(d.igp_g){ S.goal=d.igp_g; S.goalInput=d.igp_g; }
-    if(d.igp_tok){ S.agendorToken=d.igp_tok; S.agendorTokenInput=d.igp_tok; }
+    if(d.igp_tok) S.agendorToken=d.igp_tok;
     if(d.igp_org) S.org=d.igp_org;
+    if(d.igp_stages) S.pipelineStages=d.igp_stages;
     render();
     extractProfile();
     // Repopula a lista de membros pra poder trocar/confirmar "quem é você"
@@ -1243,6 +1265,14 @@
         S.orgMembers=(res&&res.ok&&res.members)||[];
         if(S.open) renderBody();
       });
+      pullPipeline(S.org.code); // barato, atualiza sempre — pega renomeações de etapa na hora
+      // Puxar TODOS os leads é mais pesado — só repete de tempos em tempos,
+      // não em toda recarga da extensão (cada navegação no Instagram, etc.).
+      const lastPull=d.igp_leads_pulled_at||0;
+      if(Date.now()-lastPull>10*60*1000){
+        pullLeads(S.org.code, false);
+        db.save({igp_leads_pulled_at:Date.now()});
+      }
     }
   });
   // O painel (se aberto, na mesma equipe) ainda pode SUGERIR a equipe ativa —

@@ -84,6 +84,44 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  // Etapas DE VERDADE do funil da equipe (Configurações → Personalização),
+  // pra extensão parar de usar Novo Lead/Chamado/Respondeu/Enviou Contato fixos.
+  if (msg.type === 'pull_org_pipeline') {
+    const code = String(msg.code || '').trim();
+    callRpc('org_pipeline_by_join_code', { p_code: code })
+      .then(async r => {
+        const data = await r.json().catch(() => null);
+        const pipeline = Array.isArray(data) && data[0] ? data[0] : null;
+        sendResponse({ ok: r.ok && !!pipeline, pipeline, error: r.ok ? null : ((data && data.message) || `HTTP ${r.status}`) });
+      })
+      .catch(err => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  // Traz os leads que já existem no sistema pra dentro da extensão ao
+  // conectar a equipe — pagina pra não depender do limite padrão de linhas
+  // da API (não confia que uma equipe com milhares de leads volta tudo de
+  // uma vez só).
+  if (msg.type === 'pull_org_leads') {
+    const code = String(msg.code || '').trim();
+    (async () => {
+      const all = []; const pageSize = 2000; let offset = 0;
+      try {
+        while (true) {
+          const r = await callRpc('org_leads_by_join_code', { p_code: code, p_limit: pageSize, p_offset: offset });
+          const data = await r.json().catch(() => null);
+          if (!r.ok) { sendResponse({ ok: false, error: (data && data.message) || `HTTP ${r.status}` }); return; }
+          const page = Array.isArray(data) ? data : [];
+          all.push(...page);
+          if (page.length < pageSize) break;
+          offset += pageSize;
+        }
+        sendResponse({ ok: true, leads: all });
+      } catch (err) { sendResponse({ ok: false, error: err.message }); }
+    })();
+    return true;
+  }
+
   if (msg.type === 'agendor_create_person') {
     const { token, person } = msg;
 
