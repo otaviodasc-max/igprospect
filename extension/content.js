@@ -88,6 +88,9 @@
     { key: 'contato',   label: 'Enviou Contato 📱', color: '#f472b6', bg: 'rgba(244,114,182,0.12)' },
   ];
   const RESERVED = new Set(['explore','reel','reels','p','tv','stories','accounts','direct','notifications','ar','challenges','audio','shop','about','privacy','help','']);
+  // Títulos genéricos de seção do Instagram que às vezes acabam parando onde
+  // deveria estar o nome da pessoa (fallback de heading pego errado no Direct).
+  const GENERIC_NAMES = new Set(['mensagens','messages','direct','solicitações','solicitacoes','requests','inbox','chats','conversas']);
 
   const MONTHS_PT = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 
@@ -369,18 +372,22 @@
   function maybeFixLeadName(username, name, url){
     if(!name || name.toLowerCase()===username.toLowerCase()) return;
     const uLow=username.toLowerCase();
-    let changed=false;
+    let changed=false; const fixedIds=[];
     S.leads=S.leads.map(l=>{
       if((l.username||'').toLowerCase()!==uLow) return l;
       const nClean=(l.name||'').trim(), n=nClean.toLowerCase();
       // nome "ruim" = vazio, igual ao @, ou contém "(@outro)" que não é o @ deste lead (corrompido pelo bug)
       const foreign=nClean.match(/\(@([A-Za-z0-9._]+)\)/);
       const corrupted = !!foreign && foreign[1].toLowerCase()!==uLow;
-      const isHandle = !l.name || n===uLow || n==='@'+uLow || corrupted;
-      if(isHandle && l.name!==name){ changed=true; return { ...l, name, profileUrl:l.profileUrl||url }; }
+      const isHandle = !l.name || n===uLow || n==='@'+uLow || corrupted || GENERIC_NAMES.has(n);
+      if(isHandle && l.name!==name){ changed=true; fixedIds.push(l.id); return { ...l, name, profileUrl:l.profileUrl||url }; }
       return l;
     });
-    if(changed){ db.save({igp_l:S.leads}); toast(`Nome corrigido: ${name}`,'ok'); if(S.open) renderBody(); }
+    if(changed){
+      db.save({igp_l:S.leads});
+      fixedIds.forEach(id=>syncLeadUpdateDirect(id,{name}));
+      toast(`Nome corrigido: ${name}`,'ok'); if(S.open) renderBody();
+    }
   }
 
   function updateProfileBar() {
@@ -437,9 +444,24 @@
     const links=header.querySelectorAll('a[href^="/"]');
     for(const a of links){
       const hm=(a.getAttribute('href')||'').match(/^\/([A-Za-z0-9._]+)\/?$/);
-      if(hm && !RESERVED.has(hm[1])){ username=hm[1]; if(!name) name=(a.textContent||'').trim(); break; }
+      if(hm && !RESERVED.has(hm[1])){
+        username=hm[1];
+        // Alguns links de perfil no cabeçalho do Direct são só o avatar (sem
+        // texto visível) — nesse caso o nome vem do alt da imagem, se tiver.
+        const img=a.querySelector('img[alt]');
+        name=(a.textContent||'').trim() || ((img&&img.getAttribute('alt'))||'').trim();
+        break;
+      }
     }
-    if(!name){ const h=header.querySelector('h1,h2,[role="heading"]'); if(h) name=(h.textContent||'').trim(); }
+    // Fallback pro heading da página só entra se o que já achamos não presta —
+    // e mesmo assim, nunca aceita um título genérico de seção (ex.: "Mensagens",
+    // que é o header compartilhado da caixa de entrada, não da conversa).
+    if(GENERIC_NAMES.has(name.toLowerCase())) name='';
+    if(!name){
+      const h=header.querySelector('h1,h2,[role="heading"]');
+      const hName=h?(h.textContent||'').trim():'';
+      name = GENERIC_NAMES.has(hName.toLowerCase()) ? '' : hName;
+    }
     if(name && name.length>60) name=name.slice(0,60);
     return { username, name };
   }
@@ -1177,7 +1199,7 @@
   }
   function syncLeadUpdateDirect(extId, patch){
     if(!S.org||!S.org.code||!extId) return;
-    chrome.runtime.sendMessage({ type:'update_lead_direct', code:S.org.code, extId, status:patch.status, phone:patch.phone }, res=>{
+    chrome.runtime.sendMessage({ type:'update_lead_direct', code:S.org.code, extId, status:patch.status, phone:patch.phone, name:patch.name }, res=>{
       if(!res||!res.ok) console.warn('IGProspect: falha ao atualizar lead direto', res&&res.error);
     });
   }

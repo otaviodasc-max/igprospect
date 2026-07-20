@@ -69,8 +69,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'update_lead_direct') {
-    const { code, extId, status, phone } = msg;
-    callRpc('extension_update_lead', { p_code: code, p_ext_id: String(extId || ''), p_status: status || null, p_phone: phone || null })
+    const { code, extId, status, phone, name } = msg;
+    callRpc('extension_update_lead', { p_code: code, p_ext_id: String(extId || ''), p_status: status || null, p_phone: phone || null, p_name: name || null })
       .then(async r => { sendResponse({ ok: r.ok, error: r.ok ? null : await r.text().catch(()=>'') }); })
       .catch(err => sendResponse({ ok: false, error: err.message }));
     return true;

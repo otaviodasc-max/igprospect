@@ -2184,6 +2184,10 @@ function bindBridge(){
   // mais tarde, para outra equipe que esteja aberta no momento do sync.
   window.postMessage({ source:'igp-dashboard', type:'request-leads', orgId:S.org&&S.org.id, orgName:S.org&&S.org.name }, '*');
 }
+// Títulos genéricos de seção do Instagram que a extensão pode ter capturado
+// como "nome" por engano (ex.: cabeçalho da caixa de Mensagens) — tratado
+// como nome ruim pra corrigir sozinho assim que um nome de verdade chegar.
+const GENERIC_NAMES = new Set(['mensagens','messages','direct','solicitações','solicitacoes','requests','inbox','chats','conversas']);
 async function importExtensionLeads(incoming){
   if(!Array.isArray(incoming) || !incoming.length || !S.org) return;
   if(bridgeBusy){ bridgePending=incoming; return; }   // já sincronizando → guarda o último e processa depois
@@ -2217,7 +2221,7 @@ async function importExtensionLeads(incoming){
         const exU=(existing.username||'').toLowerCase(), exNclean=(existing.name||'').trim(), exN=exNclean.toLowerCase();
         const exForeign=exNclean.match(/\(@([A-Za-z0-9._]+)\)/);
         const exCorrupted=!!exForeign && exForeign[1].toLowerCase()!==exU;
-        const nameIsHandle = !existing.name || exN===exU || exN==='@'+exU || exCorrupted;
+        const nameIsHandle = !existing.name || exN===exU || exN==='@'+exU || exCorrupted || GENERIC_NAMES.has(exN);
         if(raw.name && raw.name.toLowerCase()!==uk && nameIsHandle && raw.name.trim()!==(existing.name||'')) patch.name=raw.name.trim();
         if(Object.keys(patch).length){
           const { error }=await sb.from('leads').update(patch).eq('id',existing.id);
@@ -2258,7 +2262,10 @@ async function importExtensionLeads(incoming){
       if(updated) parts.push(`${updated} atualizado(s)`);
       toast(`Extensão sincronizada: ${parts.join(' · ')}`,'success');
     }
-    if(foreign.length) toast(`${foreign.length} lead(s) da extensão são de outra equipe — não foram importados aqui`,'warn');
+    // Não vira toast: a extensão já grava direto na equipe certa (ver
+    // extension_add_lead), então isso aqui é só um resíduo esperado da fila
+    // local antiga sendo filtrado — não é um aviso que o usuário precise ver.
+    if(foreign.length) console.warn(`IGProspect: ${foreign.length} lead(s) da extensão ignorados (equipe diferente da aberta agora)`);
   } finally {
     bridgeBusy=false;
     if(bridgePending){ const p=bridgePending; bridgePending=null; importExtensionLeads(p); }
