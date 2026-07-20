@@ -28,10 +28,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     callRpc('org_by_join_code', { p_code: code })
       .then(async r => {
         const data = await r.json().catch(() => null);
+        // r.ok=false aqui quase sempre é a função org_by_join_code não existir
+        // ainda no banco (SQL não rodado) — diferente de "código não encontrado"
+        // (a função roda, só não acha nenhuma equipe com esse código).
+        if (!r.ok) {
+          const msg = (data && (data.message || data.hint)) || `HTTP ${r.status}`;
+          sendResponse({ ok: false, error: msg, notFound: false });
+          return;
+        }
         const org = Array.isArray(data) && data[0] ? data[0] : null;
-        sendResponse({ ok: r.ok && !!org, org });
+        sendResponse({ ok: !!org, org, notFound: !org });
       })
-      .catch(err => sendResponse({ ok: false, error: err.message }));
+      .catch(err => sendResponse({ ok: false, error: err.message, notFound: false }));
 
     return true; // keep message channel open for async response
   }

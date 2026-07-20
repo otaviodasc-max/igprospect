@@ -1155,7 +1155,12 @@
     if(!code){ toast('Digite o código da equipe','info'); return; }
     toast('Verificando código…','info');
     chrome.runtime.sendMessage({ type:'resolve_org_code', code }, res=>{
-      if(!res||!res.ok||!res.org){ toast('Código inválido — confira em Configurações → Equipe no sistema','err'); return; }
+      if(!res||!res.ok||!res.org){
+        const msg = res&&res.notFound===false
+          ? `Erro ao verificar código: ${res.error||'peça pro dono rodar os SQL pendentes do sistema'}`
+          : 'Código inválido — confira em Configurações → Equipe no sistema';
+        toast(msg,'err'); return;
+      }
       S.org={ id:res.org.id, name:res.org.name, code, locked:true, userId:null, userName:'' };
       S.orgMembers=[];
       S.orgCodeInput='';
