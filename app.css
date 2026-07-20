@@ -213,6 +213,7 @@ canvas{display:block}
 .lead-un{font-size:.67rem;color:var(--t3)}
 .tbl-acts{display:flex;gap:4px;opacity:0;transition:opacity var(--tr);justify-content:flex-end}
 .data-tbl tbody tr:hover .tbl-acts{opacity:1}
+.stg-row .tbl-acts{opacity:1}
 .act-btn{padding:3px 8px;border-radius:4px;font-size:.64rem;font-weight:600;background:var(--surf3);color:var(--t2);border:1px solid var(--border);cursor:pointer;transition:all var(--tr);white-space:nowrap}
 .act-btn:hover{background:var(--plt);color:var(--sb-atx);border-color:rgba(99,102,241,.3)}
 .act-del:hover{background:rgba(239,68,68,.14);color:#FCA5A5;border-color:rgba(239,68,68,.25)}

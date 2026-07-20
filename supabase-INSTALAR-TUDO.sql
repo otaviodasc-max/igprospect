@@ -13,6 +13,11 @@
 --
 -- (A promoção do seu usuário a admin já foi feita antes — não repetimos
 --  aqui pra não mexer no trigger de proteção.)
+--
+-- PRÉ-REQUISITO: rode ANTES o supabase-pipelines.sql (cria as tabelas
+-- org_pipelines/org_deal_stages/org_call_outcomes) — este arquivo agora
+-- também redefine create_org() pra popular essas tabelas em toda equipe
+-- nova, evitando que ela nasça sem os status/etapas do módulo escolhido.
 -- =====================================================================
 
 
@@ -37,18 +42,102 @@ begin
 end; $$;
 
 -- 3) Só usuário aprovado (active) pode criar/entrar em equipe
+-- 3b) E toda equipe nova já nasce com funil/estágios/desfechos padrão do
+--     módulo escolhido (antes só existiam via backfill manual em
+--     supabase-pipelines.sql, então equipes criadas depois desse backfill
+--     nasciam sem essas linhas — causa do "poucas opções de status").
 create or replace function public.create_org(p_name text, p_module_id text default null)
 returns uuid language plpgsql security definer set search_path = public as $$
-declare v_org uuid; v_code text;
+declare v_org uuid; v_code text; v_module text;
 begin
   if not public.is_active() then raise exception 'Cadastro em análise: aguarde a aprovação do administrador'; end if;
   v_code := upper(substring(md5(random()::text) from 1 for 6));
+  v_module := coalesce(p_module_id,'consorcio');
   insert into public.orgs(name, join_code, module_id)
-    values (coalesce(nullif(trim(p_name),''),'Meu espaço'), v_code, coalesce(p_module_id,'consorcio'))
+    values (coalesce(nullif(trim(p_name),''),'Meu espaço'), v_code, v_module)
     returning id into v_org;
   insert into public.org_members(org_id, user_id, role) values (v_org, auth.uid(), 'owner');
   perform set_config('app.allow_org_change','1', true);
   update public.profiles set org_id = v_org, org_role = 'owner' where id = auth.uid();
+
+  -- Funil "Instagram" (prospecção) — igual ao prospectFunnel de todo módulo hoje.
+  insert into public.org_pipelines (org_id, name, icon, order_idx, is_default, counts_as_empresario, stages)
+  values (v_org, 'Instagram', '📸', 0, true, false,
+    '[
+      {"key":"novo","label":"Novo Lead","short":"Novos","color":"#64748B","order":0},
+      {"key":"chamado","label":"Chamado","short":"Chamados","color":"#6366F1","order":1},
+      {"key":"respondeu","label":"Respondeu","short":"Responderam","color":"#F59E0B","order":2},
+      {"key":"contato","label":"Enviou Contato","short":"Convertidos","color":"#10B981","order":3}
+    ]'::jsonb);
+
+  -- Funil "Empresários" — só para equipes no módulo consórcio.
+  if v_module = 'consorcio' then
+    insert into public.org_pipelines (org_id, name, icon, order_idx, is_default, counts_as_empresario, stages)
+    values (v_org, 'Empresários', '🏢', 1, false, true,
+      '[
+        {"key":"a_contatar","label":"A Contatar","short":"A Contatar","color":"#64748B","order":0},
+        {"key":"em_conversa","label":"Em Conversa","short":"Conversa","color":"#6366F1","order":1},
+        {"key":"reuniao","label":"Reunião","short":"Reunião","color":"#8B5CF6","order":2},
+        {"key":"negociando","label":"Negociando","short":"Negociando","color":"#F59E0B","order":3}
+      ]'::jsonb);
+  end if;
+
+  -- Estágios de negociação por módulo.
+  insert into public.org_deal_stages (org_id, stages, won_stage, lost_stage, card_types)
+  values (v_org,
+    case v_module
+      when 'imoveis' then '[
+        {"key":"contato","label":"Contato Recebido","short":"Contato","color":"#64748B","order":0},
+        {"key":"visita","label":"Visita Agendada","short":"Visita","color":"#6366F1","order":1},
+        {"key":"proposta","label":"Proposta","short":"Proposta","color":"#8B5CF6","order":2},
+        {"key":"documentacao","label":"Documentação","short":"Docs","color":"#F59E0B","order":3},
+        {"key":"vendido","label":"Fechado","short":"Fechados","color":"#10B981","order":4},
+        {"key":"perdido","label":"Perdido","short":"Perdidos","color":"#EF4444","order":5}
+      ]'::jsonb
+      when 'seguros' then '[
+        {"key":"contato","label":"Contato Recebido","short":"Contato","color":"#64748B","order":0},
+        {"key":"cotacao","label":"Cotação","short":"Cotação","color":"#6366F1","order":1},
+        {"key":"proposta","label":"Proposta","short":"Proposta","color":"#F59E0B","order":2},
+        {"key":"apolice_emitida","label":"Apólice Emitida","short":"Emitidas","color":"#10B981","order":3},
+        {"key":"renovacao_perdida","label":"Perdida","short":"Perdidas","color":"#EF4444","order":4}
+      ]'::jsonb
+      when 'saas' then '[
+        {"key":"contato","label":"Contato Recebido","short":"Contato","color":"#64748B","order":0},
+        {"key":"demo_agendada","label":"Demo Agendada","short":"Agendada","color":"#6366F1","order":1},
+        {"key":"demo_realizada","label":"Demo Realizada","short":"Realizada","color":"#8B5CF6","order":2},
+        {"key":"proposta","label":"Proposta","short":"Proposta","color":"#F59E0B","order":3},
+        {"key":"trial","label":"Em Trial","short":"Trial","color":"#0EA5E9","order":4},
+        {"key":"fechado","label":"Fechado","short":"Fechados","color":"#10B981","order":5},
+        {"key":"perdido","label":"Perdido","short":"Perdidos","color":"#EF4444","order":6}
+      ]'::jsonb
+      else '[
+        {"key":"contato","label":"Contato Recebido","short":"Contato","color":"#64748B","order":0},
+        {"key":"reuniao","label":"Reunião","short":"Reunião","color":"#6366F1","order":1},
+        {"key":"reuniao_agendada","label":"Reunião Agendada","short":"Agendada","color":"#8B5CF6","order":2},
+        {"key":"negociando","label":"Negociando","short":"Negociando","color":"#F59E0B","order":3},
+        {"key":"vendido","label":"Vendido","short":"Vendidos","color":"#10B981","order":4},
+        {"key":"perdido","label":"Perdido","short":"Perdidos","color":"#EF4444","order":5}
+      ]'::jsonb
+    end,
+    case v_module when 'imoveis' then 'vendido' when 'seguros' then 'apolice_emitida' when 'saas' then 'fechado' else 'vendido' end,
+    case v_module when 'seguros' then 'renovacao_perdida' else 'perdido' end,
+    case v_module
+      when 'imoveis' then '["Apartamento","Casa","Terreno","Comercial"]'::jsonb
+      when 'seguros' then '["Auto","Vida","Residencial","Saúde","Empresarial"]'::jsonb
+      when 'saas'    then '["Plano Starter","Plano Pro","Plano Enterprise","Infoproduto"]'::jsonb
+      else '["Imóvel","Veículo","Investimentos"]'::jsonb
+    end);
+
+  -- Desfechos de ligação — iguais para todo módulo hoje.
+  insert into public.org_call_outcomes (org_id, outcomes)
+  values (v_org, '[
+    {"key":"interessado","label":"Interessado","color":"#10B981","order":0},
+    {"key":"retornar","label":"Retornar depois","color":"#F59E0B","order":1},
+    {"key":"sem_interesse","label":"Sem interesse","color":"#EF4444","order":2},
+    {"key":"nao_atendeu","label":"Não atendeu","color":"#64748B","order":3},
+    {"key":"fechado","label":"Fechou negócio","color":"#6366F1","order":4}
+  ]'::jsonb);
+
   return v_org;
 end; $$;
 
