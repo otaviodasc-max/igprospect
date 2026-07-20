@@ -18,11 +18,27 @@
     } catch (e) { /* extensão recarregando */ }
   }
 
-  // 1) O painel pede os leads ao carregar/logar
+  // 1) O painel pede os leads ao carregar/logar — e informa qual equipe está
+  //    ativa agora, pra extensão marcar os PRÓXIMOS leads capturados com ela.
+  //    Evita que um lead capturado com uma equipe aberta seja sincronizado,
+  //    depois, para outra equipe que esteja aberta na hora do sync.
   window.addEventListener('message', ev => {
     if (ev.source !== window) return;
     const d = ev.data;
-    if (d && d.source === 'igp-dashboard' && d.type === 'request-leads') pushCurrent();
+    if (d && d.source === 'igp-dashboard' && d.type === 'request-leads') {
+      if (d.orgId) chrome.storage.local.set({ igp_org: { id: d.orgId, name: d.orgName || '' } });
+      pushCurrent();
+    }
+    // 1b) O painel confirma quais leads já gravou/conferiu — some da fila local
+    //     pra não serem oferecidos de novo (e duplicados) pra outra equipe depois.
+    if (d && d.source === 'igp-dashboard' && d.type === 'synced-ids' && Array.isArray(d.ids) && d.ids.length) {
+      const done = new Set(d.ids.map(String));
+      chrome.storage.local.get('igp_l', data => {
+        const list = (data && data.igp_l) || [];
+        const kept = list.filter(l => !done.has(String(l.id)));
+        if (kept.length !== list.length) chrome.storage.local.set({ igp_l: kept });
+      });
+    }
   });
 
   // 2) Envia assim que a ponte sobe

@@ -120,6 +120,7 @@
     dateDay: new Date().toISOString().slice(0,10),    // YYYY-MM-DD
     dateMonth: new Date().getMonth(),                 // 0-11
     dateYear: new Date().getFullYear(),
+    org: null,   // {id,name} da equipe ativa no painel — ver igp_org em bridge.js
   };
   let audioEls = {};
 
@@ -127,7 +128,7 @@
   // STORAGE
   // ═══════════════════════════════════════════════
   const db = {
-    load: () => new Promise(r => chrome.storage.local.get(['igp_l','igp_a','igp_g','igp_tok'], r)),
+    load: () => new Promise(r => chrome.storage.local.get(['igp_l','igp_a','igp_g','igp_tok','igp_org'], r)),
     save: d  => new Promise(r => chrome.storage.local.set(d, r)),
   };
 
@@ -496,7 +497,7 @@
     if(!lead && createNew){
       lead={ id:Date.now().toString(), name:d.name||d.username||'Lead', username:d.username||'',
         profileUrl:d.username?`https://instagram.com/${d.username}`:'', niche:'', notes:'', mutualFriends:'',
-        status:'novo', addedAt:new Date().toISOString() };
+        status:'novo', addedAt:new Date().toISOString(), orgId:S.org&&S.org.id };
       S.leads.unshift(lead);
     }
     if(!lead){ toast('Abra o perfil do lead primeiro','info'); return; }
@@ -1070,7 +1071,7 @@
     const lead={
       id:Date.now().toString(), ...S.form,
       profileUrl: p&&p.username===S.form.username ? p.url : '',
-      status:'novo', addedAt:new Date().toISOString()
+      status:'novo', addedAt:new Date().toISOString(), orgId:S.org&&S.org.id
     };
     S.leads.unshift(lead);
     S.form={name:'',username:'',niche:'',notes:'',mutualFriends:''};
@@ -1092,7 +1093,7 @@
       name:realName, username:p.username,
       profileUrl:p.url,
       niche:'', notes:'', mutualFriends:'',
-      status:'novo', addedAt:new Date().toISOString()
+      status:'novo', addedAt:new Date().toISOString(), orgId:S.org&&S.org.id
     };
     S.leads.unshift(lead);
     db.save({igp_l:S.leads});
@@ -1223,8 +1224,16 @@
     if(d.igp_a) S.audios=d.igp_a;
     if(d.igp_g){ S.goal=d.igp_g; S.goalInput=d.igp_g; }
     if(d.igp_tok){ S.agendorToken=d.igp_tok; S.agendorTokenInput=d.igp_tok; }
+    if(d.igp_org) S.org=d.igp_org;
     render();
     extractProfile();
   });
+  // Painel pode anunciar/trocar a equipe ativa a qualquer momento (troca de equipe
+  // sem fechar a aba) — mantém S.org atualizado pros próximos leads capturados.
+  try{
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === 'local' && changes.igp_org) S.org = changes.igp_org.newValue || null;
+    });
+  } catch(e) { /* sem permissão de storage — ignora */ }
 
 })();

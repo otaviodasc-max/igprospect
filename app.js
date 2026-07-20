@@ -2089,29 +2089,41 @@ async function renderOrgFeatures(orgId, orgName){
 ===================================================================== */
 let bridgeBound=false, bridgeBusy=false, bridgePending=null;
 function bindBridge(){
-  if(bridgeBound) return; bridgeBound=true;
-  window.addEventListener('message', ev=>{
-    if(ev.source!==window) return;
-    const d=ev.data; if(!d||d.source!=='igp-extension') return;
-    if(d.type==='leads') importExtensionLeads(d.leads);
-  });
-  window.postMessage({ source:'igp-dashboard', type:'request-leads' }, '*');
+  if(!bridgeBound){
+    bridgeBound=true;
+    window.addEventListener('message', ev=>{
+      if(ev.source!==window) return;
+      const d=ev.data; if(!d||d.source!=='igp-extension') return;
+      if(d.type==='leads') importExtensionLeads(d.leads);
+    });
+  }
+  // Anuncia a equipe ativa pra extensão marcar os leads capturados a partir de agora
+  // com essa equipe — evita que um lead capturado numa equipe seja sincronizado,
+  // mais tarde, para outra equipe que esteja aberta no momento do sync.
+  window.postMessage({ source:'igp-dashboard', type:'request-leads', orgId:S.org&&S.org.id, orgName:S.org&&S.org.name }, '*');
 }
 async function importExtensionLeads(incoming){
   if(!Array.isArray(incoming) || !incoming.length || !S.org) return;
   if(bridgeBusy){ bridgePending=incoming; return; }   // já sincronizando → guarda o último e processa depois
   bridgeBusy=true;
   try{
+    // Leads capturados pela extensão enquanto OUTRA equipe estava ativa no painel
+    // (raw.orgId marcado e diferente da equipe atual) não são importados aqui —
+    // ficam guardados na extensão até a equipe certa estar aberta. Leads sem
+    // orgId (capturados antes desta marcação existir) continuam entrando normal.
+    const foreign=incoming.filter(raw=>raw&&raw.orgId&&raw.orgId!==S.org.id);
+    incoming=incoming.filter(raw=>!raw||!raw.orgId||raw.orgId===S.org.id);
     // Mapas para localizar leads já existentes (por id da extensão ou @usuário)
     const byExt=new Map(), byUser=new Map();
     S.leads.forEach(l=>{ if(l.extId) byExt.set(String(l.extId),l); const u=(l.username||'').toLowerCase(); if(u) byUser.set(u,l); });
-    const rows=[]; let updated=0; const becameContato=[];
+    const rows=[]; let updated=0; const becameContato=[]; const handledIds=[];
     for(const raw of incoming){
       if(!raw||(!raw.name&&!raw.username)) continue;
       const extId=String(raw.id||'');
       const uk=String(raw.username||'').toLowerCase();
       const existing=(extId&&byExt.get(extId)) || (uk&&byUser.get(uk)) || null;
       if(existing){
+        if(extId) handledIds.push(extId);
         // Lead já existe: atualiza status (se avançou) e telefone (se chegou um novo).
         // Resolve o caso de marcar "Enviou Contato" na extensão e não refletir aqui.
         const oldIdx=STS().indexOf(existing.status||'novo');
@@ -2143,8 +2155,12 @@ async function importExtensionLeads(incoming){
     let changed=updated>0;
     if(rows.length){
       const { error }=await sb.from('leads').insert(rows);
-      if(error){ console.warn('sync ext:',error.message); } else { changed=true; }
+      if(error){ console.warn('sync ext:',error.message); } else { changed=true; rows.forEach(r=>{ if(r.ext_id) handledIds.push(r.ext_id); }); }
     }
+    // Avisa a extensão pra tirar da fila local o que já foi gravado/confirmado
+    // aqui — sem isso, o mesmo lead volta a ser oferecido pra próxima equipe
+    // que abrir o painel neste navegador, e duplica lá também.
+    if(handledIds.length) window.postMessage({ source:'igp-dashboard', type:'synced-ids', ids:handledIds }, '*');
     if(changed){
       await loadLeads(); await loadDeals();
       // garante negociação para todo lead que está em "contato" (novos ou atualizados)
@@ -2156,6 +2172,7 @@ async function importExtensionLeads(incoming){
       if(updated) parts.push(`${updated} atualizado(s)`);
       toast(`Extensão sincronizada: ${parts.join(' · ')}`,'success');
     }
+    if(foreign.length) toast(`${foreign.length} lead(s) da extensão são de outra equipe — não foram importados aqui`,'warn');
   } finally {
     bridgeBusy=false;
     if(bridgePending){ const p=bridgePending; bridgePending=null; importExtensionLeads(p); }
