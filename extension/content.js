@@ -488,8 +488,10 @@
   function doConfirmDirect(createNew){
     const d=S.directDetect; if(!d) return;
     let lead=d.leadId?S.leads.find(l=>l.id===d.leadId):null;
+    let wasNew=false;
     if(!lead && createNew){
       if(!requireOrg()) return;
+      wasNew=true;
       lead={ id:Date.now().toString(), name:d.name||d.username||'Lead', username:d.username||'',
         profileUrl:d.username?`https://instagram.com/${d.username}`:'', niche:'', notes:'', mutualFriends:'',
         status:'novo', addedAt:new Date().toISOString(), orgId:S.org&&S.org.id };
@@ -499,6 +501,8 @@
     const now=new Date().toISOString();
     S.leads=S.leads.map(l=>l.id===lead.id?{...l,status:'contato',phone:d.phone,convertedAt:l.convertedAt||now}:l);
     db.save({igp_l:S.leads});
+    if(wasNew) syncLeadAddDirect({...lead,status:'contato',phone:d.phone});
+    else syncLeadUpdateDirect(lead.id,{status:'contato',phone:d.phone});
     const updated=S.leads.find(l=>l.id===lead.id);
     S.directDetect=null; _lastDirectKey='';
     if(S.open) renderBody(); else updateDirectBar();
@@ -1044,6 +1048,7 @@
     S.form={name:'',username:'',niche:'',notes:'',mutualFriends:''};
     S.showAdd=false;
     db.save({igp_l:S.leads});
+    syncLeadAddDirect(lead);
     renderBody();
     toast('Lead adicionado!','ok');
   }
@@ -1065,6 +1070,7 @@
     };
     S.leads.unshift(lead);
     db.save({igp_l:S.leads});
+    syncLeadAddDirect(lead);
     updateProfileBar();
     if(S.tab==='leads') renderBody(); else { S.tab='leads'; render(); }
     toast(`@${p.username} adicionado como lead!`,'ok');
@@ -1078,6 +1084,7 @@
     } else {
       S.leads=S.leads.map(l=>l.id===lid?{...l,status:st}:l);
       db.save({igp_l:S.leads});
+      syncLeadUpdateDirect(lid,{status:st});
       renderBody();
     }
   }
@@ -1087,6 +1094,7 @@
     const now=new Date().toISOString();
     S.leads=S.leads.map(l=>l.id===S.phoneLeadId?{...l,status:'contato',phone:S.phoneInput.trim(),convertedAt:now}:l);
     db.save({igp_l:S.leads});
+    syncLeadUpdateDirect(S.phoneLeadId,{status:'contato',phone:S.phoneInput.trim()});
     const lead=S.leads.find(l=>l.id===S.phoneLeadId);
     S.phoneLeadId=null; S.phoneInput='';
     renderBody();
@@ -1112,7 +1120,7 @@
     toast('Verificando código…','info');
     chrome.runtime.sendMessage({ type:'resolve_org_code', code }, res=>{
       if(!res||!res.ok||!res.org){ toast('Código inválido — confira em Configurações → Equipe no sistema','err'); return; }
-      S.org={ id:res.org.id, name:res.org.name, locked:true };
+      S.org={ id:res.org.id, name:res.org.name, code, locked:true };
       S.orgCodeInput='';
       db.save({igp_org:S.org});
       if(res.org.agendor_token){
@@ -1121,6 +1129,22 @@
       }
       renderBody();
       toast(`✓ Conectado à equipe "${res.org.name}"`,'ok');
+    });
+  }
+
+  // Grava o lead direto no Supabase da equipe conectada, na hora — não
+  // depende do painel estar aberto. "Fire and forget": se falhar (sem
+  // internet, etc.) o lead continua salvo localmente e não trava a UI.
+  function syncLeadAddDirect(lead){
+    if(!S.org||!S.org.code) return;
+    chrome.runtime.sendMessage({ type:'add_lead_direct', code:S.org.code, lead }, res=>{
+      if(!res||!res.ok) console.warn('IGProspect: falha ao sincronizar lead direto', res&&res.error);
+    });
+  }
+  function syncLeadUpdateDirect(extId, patch){
+    if(!S.org||!S.org.code||!extId) return;
+    chrome.runtime.sendMessage({ type:'update_lead_direct', code:S.org.code, extId, status:patch.status, phone:patch.phone }, res=>{
+      if(!res||!res.ok) console.warn('IGProspect: falha ao atualizar lead direto', res&&res.error);
     });
   }
 

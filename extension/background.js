@@ -6,21 +6,26 @@
 const SUPABASE_URL = 'https://guuecwrhwuzbwfetehix.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd1dWVjd3Jod3V6YndmZXRlaGl4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE1NzA2NjAsImV4cCI6MjA5NzE0NjY2MH0.GISYZrdloR5GGezNwMUMKsdVG5E5VstnXeeAxsNqtOY';
 
+// Chama uma função RPC do Supabase com a chave pública (sem login).
+function callRpc(name, body) {
+  return fetch(`${SUPABASE_URL}/rest/v1/rpc/${name}`, {
+    method: 'POST',
+    headers: {
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === 'resolve_org_code') {
     const code = String(msg.code || '').trim();
     if (!code) { sendResponse({ ok: false, error: 'Código vazio' }); return; }
 
-    fetch(`${SUPABASE_URL}/rest/v1/rpc/org_by_join_code`, {
-      method: 'POST',
-      headers: {
-        'apikey': SUPABASE_ANON_KEY,
-        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ p_code: code }),
-    })
+    callRpc('org_by_join_code', { p_code: code })
       .then(async r => {
         const data = await r.json().catch(() => null);
         const org = Array.isArray(data) && data[0] ? data[0] : null;
@@ -29,6 +34,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .catch(err => sendResponse({ ok: false, error: err.message }));
 
     return true; // keep message channel open for async response
+  }
+
+  // Grava o lead direto no banco, na hora — não depende do painel estar
+  // aberto (nem em qual equipe ele está). Reconfirma o código por dentro
+  // da função (ver org_by_join_code/extension_add_lead no Supabase).
+  if (msg.type === 'add_lead_direct') {
+    const { code, lead } = msg;
+    callRpc('extension_add_lead', {
+      p_code: code, p_ext_id: String(lead.id || ''), p_name: lead.name || '',
+      p_username: lead.username || '', p_phone: lead.phone || '', p_niche: lead.niche || '',
+      p_notes: lead.notes || '', p_status: lead.status || 'novo', p_added_at: lead.addedAt || null,
+    })
+      .then(async r => { sendResponse({ ok: r.ok, error: r.ok ? null : await r.text().catch(()=>'') }); })
+      .catch(err => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (msg.type === 'update_lead_direct') {
+    const { code, extId, status, phone } = msg;
+    callRpc('extension_update_lead', { p_code: code, p_ext_id: String(extId || ''), p_status: status || null, p_phone: phone || null })
+      .then(async r => { sendResponse({ ok: r.ok, error: r.ok ? null : await r.text().catch(()=>'') }); })
+      .catch(err => sendResponse({ ok: false, error: err.message }));
+    return true;
   }
 
   if (msg.type === 'agendor_create_person') {
