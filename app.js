@@ -1808,7 +1808,11 @@ async function loadAgendorFunnels(){
     const res=await agendorRequest('/funnels');
     const data=(res&&res.data)||res||[];
     const flat=[];
-    for(const f of data){ const stages=f.dealStages||f.stages||[]; for(const st of stages){ flat.push({ funnelId:f.id, funnelName:f.name||('Funil '+f.id), stageId:st.id, stageName:st.name||('Etapa '+st.id) }); } }
+    // dealStage na API do Agendor é a POSIÇÃO da etapa dentro do funil (1,2,3…),
+    // não o id da etapa — mandar o id fazia o negócio sempre cair na 1ª etapa
+    // (o número não batia com nenhuma posição válida). st.order, se a API
+    // mandar, é a fonte confiável; a posição no array serve de fallback.
+    for(const f of data){ const stages=f.dealStages||f.stages||[]; stages.forEach((st,i)=>{ flat.push({ funnelId:f.id, funnelName:f.name||('Funil '+f.id), stageId:st.id, stageOrder:st.order||st.position||(i+1), stageName:st.name||('Etapa '+st.id) }); }); }
     S._funnelStages=flat;
     if(!flat.length) toast('Nenhum funil/etapa retornado pelo Agendor','warn');
     else toast(`${flat.length} etapas carregadas de ${data.length} funil(is)`,'success');
@@ -1855,15 +1859,14 @@ async function sendLeadToAgendor(id, silent=false){
     const personId=(person&&person.data&&person.data.id)||(person&&person.id);
     let dealId=null, stageWarn=null;
     if(personId){
-      const deal=await agendorRequest(`/people/${personId}/deals`,'POST',{ title:displayName, dealStage:map.stageId, funnel:map.funnelId, description:`Enviado pelo IGProspect (funil ${map.funnelName}).` });
+      const deal=await agendorRequest(`/people/${personId}/deals`,'POST',{ title:displayName, dealStage:map.stageOrder, funnel:map.funnelId, description:`Enviado pelo IGProspect (funil ${map.funnelName}).` });
       dealId=(deal&&deal.data&&deal.data.id)||(deal&&deal.id)||null;
-      // O Agendor às vezes ignora dealStage na criação e joga o negócio na
-      // primeira etapa do funil — um PUT explícito logo depois garante que
-      // ele nasça na etapa certa, mesmo se a API não respeitar o POST. Se
-      // esse PUT falhar, não derruba o envio (pessoa+negócio já existem),
-      // mas o erro precisa aparecer — antes ficava engolido sem log nenhum.
+      // Reforço: um PUT logo depois garante a etapa certa mesmo se a API não
+      // respeitar dealStage já no POST de criação. Se esse PUT falhar, não
+      // derruba o envio (pessoa+negócio já existem), mas o erro precisa
+      // aparecer — antes ficava engolido sem log nenhum.
       if(dealId){
-        try{ await agendorRequest(`/deals/${dealId}`,'PUT',{ dealStage:map.stageId, funnel:map.funnelId }); }
+        try{ await agendorRequest(`/deals/${dealId}`,'PUT',{ dealStage:map.stageOrder, funnel:map.funnelId }); }
         catch(e){ console.warn('Agendor: PUT de reforço da etapa falhou —',e.message); stageWarn=`Negócio criado, mas não travou na etapa "${map.stageName}": ${e.message}`; }
       }
     }
@@ -1885,7 +1888,7 @@ async function syncAgendorDealStage(lead){
   const map=agendorStageFor(lead);
   if(!map||!map.stageId) return;
   try{
-    await agendorRequest(`/deals/${lead.agendorDealId}`,'PUT',{ dealStage:map.stageId, funnel:map.funnelId });
+    await agendorRequest(`/deals/${lead.agendorDealId}`,'PUT',{ dealStage:map.stageOrder, funnel:map.funnelId });
     await sb.from('leads').update({ agendor_funnel:map.funnelName, agendor_status:'ok', agendor_error:null }).eq('id',lead.id);
     Object.assign(lead,{ agendorFunnel:map.funnelName, agendorStatus:'ok', agendorError:null });
   }catch(err){
@@ -1947,7 +1950,7 @@ async function sendCallToAgendor(id, silent=false){
     // negócio no funil conforme o tipo do lead vinculado (empresário→Empresários, comum→Negócios)
     const linked=call.leadId?S.leads.find(l=>l.id===call.leadId):null;
     const map=agendorStageFor(linked||{});
-    if(personId&&map&&map.stageId){ try{ await agendorRequest(`/people/${personId}/deals`,'POST',{ title:(call.name||'Lead')+' — '+map.funnelName, dealStage:map.stageId, funnel:map.funnelId, description:`Ligação interessada (IGProspect) · funil ${map.funnelName}.` }); }catch(e){} }
+    if(personId&&map&&map.stageId){ try{ await agendorRequest(`/people/${personId}/deals`,'POST',{ title:(call.name||'Lead')+' — '+map.funnelName, dealStage:map.stageOrder, funnel:map.funnelId, description:`Ligação interessada (IGProspect) · funil ${map.funnelName}.` }); }catch(e){} }
     if(personId){ const when=call.at||new Date().toISOString(); const txt=`Ligação (${COM()[call.outcome]||call.outcome})`+(call.duration?` · ${call.duration} min`:'')+(call.notes?` — ${call.notes}`:''); try{ await agendorRequest(`/people/${personId}/tasks`,'POST',{ text:txt, type:'Ligação', dueDate:when, done:true }); }catch(e){} }
     toast('Ligação enviada ao Agendor ✓','success');
   }catch(err){ toast('Falha ao enviar ligação ao Agendor: '+err.message,'error'); agendorCorsHint(err.message); }
@@ -2291,7 +2294,7 @@ function renderSettings(){
   $('ag-test')&&($('ag-test').onclick=testAgendor);
   $('ag-load-funnels')&&($('ag-load-funnels').onclick=loadAgendorFunnels);
   $('ag-save-map')&&($('ag-save-map').onclick=async()=>{
-    const parse=v=>{ if(!v) return null; const [fid,sid]=v.split(':'); const f=S._funnelStages.find(x=>String(x.funnelId)===fid&&String(x.stageId)===sid); return f?{funnelId:f.funnelId,stageId:f.stageId,funnelName:f.funnelName,stageName:f.stageName}:null; };
+    const parse=v=>{ if(!v) return null; const [fid,sid]=v.split(':'); const f=S._funnelStages.find(x=>String(x.funnelId)===fid&&String(x.stageId)===sid); return f?{funnelId:f.funnelId,stageId:f.stageId,stageOrder:f.stageOrder,funnelName:f.funnelName,stageName:f.stageName}:null; };
     const byPl={};
     document.querySelectorAll('.ag-map-stage').forEach(sel=>{
       const pl=sel.dataset.pl; if(!byPl[pl]) byPl[pl]={};
