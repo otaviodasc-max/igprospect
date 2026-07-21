@@ -428,17 +428,27 @@ const weeklyPaymentFromRow = r => ({ id:r.id, orgId:r.org_id, memberId:r.member_
 // Sem isso, leads antigos (ex.: empresários de janeiro) ficavam fora das 1000 mais
 // recentes e nunca apareciam, mesmo importados com sucesso.
 async function fetchAll(build){ const PAGE=1000; let from=0, out=[]; for(;;){ const { data, error }=await build().range(from,from+PAGE-1); if(error) return { data:null, error }; const rows=data||[]; out=out.concat(rows); if(rows.length<PAGE) break; from+=PAGE; } return { data:out, error:null }; }
-async function loadLeads(){ const { data, error }=await fetchAll(()=>sb.from('leads').select('*').order('added_at',{ascending:false})); if(error){ toast('Erro ao carregar leads: '+error.message,'error'); return; } S.leads=(data||[]).map(leadFromRow); }
-async function loadCalls(){ const { data, error }=await fetchAll(()=>sb.from('calls').select('*').order('at',{ascending:false})); if(error){ S.calls=[]; return; } S.calls=(data||[]).map(callFromRow); }
-async function loadDeals(){ const { data, error }=await fetchAll(()=>sb.from('deals').select('*, leads(name,username,phone,niche)').order('created_at',{ascending:false})); if(error){ S.deals=[]; return; } S.deals=(data||[]).map(dealFromRow); }
+// Todas as cargas abaixo filtram por .eq('org_id',S.org.id) — sem isso, o RLS
+// ainda protege usuário comum (só vê as próprias linhas), mas a conta de
+// super admin (que enxerga tudo) misturava leads/ligações/negócios/mensagens
+// de TODAS as equipes do sistema numa sessão só, vazando dado de uma equipe
+// pra outra sempre que essa conta estivesse olhando qualquer equipe.
+async function loadLeads(){ const { data, error }=await fetchAll(()=>sb.from('leads').select('*').eq('org_id',S.org.id).order('added_at',{ascending:false})); if(error){ toast('Erro ao carregar leads: '+error.message,'error'); return; } S.leads=(data||[]).map(leadFromRow); }
+async function loadCalls(){ const { data, error }=await fetchAll(()=>sb.from('calls').select('*').eq('org_id',S.org.id).order('at',{ascending:false})); if(error){ S.calls=[]; return; } S.calls=(data||[]).map(callFromRow); }
+async function loadDeals(){ const { data, error }=await fetchAll(()=>sb.from('deals').select('*, leads(name,username,phone,niche)').eq('org_id',S.org.id).order('created_at',{ascending:false})); if(error){ S.deals=[]; return; } S.deals=(data||[]).map(dealFromRow); }
 const msgFromRow = r => ({ id:r.id, orgId:r.org_id, userId:r.user_id, author:r.author_name, body:r.body, at:r.created_at });
-async function loadMessages(){ const { data, error }=await sb.from('messages').select('*').order('created_at',{ascending:false}).limit(200); if(error){ S.messages=[]; return; } S.messages=(data||[]).map(msgFromRow).reverse(); }
+async function loadMessages(){ const { data, error }=await sb.from('messages').select('*').eq('org_id',S.org.id).order('created_at',{ascending:false}).limit(200); if(error){ S.messages=[]; return; } S.messages=(data||[]).map(msgFromRow).reverse(); }
 
 // Customização por org (Personalização): funis, nichos, estágios de negociação e desfechos de ligação.
 // Se as tabelas ainda não foram migradas (supabase-pipelines.sql não rodou), os arrays ficam vazios
 // e os helpers (STS/DEAL_STS/CALL_OUT etc.) caem no fallback do módulo — nada quebra.
-async function loadPipelines(){ const { data, error }=await sb.from('org_pipelines').select('*').order('order_idx'); if(error){ S.pipelines=[]; return; } S.pipelines=data||[]; }
-async function loadNiches(){ const { data, error }=await sb.from('org_niches').select('*').order('order_idx'); if(error){ S.niches=[]; return; } S.niches=data||[]; }
+// Sem o .eq('org_id',...), o RLS ainda protege usuários comuns (só veem as
+// próprias linhas), mas a conta de super admin — que enxerga tudo — carregava
+// os funis de TODAS as equipes do sistema misturados em S.pipelines. Pra
+// qualquer lead com pipeline_id vazio, defaultPipeline() podia então cair
+// no primeiro/qualquer funil "is_default" encontrado, de QUALQUER equipe.
+async function loadPipelines(){ const { data, error }=await sb.from('org_pipelines').select('*').eq('org_id',S.org.id).order('order_idx'); if(error){ S.pipelines=[]; return; } S.pipelines=data||[]; }
+async function loadNiches(){ const { data, error }=await sb.from('org_niches').select('*').eq('org_id',S.org.id).order('order_idx'); if(error){ S.niches=[]; return; } S.niches=data||[]; }
 async function loadDealStagesCfg(){ if(!S.org) return; const { data }=await sb.from('org_deal_stages').select('*').eq('org_id',S.org.id).maybeSingle(); S.dealStagesCfg=data||null; }
 async function loadCallOutcomesCfg(){ if(!S.org) return; const { data }=await sb.from('org_call_outcomes').select('*').eq('org_id',S.org.id).maybeSingle(); S.callOutcomesCfg=data||null; }
 async function loadOrgConfig(){ await Promise.all([loadPipelines(), loadNiches(), loadDealStagesCfg(), loadCallOutcomesCfg()]); }
@@ -446,7 +456,7 @@ async function loadOrgConfig(){ await Promise.all([loadPipelines(), loadNiches()
 // Membros ativos na organização atual (aba Relatórios — pagamento por pessoa)
 // e histórico de pagamentos semanais já confirmados (nunca some da tela).
 async function loadMembers(){ if(!S.org) return; const { data, error }=await sb.from('profiles').select('id,name,email,org_role').eq('org_id',S.org.id).order('name'); if(error){ S.members=[]; return; } S.members=data||[]; }
-async function loadWeeklyPayments(){ const { data, error }=await sb.from('weekly_payments').select('*').order('week_start',{ascending:false}); if(error){ S.weeklyPayments=[]; return; } S.weeklyPayments=(data||[]).map(weeklyPaymentFromRow); }
+async function loadWeeklyPayments(){ const { data, error }=await sb.from('weekly_payments').select('*').eq('org_id',S.org.id).order('week_start',{ascending:false}); if(error){ S.weeklyPayments=[]; return; } S.weeklyPayments=(data||[]).map(weeklyPaymentFromRow); }
 
 /* =====================================================================
    METRICS / CHARTS (portados do original)
