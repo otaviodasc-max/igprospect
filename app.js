@@ -1376,6 +1376,9 @@ function renderGoals(){
     ${body}`;
   $('goals-edit').onclick=()=>goalsForm();
   document.querySelectorAll('[data-gview]').forEach(b=>b.onclick=()=>{ S.goalsView=b.dataset.gview; renderGoals(); });
+  $('gw-leads-cnt')&&animateCount($('gw-leads-cnt'),Number($('gw-leads-cnt').dataset.cnt));
+  $('gw-calls-cnt')&&animateCount($('gw-calls-cnt'),Number($('gw-calls-cnt').dataset.cnt));
+  document.querySelectorAll('[id^="gm-cnt-"]').forEach(el=>animateCount(el,Number(el.dataset.cnt),el.dataset.money==='1'?fmtCurrency:undefined));
 }
 
 function goalsWeekly(g){
@@ -1394,10 +1397,11 @@ function goalsWeekly(g){
     const col=c>=max?'#F59E0B':c>=min?'#10B981':c>0?'#EF4444':'var(--surf4)';
     const h=Math.max(Math.round(c/barMax*100),c>0?6:2);
     const today=i===todayIdx;
-    return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:5px">
+    const status=c>=max?'acima do máximo 🔥':c>=min?'dentro da meta ✓':c>0?'abaixo do mínimo':'sem leads ainda';
+    return `<div data-tip="${esc(dayNames[i])}: ${c} lead(s) — ${esc(status)}" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;cursor:default">
       <div style="font-size:.66rem;font-weight:700;color:${c>0?'var(--t2)':'var(--t3)'}">${c}</div>
       <div style="width:100%;max-width:34px;height:92px;background:var(--surf2);border-radius:6px;display:flex;align-items:flex-end;overflow:hidden">
-        <div style="width:100%;height:${h}%;background:${col};border-radius:6px;transition:height .4s"></div>
+        <div class="gw-bar-fill" style="width:100%;height:${h}%;background:${col};border-radius:6px;transition:height .4s,filter .15s"></div>
       </div>
       <div style="font-size:.62rem;color:${today?'var(--p)':'var(--t3)'};font-weight:${today?'700':'500'}">${dayNames[i]}</div>
     </div>`;
@@ -1411,7 +1415,7 @@ function goalsWeekly(g){
     <div class="card" style="padding:18px;border-left:3px solid #6366F1">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">
         <div><div style="font-weight:700;font-size:.95rem">📸 Leads do Instagram</div><div style="font-size:.72rem;color:var(--t3)">semana ${wkLabel} · pagamento por leads</div></div>
-        <div style="text-align:right"><div style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.6rem;line-height:1;color:#6366F1">${totalLeads}</div><div style="font-size:.7rem;color:var(--t3)">na semana</div></div>
+        <div style="text-align:right"><div id="gw-leads-cnt" data-cnt="${totalLeads}" style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.6rem;line-height:1;color:#6366F1">0</div><div style="font-size:.7rem;color:var(--t3)">na semana</div></div>
       </div>
       <div style="display:flex;gap:6px;align-items:flex-end">${bars}</div>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">
@@ -1427,7 +1431,7 @@ function goalsWeekly(g){
     <div class="card" style="padding:18px;border-left:3px solid #F59E0B">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">
         <div><div style="font-weight:700;font-size:.95rem">📞 Ligações efetivas</div><div style="font-size:.72rem;color:var(--t3)">atendidas (com ou sem interesse)</div></div>
-        <div style="text-align:right"><div style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.6rem;line-height:1;color:#F59E0B">${totalEff}</div><div style="font-size:.7rem;color:var(--t3)">${callsGoal>0?'de '+callsGoal:'na semana'}</div></div>
+        <div style="text-align:right"><div id="gw-calls-cnt" data-cnt="${totalEff}" style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.6rem;line-height:1;color:#F59E0B">0</div><div style="font-size:.7rem;color:var(--t3)">${callsGoal>0?'de '+callsGoal:'na semana'}</div></div>
       </div>
       ${callsGoal>0?`<div style="background:var(--surf2);border-radius:20px;height:12px;overflow:hidden"><div style="width:${callPct}%;height:100%;background:linear-gradient(90deg,#F59E0B,#F59E0Bbb);border-radius:20px;transition:width .5s"></div></div>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:9px"><span style="font-size:.76rem;font-weight:600;color:${callPct>=100?'#10B981':'#F59E0B'}">${callPct>=100?'🎉 Meta semanal batida!':callPct>=50?'💪 Mais da metade!':'🚀 Bora ligar!'}</span><span style="font-size:.82rem;font-weight:800;color:#F59E0B">${callPct}%</span></div>`
@@ -1450,13 +1454,13 @@ function goalsMonthly(g){
   const monthLabel=now.toLocaleDateString('pt-BR',{month:'long',year:'numeric'});
 
   const defs=[
-    { key:'contacts',   label:'Contatos conquistados', hint:'leads que enviaram o contato', color:'#6366F1', money:false, cur:contatosM, target:g.contacts,
+    { key:'contacts',   label:'Contatos conquistados', hint:'leads que enviaram o contato', color:'#6366F1', color2:'#8B5CF6', money:false, cur:contatosM, target:g.contacts,
       icon:'<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/>' },
-    { key:'sales',      label:'Vendas fechadas', hint:'negociações marcadas como vendido', color:'#10B981', money:false, cur:vendasM, target:g.sales,
+    { key:'sales',      label:'Vendas fechadas', hint:'negociações marcadas como vendido', color:'#10B981', color2:'#34D399', money:false, cur:vendasM, target:g.sales,
       icon:'<polyline points="20 6 9 17 4 12"/>' },
-    { key:'revenue',    label:'Faturamento (cartas vendidas)', hint:'soma do valor das cartas vendidas', color:'#F59E0B', money:true, cur:faturM, target:g.revenue,
+    { key:'revenue',    label:'Faturamento (cartas vendidas)', hint:'soma do valor das cartas vendidas', color:'#F59E0B', color2:'#FBBF24', money:true, cur:faturM, target:g.revenue,
       icon:'<line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>' },
-    { key:'commission', label:'Comissão acumulada', hint:'comissões das vendas do mês', color:'#8B5CF6', money:true, cur:commM, target:g.commission,
+    { key:'commission', label:'Comissão acumulada', hint:'comissões das vendas do mês', color:'#8B5CF6', color2:'#C084FC', money:true, cur:commM, target:g.commission,
       icon:'<path d="M20 12V8H6a2 2 0 0 1-2-2c0-1.1.9-2 2-2h12v4"/><path d="M4 6v12c0 1.1.9 2 2 2h14v-4"/><path d="M18 12a2 2 0 0 0-2 2c0 1.1.9 2 2 2h4v-4z"/>' },
   ];
 
@@ -1483,7 +1487,6 @@ function goalsMonthly(g){
     const target=Number(d.target)||0;
     const pct=target>0?Math.min(100,Math.round(d.cur/target*100)):0;
     const remaining=Math.max(0,target-d.cur);
-    const curTxt=d.money?fmtCurrency(d.cur):fmtNum(d.cur);
     const tgtTxt=d.money?fmtCurrency(target):fmtNum(target);
     const remTxt=d.money?fmtCurrency(remaining):fmtNum(remaining);
     const [msg,mc]=motivMsg(pct,target);
@@ -1493,13 +1496,13 @@ function goalsMonthly(g){
     else if(target>0) foot=`<div style="font-size:.73rem;color:#10B981;margin-top:9px;padding-top:9px;border-top:1px solid rgba(255,255,255,.06)">✓ Meta concluída este mês!</div>`;
     return `<div class="card" style="padding:18px;margin-bottom:14px;border-left:3px solid ${d.color}">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
-        <div style="width:42px;height:42px;border-radius:11px;background:${d.color}22;display:flex;align-items:center;justify-content:center;flex-shrink:0"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="${d.color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d.icon}</svg></div>
+        <div style="width:42px;height:42px;border-radius:11px;background:linear-gradient(135deg,${d.color},${d.color2});box-shadow:0 4px 14px ${d.color}55;display:flex;align-items:center;justify-content:center;flex-shrink:0"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d.icon}</svg></div>
         <div style="flex:1;min-width:0">
           <div style="font-weight:700;font-size:.95rem">${d.label}</div>
           <div style="font-size:.72rem;color:var(--t3)">${d.hint}</div>
         </div>
         <div style="text-align:right">
-          <div style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.5rem;line-height:1;color:${d.color}">${curTxt}</div>
+          <div id="gm-cnt-${d.key}" data-cnt="${d.cur}" data-money="${d.money?1:0}" style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.5rem;line-height:1;color:${d.color}">${d.money?fmtCurrency(0):0}</div>
           <div style="font-size:.72rem;color:var(--t3)">de ${tgtTxt}</div>
         </div>
       </div>
@@ -1638,9 +1641,9 @@ function renderRelPay(){
         ${memberSel}
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:14px">
-        <div style="background:var(--surf2);border-radius:9px;padding:12px 14px"><div style="font-size:.72rem;color:var(--t3);margin-bottom:3px">Prospecção · ${rep.prospectLeads} leads</div><div style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.3rem;color:#6366F1">${fmtCurrency(rep.prospectPay)}</div></div>
-        <div style="background:var(--surf2);border-radius:9px;padding:12px 14px"><div style="font-size:.72rem;color:var(--t3);margin-bottom:3px">Comissões pendentes</div><div style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.3rem;color:#F59E0B">${fmtCurrency(rep.pendingTotal)}</div></div>
-        <div style="background:var(--surf2);border-radius:9px;padding:12px 14px"><div style="font-size:.72rem;color:var(--t3);margin-bottom:3px">Total a receber</div><div style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.3rem;color:#10B981">${fmtCurrency(rep.total)}</div></div>
+        <div style="background:var(--surf2);border-radius:9px;padding:12px 14px"><div style="font-size:.72rem;color:var(--t3);margin-bottom:3px">Prospecção · ${rep.prospectLeads} leads</div><div id="rp-prospect" data-cnt="${rep.prospectPay}" style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.3rem;color:#6366F1">${fmtCurrency(0)}</div></div>
+        <div style="background:var(--surf2);border-radius:9px;padding:12px 14px"><div style="font-size:.72rem;color:var(--t3);margin-bottom:3px">Comissões pendentes</div><div id="rp-pending" data-cnt="${rep.pendingTotal}" style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.3rem;color:#F59E0B">${fmtCurrency(0)}</div></div>
+        <div style="background:var(--surf2);border-radius:9px;padding:12px 14px"><div style="font-size:.72rem;color:var(--t3);margin-bottom:3px">Total a receber</div><div id="rp-total" data-cnt="${rep.total}" style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.3rem;background:linear-gradient(135deg,#10B981,#34D399);-webkit-background-clip:text;background-clip:text;color:transparent">${fmtCurrency(0)}</div></div>
       </div>
       <div style="margin-bottom:14px"><div style="font-size:.68rem;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Comissões da semana</div>${pendRows}${paidRows}</div>
       ${saved
@@ -1656,6 +1659,9 @@ function renderRelPay(){
   const todayBtn=$('rel-today'); if(todayBtn) todayBtn.onclick=()=>{ S.relWeekOffset=0; renderRelPay(); };
   const sel=$('rel-member'); if(sel) sel.onchange=e=>{ S.relMemberId=e.target.value; renderRelPay(); };
   const cf=$('rel-confirm'); if(cf) cf.onclick=()=>confirmWeeklyPayment(ws, we, S.relMemberId, rep);
+  animateCount($('rp-prospect'),rep.prospectPay,fmtCurrency);
+  animateCount($('rp-pending'),rep.pendingTotal,fmtCurrency);
+  animateCount($('rp-total'),rep.total,fmtCurrency);
 }
 function renderPayHistory(memberId){
   const rows=S.weeklyPayments.filter(p=>p.memberId===memberId).sort((a,b)=>b.weekStart.localeCompare(a.weekStart));
@@ -1703,7 +1709,7 @@ function renderRelWeekly(kind){
   const listHtml=rows.map(r=>{
     const w=Math.round(r.count/maxV*100);
     const lbl=`${r.ws.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'})} a ${new Date(r.we-1).toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'})}`;
-    return `<div class="funnel-row" style="grid-template-columns:160px 1fr 42px"><div class="funnel-lbl">${lbl}</div><div class="funnel-track"><div class="funnel-fill" style="width:${w}%;background:#6366F1;opacity:.82"><span>${r.count>0?r.count:''}</span></div></div><div class="funnel-cnt">${r.count}</div></div>`;
+    return `<div class="funnel-row" data-tip="${esc(lbl)}: ${r.count} ${esc(label.toLowerCase())}" style="grid-template-columns:160px 1fr 42px"><div class="funnel-lbl">${lbl}</div><div class="funnel-track"><div class="funnel-fill" style="width:${w}%;background:linear-gradient(90deg,#6366F1,#8B5CF6)"><span>${r.count>0?r.count:''}</span></div></div><div class="funnel-cnt">${r.count}</div></div>`;
   }).join('');
   $('rel-body').innerHTML=`
     <div class="card" style="padding:20px">

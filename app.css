@@ -169,6 +169,12 @@ canvas{display:block}
 .chart-wrap{position:relative;width:100%}
 .chart-wrap canvas{width:100%!important;display:block;cursor:crosshair}
 .chart-tip{position:absolute;pointer-events:none;transform:translate(-50%,-100%) translateY(-8px);background:var(--surf4);border:1px solid var(--border2);border-radius:8px;padding:6px 10px;font-size:.68rem;line-height:1.4;color:var(--t1);box-shadow:var(--shx);white-space:nowrap;opacity:0;transition:opacity .12s;z-index:20}
+/* Tooltip CSS-only pra elementos "estáticos" (barras de metas/relatórios) —
+   basta um data-tip no elemento, sem precisar de JS de mousemove. */
+[data-tip]{position:relative}
+[data-tip]::after{content:attr(data-tip);position:absolute;bottom:100%;left:50%;transform:translateX(-50%) translateY(-6px);background:var(--surf4);border:1px solid var(--border2);border-radius:8px;padding:5px 9px;font-size:.65rem;white-space:nowrap;color:var(--t1);box-shadow:var(--shx);opacity:0;pointer-events:none;transition:opacity .12s,transform .12s;z-index:15}
+[data-tip]:hover::after{opacity:1;transform:translateX(-50%) translateY(-10px)}
+[data-tip]:hover .gw-bar-fill{filter:brightness(1.25)}
 .funnel-wrap{display:flex;flex-direction:column;gap:8px}
 .funnel-row{display:grid;grid-template-columns:118px 1fr 42px;align-items:center;gap:9px}
 .funnel-lbl{font-size:.72rem;font-weight:600;color:var(--t2);display:flex;align-items:center;gap:6px}
