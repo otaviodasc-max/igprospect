@@ -112,7 +112,7 @@
   const RESERVED = new Set(['explore','reel','reels','p','tv','stories','accounts','direct','notifications','ar','challenges','audio','shop','about','privacy','help','']);
   // Títulos genéricos de seção do Instagram que às vezes acabam parando onde
   // deveria estar o nome da pessoa (fallback de heading pego errado no Direct).
-  const GENERIC_NAMES = new Set(['mensagens','messages','direct','solicitações','solicitacoes','requests','inbox','chats','conversas']);
+  const GENERIC_NAMES = new Set(['mensagens','messages','direct','solicitações','solicitacoes','requests','inbox','chats','conversas','não seguidores','nao seguidores','not following you back','seguidores','digital creator','personal blog','public figure','blogger','este perfil é privado','this account is private','conta privada']);
 
   const MONTHS_PT = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 
@@ -147,7 +147,7 @@
   // STORAGE
   // ═══════════════════════════════════════════════
   const db = {
-    load: () => new Promise(r => chrome.storage.local.get(['igp_l','igp_tok','igp_org','igp_stages','igp_leads_pulled_at'], r)),
+    load: () => new Promise(r => chrome.storage.local.get(['igp_l','igp_tok','igp_org','igp_stages','igp_leads_pulled_at','igp_sync_times','igp_sync_paused'], r)),
     save: d  => new Promise(r => chrome.storage.local.set(d, r)),
   };
 
@@ -335,7 +335,7 @@
   function nameFromProfile(uLow){
     try{
       const root=document.querySelector('main')||document.body;
-      const bad=/^(seguir|follow|following|seguindo|message|mensagem|enviar mensagem|publicaç|posts?|seguidor|follower|verificad|editar|ver tudo|sugest|cancelar|nota|stories?|destaque)/i;
+      const bad=/^(seguir|follow|following|seguindo|message|mensagem|enviar mensagem|publicaç|posts?|seguidor|follower|não segu|nao segu|not follow|verificad|editar|ver tudo|sugest|cancelar|nota|stories?|destaque|digital creator|personal blog|public figure|blogger|criador\(a\)|perfil.{0,3}privad|account is private|conta privada|remover|bloquear|denunciar|silenciar|restringir)/i;
       const els=root.querySelectorAll('h1,h2,span,div');
       for(const el of els){
         if(el.children.length>0) continue;              // só nós-folha (evita blocos grandes)
@@ -377,7 +377,11 @@
 
   function extractProfile() {
     const url = location.href;
-    const m = url.match(/instagram\.com\/([a-zA-Z0-9._]+)\/?(\\?|$)/);
+    // Ancorado (início E fim da URL) — sem isso, /usuario/seguidores/ ou
+    // /usuario/seguindo/ (o modal de lista aberto por cima do perfil) também
+    // batiam aqui, e o nome lido do <main> acabava sendo o rótulo da lista
+    // ("Seguidores"/"Não Seguidores") em vez do nome da pessoa.
+    const m = url.match(/^https?:\/\/(?:www\.)?instagram\.com\/([a-zA-Z0-9._]+)\/?(?:\?.*)?$/);
     if (!m || RESERVED.has(m[1])) {
       if (S.detectedProfile) { S.detectedProfile=null; updateProfileBar(); }
       return;
@@ -965,6 +969,7 @@
           <span style="font-size:11px;color:#555">${currentStatuses().length} etapa(s) de funil · ${S.leads.length} lead(s) na extensão</span>
           <button class="btn-ghost" data-a="sync-org-now" style="padding:6px 10px;font-size:11px">↻ Sincronizar agora</button>
         </div>
+        ${syncPaused?`<div style="margin-top:10px;padding:8px 10px;background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.3);border-radius:8px;font-size:11px;color:#f87171">⏸ Envio automático pausado — mais de ${SYNC_RATE_LIMIT} leads em ${SYNC_RATE_WINDOW_MS/60000}min (trava de segurança). Volta sozinho quando o ritmo normalizar.</div>`:''}
         `:''}
       </div>
 
@@ -1176,7 +1181,10 @@
       S.org={ id:res.org.id, name:res.org.name, code, locked:true, userId:null, userName:'' };
       S.orgMembers=[];
       S.orgCodeInput='';
-      db.save({igp_org:S.org, igp_l:S.leads, igp_leads_pulled_at:0});
+      // Reseta a trava de segurança também — é um contador por equipe conectada,
+      // não faz sentido carregar o ritmo da equipe anterior pra essa nova.
+      recentSyncTimes=[]; syncPaused=false;
+      db.save({igp_org:S.org, igp_l:S.leads, igp_leads_pulled_at:0, igp_sync_times:[], igp_sync_paused:false});
       if(res.org.agendor_token){
         S.agendorToken=res.org.agendor_token;
         db.save({igp_tok:res.org.agendor_token});
@@ -1254,8 +1262,33 @@
   // Grava o lead direto no Supabase da equipe conectada, na hora — não
   // depende do painel estar aberto. "Fire and forget": se falhar (sem
   // internet, etc.) o lead continua salvo localmente e não trava a UI.
+  // Trava de segurança (circuit breaker) — nenhum humano prospecta 100 leads
+  // em 10 minutos manualmente. Se acontecer (bug de captura, equipe errada
+  // conectada, automação de terceiros etc.), pausa o envio automático sozinha
+  // em vez de deixar rodar solto por uma hora inteira sem ninguém perceber.
+  // Some sozinha quando o ritmo volta ao normal (janela desliza).
+  const SYNC_RATE_WINDOW_MS = 10*60*1000;
+  const SYNC_RATE_LIMIT = 100;
+  let recentSyncTimes = [];
+  let syncPaused = false;
+  function registerSyncAndCheck(){
+    const cutoff=Date.now()-SYNC_RATE_WINDOW_MS;
+    recentSyncTimes=recentSyncTimes.filter(t=>t>cutoff);
+    recentSyncTimes.push(Date.now());
+    db.save({igp_sync_times:recentSyncTimes});
+    if(recentSyncTimes.length>SYNC_RATE_LIMIT){
+      if(!syncPaused){
+        syncPaused=true; db.save({igp_sync_paused:true});
+        toast(`⚠️ Mais de ${SYNC_RATE_LIMIT} leads em ${SYNC_RATE_WINDOW_MS/60000}min — envio automático pausado por segurança. Avise o dono da equipe antes de continuar.`,'err');
+      }
+      return false;
+    }
+    if(syncPaused){ syncPaused=false; db.save({igp_sync_paused:false}); }
+    return true;
+  }
   function syncLeadAddDirect(lead){
     if(!S.org||!S.org.code) return;
+    if(!registerSyncAndCheck()) return;
     chrome.runtime.sendMessage({ type:'add_lead_direct', code:S.org.code, lead, userId:S.org.userId||null }, res=>{
       if(!res||!res.ok){ console.warn('IGProspect: falha ao sincronizar lead direto', res&&res.error); return; }
       // Confirmado no banco — marca como sincronizado, senão o próximo pull
@@ -1287,6 +1320,8 @@
     if(d.igp_tok) S.agendorToken=d.igp_tok;
     if(d.igp_org) S.org=d.igp_org;
     if(d.igp_stages) S.pipelineStages=d.igp_stages;
+    if(d.igp_sync_times) recentSyncTimes=d.igp_sync_times;
+    if(d.igp_sync_paused) syncPaused=true;
     render();
     extractProfile();
     // Repopula a lista de membros pra poder trocar/confirmar "quem é você"
