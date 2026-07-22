@@ -184,6 +184,7 @@
     audios: [],           // {id,name,dataUrl,duration,addedAt} — biblioteca de áudios prontos (aba Áudios)
     audioPlayingId: null, // qual áudio está tocando no preview da aba (não é o envio pro Direct)
     audioSending: false,  // trava concorrência: só um envio (microfone virtual) por vez
+    audioDebug: null,     // {taFound,taTop,items} — aparece na aba Áudios quando não acha o botão de gravar (ver sendAudioToDirect)
   };
 
   // ═══════════════════════════════════════════════
@@ -779,20 +780,21 @@
     if(!onDirect()){ toast('Abra uma conversa do Direct primeiro','info'); return; }
     const btn=findMicButton();
     if(!btn){
-      toast('Não encontrei o botão de gravar áudio nesta conversa — veja o console (F12) e me mande o que apareceu','err');
-      // Diagnóstico pra ajustar findMicButton sem precisar de outra rodada às
-      // cegas: mostra se o campo de mensagem foi achado e TODOS os
-      // aria-label (de svg, botão ou div[role=button]) visíveis na conversa,
-      // com a posição vertical de cada um.
+      toast('Não encontrei o botão de gravar áudio nesta conversa — olha o diagnóstico aqui embaixo, na aba Áudios','err');
+      // Diagnóstico direto NO PAINEL (em vez de pedir pra abrir o console do
+      // navegador — atrito grande demais pra quem não mexe com DevTools).
+      // Mostra se o campo de mensagem foi achado e todos os aria-label
+      // visíveis na conversa, com a posição vertical de cada um.
       try{
         const root=document.querySelector('div[role="main"]')||document.body;
         const ta=root.querySelector('textarea, [contenteditable="true"]');
-        console.warn('IGProspect diagnóstico áudio — campo de mensagem achado?', !!ta, ta?ta.getBoundingClientRect().top:null);
-        const all=[...root.querySelectorAll('[aria-label]')].map(el=>({
+        const items=[...root.querySelectorAll('[aria-label]')].map(el=>({
           tag: el.tagName, label: el.getAttribute('aria-label'), top: Math.round(el.getBoundingClientRect().top),
-        }));
-        console.warn('IGProspect diagnóstico áudio — todos os aria-label na conversa:', all);
-      }catch(err){ console.warn('IGProspect: erro no diagnóstico', err); }
+        })).sort((a,b)=>a.top-b.top);
+        S.audioDebug={ taFound:!!ta, taTop: ta?Math.round(ta.getBoundingClientRect().top):null, items };
+      }catch(err){ S.audioDebug={ taFound:false, taTop:null, items:[], error:String(err) }; }
+      S.tab='audios';
+      render();
       return;
     }
 
@@ -1242,6 +1244,34 @@
       ${S.audios.length===0?`
         <div style="text-align:center;padding:40px 0"><div style="font-size:36px;margin-bottom:10px">🎙️</div><div style="font-size:13px;color:#555;margin-bottom:4px">Nenhum áudio importado ainda.</div><div style="font-size:11px;color:#444">Clique em + Importar pra adicionar um arquivo de áudio.</div></div>
       `:S.audios.map(a=>renderAudioCard(a)).join('')}
+      ${renderAudioDebug()}
+    `;
+  }
+
+  // Aparece só quando um envio falha por não achar o botão de gravar —
+  // mostra tudo que a extensão enxergou na conversa (aria-label + posição),
+  // direto no painel, pra mandar print sem precisar abrir o DevTools.
+  function renderAudioDebug(){
+    const d=S.audioDebug;
+    if(!d) return '';
+    const rows=(d.items||[]).map(it=>`
+      <div style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid #222">
+        <span style="color:#555;width:40px;flex-shrink:0">${it.top}</span>
+        <span style="color:#818cf8;width:64px;flex-shrink:0">${esc(it.tag)}</span>
+        <span style="color:#ccc;word-break:break-word">${esc(it.label)}</span>
+      </div>
+    `).join('');
+    return `
+      <div class="card" style="margin-top:14px;border-color:rgba(248,113,113,0.3)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <span style="font-weight:600;font-size:12px;color:#f87171">🔧 Diagnóstico — não achei o botão de áudio</span>
+          <button class="btn-sm" data-a="clear-audio-debug">✕</button>
+        </div>
+        <div style="font-size:11px;color:#555;margin-bottom:8px">Campo de mensagem encontrado: <b style="color:${d.taFound?'#4ade80':'#f87171'}">${d.taFound?`sim (topo ${d.taTop}px)`:'não'}</b></div>
+        <div style="max-height:280px;overflow-y:auto;font-family:monospace;font-size:11px">
+          ${rows||'<span style="color:#555">nenhum ícone com aria-label encontrado na conversa</span>'}
+        </div>
+      </div>
     `;
   }
 
@@ -1367,6 +1397,7 @@
         if(S.audioPlayingId===aid){ previewAudio.pause(); S.audioPlayingId=null; }
         renderBody();
         break;
+      case 'clear-audio-debug': S.audioDebug=null; renderBody(); break;
       case 'link-org':      doLinkOrg(); break;
       case 'sync-org-now':  if(S.org&&S.org.code){ pullPipeline(S.org.code); pullLeads(S.org.code, true); db.save({igp_leads_pulled_at:Date.now()}); } break;
       case 'fix-open-name': { const p=S.detectedProfile; if(p){ const nm=findRealName(p.username); maybeFixLeadName(p.username,nm,p.url); if(nm.toLowerCase()===p.username.toLowerCase()) toast('Não achei o nome real nesta página','info'); renderBody(); } break; }
