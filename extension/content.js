@@ -712,30 +712,35 @@
     sendAudioToDirect(id);
   }, true);
 
-  // Acha a barra de composição (campo de texto + ícones de anexo/áudio) da
-  // conversa aberta — escopar a busca do botão de microfone a essa região
-  // (em vez da página toda) evita pegar outro ícone qualquer com "áudio" no
-  // aria-label (ex.: chamada de vídeo).
-  function findComposeRoot(){
+  // Acha o botão de gravar áudio da barra de composição (não o campo de
+  // texto em si). Duas travas pra não errar o alvo:
+  // 1) o rótulo (aria-label do ícone) precisa conter uma palavra-chave de
+  //    microfone — em substring simples, não regex ancorada (bug corrigido:
+  //    "Microfone" não batia antes por causa de \b logo depois de "mic").
+  // 2) o botão precisa estar na MESMA ALTURA do campo de mensagem — sem
+  //    isso, o botão de LIGAÇÃO DE VOZ lá no cabeçalho da conversa (que
+  //    também tem "voz"/"áudio" no aria-label) podia ser escolhido no lugar
+  //    do microfone de gravar, e a extensão discava uma chamada em vez de
+  //    gravar um áudio.
+  function findMicButton(){
     const root=document.querySelector('div[role="main"]')||document.body;
     const ta=root.querySelector('textarea, [contenteditable="true"]');
-    if(!ta) return root;
-    let el=ta, hops=0;
-    while(el.parentElement && hops<6){ el=el.parentElement; hops++; if(el.querySelectorAll('svg[aria-label]').length>=2) break; }
-    return el;
-  }
-  function findMicButton(){
-    const root=findComposeRoot();
-    const micRe=/^(mic|microphone|gravar|grava|voice|voz|áudio|audio)\b/i;
+    if(!ta) return null;
+    const taBox=ta.getBoundingClientRect();
+    const KEYWORDS=['microfone','mic','gravar áudio','gravar audio','mensagem de voz','voice message','record audio','record voice','hold to record'];
     const svgs=root.querySelectorAll('svg[aria-label]');
+    let best=null, bestDist=Infinity;
     for(const svg of svgs){
-      const label=(svg.getAttribute('aria-label')||'').trim();
-      if(micRe.test(label)){
-        const btn=svg.closest('button, div[role="button"]');
-        if(btn) return btn;
-      }
+      const label=(svg.getAttribute('aria-label')||'').toLowerCase();
+      if(!KEYWORDS.some(k=>label.includes(k))) continue;
+      const btn=svg.closest('button, div[role="button"]');
+      if(!btn) continue;
+      const box=btn.getBoundingClientRect();
+      if(Math.abs(box.top-taBox.top)>120) continue; // fora da barra de composição
+      const dist=Math.abs(box.left-taBox.right);
+      if(dist<bestDist){ bestDist=dist; best=btn; }
     }
-    return null;
+    return best;
   }
 
   // "Segura" o botão de gravar pelo tempo da faixa (mousedown → espera →
@@ -764,7 +769,17 @@
     if(!audio){ toast('Áudio não encontrado','err'); return; }
     if(!onDirect()){ toast('Abra uma conversa do Direct primeiro','info'); return; }
     const btn=findMicButton();
-    if(!btn){ toast('Não encontrei o botão de gravar áudio nesta conversa — pode ser que o Instagram tenha mudado o layout','err'); return; }
+    if(!btn){
+      toast('Não encontrei o botão de gravar áudio nesta conversa — pode ser que o Instagram tenha mudado o layout','err');
+      // Diagnóstico pra ajustar findMicButton sem precisar de outra rodada às
+      // cegas: lista os aria-label de ícone disponíveis na conversa aberta.
+      try{
+        const root=document.querySelector('div[role="main"]')||document.body;
+        const labels=[...root.querySelectorAll('svg[aria-label]')].map(s=>s.getAttribute('aria-label'));
+        console.warn('IGProspect: botão de áudio não encontrado. aria-labels disponíveis:', labels);
+      }catch(_){}
+      return;
+    }
 
     S.audioSending=true;
     let settled=false;
