@@ -723,7 +723,11 @@
   //    também tem "voz"/"áudio" no aria-label) podia ser escolhido no lugar
   //    do microfone de gravar, e a extensão discava uma chamada em vez de
   //    gravar um áudio.
-  const MIC_KEYWORDS=['microfone','mic','gravar áudio','gravar audio','mensagem de voz','voice message','record audio','record voice','hold to record'];
+  // "Clipe de voz" é o aria-label real usado pelo Instagram hoje (confirmado
+  // via diagnóstico em produção — não é "Microfone" nem "Gravar áudio" como
+  // seria de se imaginar). Mantém as outras variantes como fallback pra
+  // outros idiomas/versões do Instagram.
+  const MIC_KEYWORDS=['clipe de voz','voice clip','microfone','mic','gravar áudio','gravar audio','mensagem de voz','voice message','record audio','record voice','hold to record'];
   function findMicButton(){
     const root=document.querySelector('div[role="main"]')||document.body;
     const ta=root.querySelector('textarea, [contenteditable="true"]');
