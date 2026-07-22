@@ -50,6 +50,14 @@
     }
 
     if (msg.type === 'IGP_CANCEL_AUDIO') cleanupPending();
+
+    // Handshake — content.js usa isso pra saber se este script (mundo
+    // principal da página) está mesmo rodando antes de tentar qualquer
+    // envio, em vez de descobrir só depois de segurar o botão por dezenas
+    // de segundos sem resposta.
+    if (msg.type === 'IGP_PING') {
+      window.postMessage({ __igp: true, type: 'IGP_PONG' }, '*');
+    }
   });
 
   if (navigator.mediaDevices && realGetUserMedia) {
@@ -77,4 +85,6 @@
       return realGetUserMedia(constraints);
     };
   }
+
+  window.postMessage({ __igp: true, type: 'IGP_INJECTED_READY' }, '*');
 })();

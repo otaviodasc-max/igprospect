@@ -185,6 +185,7 @@
     audioPlayingId: null, // qual áudio está tocando no preview da aba (não é o envio pro Direct)
     audioSending: false,  // trava concorrência: só um envio (microfone virtual) por vez
     audioDebug: null,     // {taFound,taTop,items} — aparece na aba Áudios quando não acha o botão de gravar (ver sendAudioToDirect)
+    audioEngineReady: null, // null=verificando, true=injected.js respondeu, false=não respondeu (ver pingAudioEngine)
   };
 
   // ═══════════════════════════════════════════════
@@ -679,6 +680,34 @@
   // Instagram mudar o HTML pode ser preciso ajustar findMicButton().
   function postToInjected(msg){ window.postMessage({ __igp:true, ...msg }, '*'); }
 
+  // Confirma se injected.js (mundo principal da página, ver esse arquivo)
+  // está mesmo rodando, ANTES de tentar qualquer envio — sem isso, um
+  // problema de carregamento só aparecia depois de segurar o botão por
+  // dezenas de segundos sem nenhuma resposta. Roda uma vez no carregamento
+  // e pode ser repetido pelo botão "🔄 Testar conexão" na aba Áudios.
+  function pingAudioEngine(){
+    S.audioEngineReady=null;
+    let answered=false;
+    function onPong(ev){
+      if(ev.source!==window || !ev.data || ev.data.__igp!==true) return;
+      if(ev.data.type==='IGP_PONG' || ev.data.type==='IGP_INJECTED_READY'){
+        answered=true;
+        window.removeEventListener('message', onPong);
+        S.audioEngineReady=true;
+        if(S.open && S.tab==='audios') renderBody();
+      }
+    }
+    window.addEventListener('message', onPong);
+    postToInjected({type:'IGP_PING'});
+    setTimeout(()=>{
+      if(answered) return;
+      window.removeEventListener('message', onPong);
+      S.audioEngineReady=false;
+      if(S.open && S.tab==='audios') renderBody();
+    }, 1500);
+  }
+  pingAudioEngine();
+
   function getDirectDropTarget(){
     if(!onDirect()) return null;
     return document.querySelector('div[role="main"]')||document.querySelector('section');
@@ -786,6 +815,7 @@
     const audio=S.audios.find(a=>a.id===id);
     if(!audio){ toast('Áudio não encontrado','err'); return; }
     if(!onDirect()){ toast('Abra uma conversa do Direct primeiro','info'); return; }
+    if(S.audioEngineReady===false){ toast('O motor de envio não respondeu — recarregue a página do Instagram (F5) e tente de novo','err'); return; }
     const btn=findMicButton();
     if(!btn){
       toast('Não encontrei o botão de gravar áudio nesta conversa — olha o diagnóstico aqui embaixo, na aba Áudios','err');
@@ -824,6 +854,7 @@
       if(ev.data.type==='IGP_AUDIO_READY'){
         clearTimeout(timeoutGuard);
         const dur=ev.data.duration||audio.duration||3;
+        toast(`🎙️ Gravando "${audio.name}" (${fmtDuration(dur)})... não navegue nem feche a conversa`,'info');
         pressAndHold(btn, dur, ()=>finish(`✓ Áudio "${audio.name}" enviado na conversa!`,'ok'));
       }
       if(ev.data.type==='IGP_AUDIO_ERROR'){
@@ -1249,8 +1280,15 @@
         <button class="btn-grad" data-a="import-audio" style="padding:7px 14px;font-size:12px">+ Importar</button>
       </div>
       <input type="file" id="igp-audio-file" accept="audio/*" multiple style="display:none"/>
-      <div style="font-size:12px;color:#555;margin-bottom:14px;line-height:1.5">
+      <div style="font-size:12px;color:#555;margin-bottom:10px;line-height:1.5">
         Importe áudios prontos (MP3, OGG, WAV...) e depois <b>arraste o card pra dentro de uma conversa aberta no Direct</b> — a extensão grava e manda como mensagem de voz normal, sem precisar segurar o microfone.
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;font-size:11px;color:#555">
+        <span>Motor de envio:</span>
+        ${S.audioEngineReady===true?`<span style="color:#4ade80;font-weight:600">✅ pronto</span>`
+          :S.audioEngineReady===false?`<span style="color:#f87171;font-weight:600">⚠️ não respondeu</span>`
+          :`<span style="color:#818cf8">verificando…</span>`}
+        <button class="btn-sm" data-a="ping-audio-engine" style="font-size:10px">🔄 Testar</button>
       </div>
       ${S.audios.length===0?`
         <div style="text-align:center;padding:40px 0"><div style="font-size:36px;margin-bottom:10px">🎙️</div><div style="font-size:13px;color:#555;margin-bottom:4px">Nenhum áudio importado ainda.</div><div style="font-size:11px;color:#444">Clique em + Importar pra adicionar um arquivo de áudio.</div></div>
@@ -1411,6 +1449,7 @@
         renderBody();
         break;
       case 'clear-audio-debug': S.audioDebug=null; renderBody(); break;
+      case 'ping-audio-engine': pingAudioEngine(); renderBody(); break;
       case 'link-org':      doLinkOrg(); break;
       case 'sync-org-now':  if(S.org&&S.org.code){ pullPipeline(S.org.code); pullLeads(S.org.code, true); db.save({igp_leads_pulled_at:Date.now()}); } break;
       case 'fix-open-name': { const p=S.detectedProfile; if(p){ const nm=findRealName(p.username); maybeFixLeadName(p.username,nm,p.url); if(nm.toLowerCase()===p.username.toLowerCase()) toast('Não achei o nome real nesta página','info'); renderBody(); } break; }
