@@ -76,6 +76,11 @@
     .date-inputs option{background:#1a1a1a}
     .date-result-label{font-size:11px;color:#555;margin-top:6px;padding-top:6px;border-top:1px solid #222}
     .date-result-label span{color:#c084fc;font-weight:600}
+    /* Audios */
+    .audio-card{background:#1a1a1a;border:1px solid #222;border-radius:12px;padding:11px 13px;margin-bottom:8px;cursor:grab}
+    .audio-card:active{cursor:grabbing}
+    .audio-play-btn{background:rgba(192,132,252,0.15);border:1px solid rgba(192,132,252,0.35);color:#c084fc;border-radius:50%;width:30px;height:30px;flex-shrink:0;cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center}
+    .audio-drag-hint{color:#333;font-size:14px;flex-shrink:0}
   `;
 
   // ═══════════════════════════════════════════════
@@ -176,13 +181,16 @@
     orgMembers: [],  // membros da equipe conectada, pra escolher "quem é você" (doPickProspector)
     pipelineStages: null, // etapas reais do funil da equipe (ver currentStatuses/mapPipelineStages)
     agendorMap: null, // mapeamento etapa→funil/etapa do Agendor (Configurações → Integração Agendor), ver agendorStageFor
+    audios: [],           // {id,name,dataUrl,duration,addedAt} — biblioteca de áudios prontos (aba Áudios)
+    audioPlayingId: null, // qual áudio está tocando no preview da aba (não é o envio pro Direct)
+    audioSending: false,  // trava concorrência: só um envio (microfone virtual) por vez
   };
 
   // ═══════════════════════════════════════════════
   // STORAGE
   // ═══════════════════════════════════════════════
   const db = {
-    load: () => new Promise(r => chrome.storage.local.get(['igp_l','igp_tok','igp_org','igp_stages','igp_agendor_map','igp_leads_pulled_at','igp_sync_times','igp_sync_paused'], r)),
+    load: () => new Promise(r => chrome.storage.local.get(['igp_l','igp_tok','igp_org','igp_stages','igp_agendor_map','igp_leads_pulled_at','igp_sync_times','igp_sync_paused','igp_audios'], r)),
     save: d  => new Promise(r => chrome.storage.local.set(d, r)),
   };
 
@@ -364,6 +372,22 @@
     toastEl.className = `show ${type}`;
     clearTimeout(toastTimer);
     toastTimer = setTimeout(()=>{ toastEl.className=''; }, 3500);
+  }
+
+  // Player de PREVIEW da aba Áudios (▶ ouvir antes de arrastar) — não tem
+  // nenhuma relação com o "microfone virtual" usado no envio pro Direct
+  // (esse roda isolado dentro de injected.js, no mundo principal da página).
+  const previewAudio = new Audio();
+  previewAudio.addEventListener('ended', ()=>{ S.audioPlayingId=null; if(S.open && S.tab==='audios') renderBody(); });
+  function doToggleAudioPreview(id){
+    const a=S.audios.find(x=>x.id===id); if(!a) return;
+    if(S.audioPlayingId===id){ previewAudio.pause(); S.audioPlayingId=null; renderBody(); return; }
+    previewAudio.pause();
+    previewAudio.src=a.dataUrl;
+    previewAudio.currentTime=0;
+    previewAudio.play().catch(()=>toast('Não consegui tocar esse áudio','err'));
+    S.audioPlayingId=id;
+    renderBody();
   }
 
   // ═══════════════════════════════════════════════
@@ -640,6 +664,134 @@
   setInterval(()=>{ try{ scanDirect(); }catch(_){} }, 2500);
 
   // ═══════════════════════════════════════════════
+  // AUDIO → DIRECT (microfone virtual)
+  // ═══════════════════════════════════════════════
+  // O Instagram não aceita áudio como anexo solto (só imagem/vídeo) — a
+  // única forma de um áudio virar mensagem de voz é gravando na hora. Então
+  // ao soltar um card da aba Áudios em cima da conversa, em vez de tentar um
+  // "drop de arquivo" que o Instagram ia rejeitar, a extensão finge segurar
+  // o botão de gravar enquanto injected.js (mundo principal da página, ver
+  // esse arquivo) troca a resposta do microfone pelo áudio importado. Isso é
+  // inerentemente frágil a mudanças de layout do Instagram — os seletores
+  // abaixo foram escolhidos pra serem o mais resilientes possível (por
+  // aria-label do ícone, escopado à barra de composição), mas se o
+  // Instagram mudar o HTML pode ser preciso ajustar findMicButton().
+  function postToInjected(msg){ window.postMessage({ __igp:true, ...msg }, '*'); }
+
+  function getDirectDropTarget(){
+    if(!onDirect()) return null;
+    return document.querySelector('div[role="main"]')||document.querySelector('section');
+  }
+
+  function highlightDropTarget(el, on){
+    if(!el) return;
+    el.style.outline = on ? '2px dashed #f472b6' : '';
+    el.style.outlineOffset = on ? '-2px' : '';
+  }
+
+  document.addEventListener('dragover', e=>{
+    if(!e.dataTransfer||!e.dataTransfer.types||!e.dataTransfer.types.includes('application/x-igprospect-audio')) return;
+    const target=getDirectDropTarget();
+    if(!target) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect='copy';
+    highlightDropTarget(target, true);
+  });
+  document.addEventListener('dragleave', e=>{
+    const target=getDirectDropTarget();
+    if(target && (!e.relatedTarget || !target.contains(e.relatedTarget))) highlightDropTarget(target, false);
+  });
+  document.addEventListener('drop', e=>{
+    if(!e.dataTransfer) return;
+    const id=e.dataTransfer.getData('application/x-igprospect-audio');
+    if(!id) return;
+    const target=getDirectDropTarget();
+    if(!target) return;
+    e.preventDefault();
+    highlightDropTarget(target, false);
+    sendAudioToDirect(id);
+  }, true);
+
+  // Acha a barra de composição (campo de texto + ícones de anexo/áudio) da
+  // conversa aberta — escopar a busca do botão de microfone a essa região
+  // (em vez da página toda) evita pegar outro ícone qualquer com "áudio" no
+  // aria-label (ex.: chamada de vídeo).
+  function findComposeRoot(){
+    const root=document.querySelector('div[role="main"]')||document.body;
+    const ta=root.querySelector('textarea, [contenteditable="true"]');
+    if(!ta) return root;
+    let el=ta, hops=0;
+    while(el.parentElement && hops<6){ el=el.parentElement; hops++; if(el.querySelectorAll('svg[aria-label]').length>=2) break; }
+    return el;
+  }
+  function findMicButton(){
+    const root=findComposeRoot();
+    const micRe=/^(mic|microphone|gravar|grava|voice|voz|áudio|audio)\b/i;
+    const svgs=root.querySelectorAll('svg[aria-label]');
+    for(const svg of svgs){
+      const label=(svg.getAttribute('aria-label')||'').trim();
+      if(micRe.test(label)){
+        const btn=svg.closest('button, div[role="button"]');
+        if(btn) return btn;
+      }
+    }
+    return null;
+  }
+
+  // "Segura" o botão de gravar pelo tempo da faixa (mousedown → espera →
+  // mouseup), como um clique longo de verdade. Alguns layouts do Instagram
+  // pedem uma confirmação extra depois de soltar — se aparecer um botão de
+  // enviar visível logo em seguida, tenta clicar nele também.
+  function pressAndHold(btn, durationSec, done){
+    const opts={bubbles:true, cancelable:true, view:window, button:0, buttons:1};
+    btn.dispatchEvent(new PointerEvent('pointerdown', {...opts, pointerId:1, pointerType:'mouse', isPrimary:true}));
+    btn.dispatchEvent(new MouseEvent('mousedown', opts));
+    const ms=Math.max(500, Math.round((durationSec||3)*1000))+500;
+    setTimeout(()=>{
+      btn.dispatchEvent(new PointerEvent('pointerup', {...opts, pointerId:1, pointerType:'mouse', isPrimary:true}));
+      btn.dispatchEvent(new MouseEvent('mouseup', opts));
+      setTimeout(()=>{
+        const sendBtn=document.querySelector('[aria-label="Enviar" i], [aria-label="Send" i]');
+        if(sendBtn) sendBtn.click();
+        done();
+      }, 400);
+    }, ms);
+  }
+
+  function sendAudioToDirect(id){
+    if(S.audioSending){ toast('Já tem um áudio sendo enviado, aguarde…','info'); return; }
+    const audio=S.audios.find(a=>a.id===id);
+    if(!audio){ toast('Áudio não encontrado','err'); return; }
+    if(!onDirect()){ toast('Abra uma conversa do Direct primeiro','info'); return; }
+    const btn=findMicButton();
+    if(!btn){ toast('Não encontrei o botão de gravar áudio nesta conversa — pode ser que o Instagram tenha mudado o layout','err'); return; }
+
+    S.audioSending=true;
+    let settled=false;
+    const timeoutGuard=setTimeout(()=>{ postToInjected({type:'IGP_CANCEL_AUDIO'}); finish('O Instagram não respondeu ao pedido de gravação — tente de novo','err'); }, 12000);
+    function finish(msg,type){
+      if(settled) return; settled=true;
+      window.removeEventListener('message', onReady);
+      clearTimeout(timeoutGuard);
+      S.audioSending=false;
+      if(msg) toast(msg, type||'info');
+    }
+    function onReady(ev){
+      if(ev.source!==window || !ev.data || ev.data.__igp!==true) return;
+      if(ev.data.type==='IGP_AUDIO_READY'){
+        clearTimeout(timeoutGuard);
+        const dur=ev.data.duration||audio.duration||3;
+        pressAndHold(btn, dur, ()=>finish(`✓ Áudio "${audio.name}" enviado na conversa!`,'ok'));
+      }
+      if(ev.data.type==='IGP_AUDIO_ERROR'){
+        finish('Não consegui preparar esse áudio pra envio','err');
+      }
+    }
+    window.addEventListener('message', onReady);
+    postToInjected({type:'IGP_PREP_AUDIO', dataUrl:audio.dataUrl, id:audio.id});
+  }
+
+  // ═══════════════════════════════════════════════
   // AGENDOR INTEGRATION
   // ═══════════════════════════════════════════════
   // Nome bonito da PESSOA no Agendor: "Nome Real (@usuario)". O título do
@@ -728,6 +880,7 @@
       {k:'dash',    label:'📊 Dashboard'},
       {k:'leads',   label:'👥 Leads'},
       {k:'contacts',label:'📱 Contatos'+(cv>0?` <em>${cv}</em>`:'')},
+      {k:'audios',  label:'🎙️ Áudios'+(S.audios.length>0?` <em>${S.audios.length}</em>`:'')},
       {k:'settings',label:'⚙️ Config'},
     ];
 
@@ -750,7 +903,7 @@
           ${tabs.map(t=>`<button class="nav-btn${S.tab===t.k?' active':''}" data-tab="${t.k}">${t.label}</button>`).join('')}
         </div>
         <div id="igp-body">
-          ${S.tab==='dash'?renderDash(m):S.tab==='leads'?renderLeads():S.tab==='contacts'?renderContacts(m):renderSettings(m)}
+          ${S.tab==='dash'?renderDash(m):S.tab==='leads'?renderLeads():S.tab==='contacts'?renderContacts(m):S.tab==='audios'?renderAudios():renderSettings(m)}
         </div>
       </div>
     `;
@@ -794,6 +947,8 @@
       pi.addEventListener('keydown',e=>{if(e.key==='Enter')doConfirmPhone();});
       setTimeout(()=>pi.focus(),50);
     }
+    const af=shadow.getElementById('igp-audio-file');
+    if(af) af.addEventListener('change', e=>{ handleAudioFiles(e.target.files); e.target.value=''; });
     const oc=shadow.getElementById('igp-orgcode');
     if(oc) oc.addEventListener('input',e=>{S.orgCodeInput=e.target.value;});
     const pr=shadow.getElementById('igp-prospector');
@@ -812,7 +967,7 @@
     const body=shadow.getElementById('igp-body');
     if(!body)return;
     const m=metrics();
-    body.innerHTML=S.tab==='dash'?renderDash(m):S.tab==='leads'?renderLeads():S.tab==='contacts'?renderContacts(m):renderSettings(m);
+    body.innerHTML=S.tab==='dash'?renderDash(m):S.tab==='leads'?renderLeads():S.tab==='contacts'?renderContacts(m):S.tab==='audios'?renderAudios():renderSettings(m);
     postRender(focus===undefined?'search':focus);
     updateProfileBar();
     updateDirectBar();
@@ -1036,6 +1191,48 @@
   }
 
   // ═══════════════════════════════════════════════
+  // TAB: AUDIOS
+  // ═══════════════════════════════════════════════
+  function fmtDuration(sec){
+    sec=Math.round(sec||0);
+    const m=Math.floor(sec/60), s=sec%60;
+    return `${m}:${String(s).padStart(2,'0')}`;
+  }
+
+  function renderAudios(){
+    return `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <span style="font-weight:700;font-size:15px;color:#fff">Áudios <span style="font-size:12px;font-weight:400;color:#444">(${S.audios.length})</span></span>
+        <button class="btn-grad" data-a="import-audio" style="padding:7px 14px;font-size:12px">+ Importar</button>
+      </div>
+      <input type="file" id="igp-audio-file" accept="audio/*" multiple style="display:none"/>
+      <div style="font-size:12px;color:#555;margin-bottom:14px;line-height:1.5">
+        Importe áudios prontos (MP3, OGG, WAV...) e depois <b>arraste o card pra dentro de uma conversa aberta no Direct</b> — a extensão grava e manda como mensagem de voz normal, sem precisar segurar o microfone.
+      </div>
+      ${S.audios.length===0?`
+        <div style="text-align:center;padding:40px 0"><div style="font-size:36px;margin-bottom:10px">🎙️</div><div style="font-size:13px;color:#555;margin-bottom:4px">Nenhum áudio importado ainda.</div><div style="font-size:11px;color:#444">Clique em + Importar pra adicionar um arquivo de áudio.</div></div>
+      `:S.audios.map(a=>renderAudioCard(a)).join('')}
+    `;
+  }
+
+  function renderAudioCard(a){
+    const playing=S.audioPlayingId===a.id;
+    return `
+      <div class="audio-card" draggable="true" data-aid="${a.id}" title="Arraste pra uma conversa do Direct pra enviar">
+        <div style="display:flex;align-items:center;gap:10px">
+          <button class="audio-play-btn" data-a="play-audio" data-aid="${a.id}" title="${playing?'Pausar':'Ouvir'}">${playing?'⏸':'▶'}</button>
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;font-size:13px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.name)}</div>
+            <div style="font-size:11px;color:#555;margin-top:2px">${fmtDuration(a.duration)} · ${fmtDate(a.addedAt)}</div>
+          </div>
+          <span class="audio-drag-hint">⠿</span>
+          <button class="btn-sm" data-a="del-audio" data-aid="${a.id}" style="flex-shrink:0">✕</button>
+        </div>
+      </div>
+    `;
+  }
+
+  // ═══════════════════════════════════════════════
   // TAB: SETTINGS
   // ═══════════════════════════════════════════════
   function renderSettings(m){
@@ -1132,6 +1329,14 @@
       case 'copy-phone':
         navigator.clipboard?.writeText(el.dataset.phone).then(()=>{el.textContent='✓';setTimeout(()=>{el.textContent='Copiar';},2000);});
         break;
+      case 'import-audio': { const fi=shadow.getElementById('igp-audio-file'); if(fi) fi.click(); break; }
+      case 'play-audio':   doToggleAudioPreview(aid); break;
+      case 'del-audio':
+        S.audios=S.audios.filter(x=>x.id!==aid);
+        db.save({igp_audios:S.audios});
+        if(S.audioPlayingId===aid){ previewAudio.pause(); S.audioPlayingId=null; }
+        renderBody();
+        break;
       case 'link-org':      doLinkOrg(); break;
       case 'sync-org-now':  if(S.org&&S.org.code){ pullPipeline(S.org.code); pullLeads(S.org.code, true); db.save({igp_leads_pulled_at:Date.now()}); } break;
       case 'fix-open-name': { const p=S.detectedProfile; if(p){ const nm=findRealName(p.username); maybeFixLeadName(p.username,nm,p.url); if(nm.toLowerCase()===p.username.toLowerCase()) toast('Não achei o nome real nesta página','info'); renderBody(); } break; }
@@ -1160,6 +1365,16 @@
     const noteClr=e.target.closest('[data-note-clear]');
     if(noteClr){ S.noteSearch=''; renderBody('notes'); return; }
   }, true);
+
+  // Início do arrasto de um card de áudio — o resto do fluxo (soltar em cima
+  // da conversa do Direct) é tratado nos listeners de 'dragover'/'drop' no
+  // DOCUMENT da página, não aqui dentro do shadow (ver seção "AUDIO → DIRECT").
+  shadow.addEventListener('dragstart', e=>{
+    const card=e.target.closest('.audio-card');
+    if(!card){ return; }
+    e.dataTransfer.setData('application/x-igprospect-audio', card.dataset.aid);
+    e.dataTransfer.effectAllowed='copy';
+  });
 
   // ═══════════════════════════════════════════════
   // ACTIONS
@@ -1247,6 +1462,40 @@
     db.save({igp_l:S.leads});
     syncLeadDeleteDirect(lid);
     renderBody();
+  }
+
+  // Lê cada arquivo importado como data URL (fica salvo no chrome.storage.local
+  // da extensão — "unlimitedStorage" no manifest, senão o limite padrão de
+  // ~10MB estoura rápido com áudio) e mede a duração antes de salvar, porque
+  // é ela que decide quanto tempo "segurar" o microfone no envio (ver
+  // pressAndHold).
+  function handleAudioFiles(fileList){
+    const files=Array.from(fileList||[]);
+    if(!files.length) return;
+    files.forEach(file=>{
+      if(!file.type.startsWith('audio/')){ toast(`"${file.name}" não é um arquivo de áudio`,'err'); return; }
+      const reader=new FileReader();
+      reader.onload=()=>{
+        const dataUrl=reader.result;
+        const probe=new Audio();
+        probe.preload='metadata';
+        probe.addEventListener('loadedmetadata', ()=>{
+          const entry={
+            id: Date.now().toString()+Math.random().toString(36).slice(2,6),
+            name: file.name.replace(/\.[^.]+$/,''),
+            dataUrl, duration: probe.duration||0, addedAt: new Date().toISOString(),
+          };
+          S.audios.unshift(entry);
+          db.save({igp_audios:S.audios});
+          if(S.tab==='audios') renderBody();
+          toast(`Áudio "${entry.name}" importado!`,'ok');
+        }, {once:true});
+        probe.addEventListener('error', ()=>toast(`Não consegui ler "${file.name}"`,'err'), {once:true});
+        probe.src=dataUrl;
+      };
+      reader.onerror=()=>toast(`Erro ao importar "${file.name}"`,'err');
+      reader.readAsDataURL(file);
+    });
   }
 
   // Resolve o código da equipe (Configurações → Equipe, no sistema) via
@@ -1436,6 +1685,7 @@
     if(d.igp_agendor_map) S.agendorMap=d.igp_agendor_map;
     if(d.igp_sync_times) recentSyncTimes=d.igp_sync_times;
     if(d.igp_sync_paused) syncPaused=true;
+    if(d.igp_audios) S.audios=d.igp_audios;
     render();
     extractProfile();
     // Repopula a lista de membros pra poder trocar/confirmar "quem é você"

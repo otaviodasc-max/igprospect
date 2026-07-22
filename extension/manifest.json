@@ -1,14 +1,22 @@
 {
   "manifest_version": 3,
   "name": "IGProspect - CRM de Prospecção",
-  "version": "1.7.11",
-  "description": "CRM no Instagram: detecta perfis, rastreia leads, converte por contato, sincroniza com Agendor e com o Painel Privado.",
-  "permissions": ["storage"],
+  "version": "1.8.0",
+  "description": "CRM no Instagram: detecta perfis, rastreia leads, converte por contato, envia áudios prontos no Direct, sincroniza com Agendor e com o Painel Privado.",
+  "minimum_chrome_version": "111",
+  "permissions": ["storage", "unlimitedStorage"],
   "host_permissions": ["https://api.agendor.com.br/*", "https://guuecwrhwuzbwfetehix.supabase.co/*"],
   "background": {
     "service_worker": "background.js"
   },
   "content_scripts": [
+    {
+      "matches": ["https://www.instagram.com/*"],
+      "js": ["injected.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
     {
       "matches": ["https://www.instagram.com/*"],
       "js": ["content.js"],
