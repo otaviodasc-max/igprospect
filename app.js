@@ -2526,7 +2526,7 @@ async function importExtensionLeads(incoming){
     // Mapas para localizar leads já existentes (por id da extensão ou @usuário)
     const byExt=new Map(), byUser=new Map();
     S.leads.forEach(l=>{ if(l.extId) byExt.set(String(l.extId),l); const u=(l.username||'').toLowerCase(); if(u) byUser.set(u,l); });
-    const rows=[]; let updated=0; const becameContato=[]; const handledIds=[]; const statusChangedIds=[];
+    const rows=[]; let updated=0; const becameContato=[]; const handledIds=[];
     for(const raw of incoming){
       if(!raw||(!raw.name&&!raw.username)) continue;
       const extId=String(raw.id||'');
@@ -2549,7 +2549,7 @@ async function importExtensionLeads(incoming){
         if(raw.name && raw.name.toLowerCase()!==uk && nameIsHandle && raw.name.trim()!==(existing.name||'')) patch.name=raw.name.trim();
         if(Object.keys(patch).length){
           const { error }=await sb.from('leads').update(patch).eq('id',existing.id);
-          if(!error){ Object.assign(existing,patch); updated++; if(patch.status){ if(isLastStage(patch.status,leadPipeline(existing))) becameContato.push(existing.id); statusChangedIds.push(existing.id); } }
+          if(!error){ Object.assign(existing,patch); updated++; if(patch.status && isLastStage(patch.status,leadPipeline(existing))) becameContato.push(existing.id); }
         }
         continue;
       }
@@ -2579,14 +2579,18 @@ async function importExtensionLeads(incoming){
       await loadLeads(); await loadDeals();
       // garante negociação para todo lead que está em "contato" (novos ou atualizados)
       for(const l of S.leads){ if(isLastStage(l.status,leadPipeline(l))||l.tipo==='empresario') await ensureDealForLead(l.id); }
-      // Envia/move no Agendor os leads que a extensão criou ou fez avançar de
-      // etapa nesta sincronização — antes disso o auto-envio só existia no
-      // painel (kanban/formulário); mudança de status feita na extensão nunca
-      // chegava ao Agendor sozinha, só clicando no botão manual.
-      if(agendorOn()&&agendorAutoOn()){
-        const newExtIds=new Set(rows.map(r=>r.ext_id).filter(Boolean));
-        for(const l of S.leads){ if(statusChangedIds.includes(l.id) || (l.extId&&newExtIds.has(l.extId))) await autoSyncAgendor(l); }
-      }
+      // NÃO chamar autoSyncAgendor aqui: a própria extensão já envia direto ao
+      // Agendor (extension/content.js syncAgendor), independente do painel estar
+      // aberto, e grava o agendor_person_id de volta no banco. Se o painel também
+      // dispara autoSyncAgendor pra esse mesmo lead nesta janela de sincronização,
+      // as duas chamadas correm em paralelo (uma da extensão, uma daqui) antes de
+      // qualquer uma delas gravar o agendor_person_id — isso duplicava pessoa+
+      // negócio no Agendor, ou fazia uma das duas ser rejeitada pelo Agendor
+      // (aparecia como "às vezes vai, às vezes não" ao repetir o mesmo número em
+      // leads diferentes). Sincronizar isso é responsabilidade só de quem fez a
+      // mudança: extensão avisa aqui só via agendor_person_id/status vindos do
+      // banco; mudança feita DIRETO no painel (form/kanban) continua dispensando
+      // pelos outros call sites de autoSyncAgendor, que não têm esse conflito.
       renderShell();
       for(const cid of becameContato){ notifyLeadContato(S.leads.find(x=>x.id===cid)); }
       const parts=[];

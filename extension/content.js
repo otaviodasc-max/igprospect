@@ -596,7 +596,7 @@
     S.directDetect=null; _lastDirectKey='';
     if(S.open) renderBody(); else updateDirectBar();
     toast(`✓ Contato de ${updated.name} registrado!`,'ok');
-    if(S.agendorToken&&updated) syncAgendor(updated);
+    if(updated) syncAgendor(updated);
   }
 
   // Watch URL changes (Instagram SPA)
@@ -623,7 +623,11 @@
   }
 
   function syncAgendor(lead) {
-    if (!S.agendorToken||!lead.phone) return;
+    if (!lead.phone) return;
+    // Sem token não dá pra saber se a equipe simplesmente não usa Agendor ou
+    // esqueceu de configurar — avisa sempre que marcar "Enviou Contato", já
+    // que antes o envio só sumia em silêncio (nenhum toast, nenhum log).
+    if (!S.agendorToken) { toast('☁ Token do Agendor não configurado no sistema — configure em Configurações → Integração Agendor e reconecte a equipe aqui.','err'); return; }
     if (lead.agendorManual||lead.agendorId) return;
     // Sem destino mapeado pra etapa atual, não envia — mesma regra do painel
     // (Configurações → Roteamento por etapa: "etapas sem mapeamento não são
@@ -1192,7 +1196,7 @@
     S.phoneLeadId=null; S.phoneInput='';
     renderBody();
     toast('Contato registrado!','ok');
-    if(S.agendorToken&&lead) syncAgendor(lead);
+    if(lead) syncAgendor(lead);
   }
 
   function doDeleteLead(lid){
