@@ -803,10 +803,24 @@
   // (ver 'trusted_press_hold' em background.js). Custo: o Chrome mostra uma
   // barra "esta extensão está depurando a aba" enquanto o clique está
   // "segurado", some sozinha ao soltar.
+  // Bolinha rosa temporária EXATAMENTE onde o clique de verdade (CDP) vai
+  // cair — só pra dar pra ver num print se a coordenada calculada bate com
+  // o ícone certo ou está caindo em outro lugar (ex.: atrás do painel, ou
+  // no elemento errado).
+  function showClickMarker(x,y){
+    try{
+      const m=document.createElement('div');
+      m.style.cssText=`position:fixed;left:${x-11}px;top:${y-11}px;width:22px;height:22px;border-radius:50%;background:rgba(244,114,182,0.55);border:2px solid #f472b6;z-index:2147483647;pointer-events:none;box-shadow:0 0 0 6px rgba(244,114,182,0.25)`;
+      document.body.appendChild(m);
+      setTimeout(()=>m.remove(), 4000);
+    }catch(_){}
+  }
+
   function pressAndHold(btn, durationSec, done){
     const box=btn.getBoundingClientRect();
     const x=Math.round(box.left+box.width/2);
     const y=Math.round(box.top+box.height/2);
+    showClickMarker(x,y);
     const holdMs=Math.max(500, Math.round((durationSec||3)*1000))+500;
     chrome.runtime.sendMessage({ type:'trusted_press_hold', x, y, holdMs }, res=>{
       if(chrome.runtime.lastError || !res || !res.ok){
