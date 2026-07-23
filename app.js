@@ -667,7 +667,15 @@ function renderDashboard(){
   const KICO={ novo:'<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>', chamado:'<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>', respondeu:'<polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>', contato:'<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>' };
   const sts=STS(), sm=SM(), sc=SC();
   const cum=cumulativeStageCounts(stageLeads, stagesOf(defaultPipeline()));
-  const kpis=[ {k:'novo',cls:'kk-n',lbl:'Total de Leads',val:total,p:null,sub:`${S.leads.length} no total`}, {k:'chamado',cls:'kk-c',lbl:'Chamados',val:cum.chamado,p:pct(cum.chamado),sub:'do total'}, {k:'respondeu',cls:'kk-r',lbl:'Responderam',val:cum.respondeu,p:cum.chamado?Math.round(cum.respondeu/cum.chamado*100):0,sub:'dos chamados'}, {k:'contato',cls:'kk-o',lbl:'Convertidos',val:cum.contato,p:pct(cum.contato),sub:'taxa de conv.'} ];
+  // As chaves das etapas (ex. "chamado") não são fixas — mudam pra algo tipo
+  // "chamado_a1b2" sempre que alguém edita/recria as etapas do funil na
+  // equipe (ver comentário em cumulativeStageCounts). Por isso os 3 cards
+  // abaixo não podem ler cum.chamado/cum.respondeu/cum.contato direto (dá
+  // NaN se a chave mudou) — lêem pela POSIÇÃO da etapa, igual o funil de
+  // baixo (STS()) já faz: 2ª etapa = "chamado", 3ª = "respondeu", última =
+  // "contato"/convertido.
+  const chamadoN=cum[sts[1]]||0, respondeuN=cum[sts[2]]||0, contatoN=cum[sts[sts.length-1]]||0;
+  const kpis=[ {k:'novo',cls:'kk-n',lbl:'Total de Leads',val:total,p:null,sub:`${S.leads.length} no total`}, {k:'chamado',cls:'kk-c',lbl:'Chamados',val:chamadoN,p:pct(chamadoN),sub:'do total'}, {k:'respondeu',cls:'kk-r',lbl:'Responderam',val:respondeuN,p:chamadoN?Math.round(respondeuN/chamadoN*100):0,sub:'dos chamados'}, {k:'contato',cls:'kk-o',lbl:'Convertidos',val:contatoN,p:pct(contatoN),sub:'taxa de conv.'} ];
   const kpiHtml=kpis.map(x=>`<div class="kpi-card ${x.cls}"><div class="kpi-top"><div class="kpi-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${KICO[x.k]}</svg></div></div><div class="kpi-lbl">${x.lbl}</div><div class="kpi-val" data-cnt="${x.val}">0</div><div class="kpi-sub">${x.p!=null?`<span class="kpi-pct">${x.p}%</span>`:''}${x.sub}</div></div>`).join('');
   const maxC=Math.max(...sts.map(s=>cum[s]||0),1);
   const funnelHtml=sts.map((s,i)=>{ const n=cum[s]||0,w=Math.round(n/maxC*100); const prev=i>0?(cum[sts[i-1]]||0):0; const stepPct=i===0?null:(prev?Math.round(n/prev*100):0); return `<div class="funnel-row"><div class="funnel-lbl"><span class="sdot" style="background:${sc[s]}"></span>${sm[s].label}</div><div class="funnel-track"><div class="funnel-fill" style="width:${w}%;background:${sc[s]};opacity:.82"><span>${stepPct!=null?stepPct+'%':n>0?'100%':''}</span></div></div><div class="funnel-cnt">${n}</div></div>`; }).join('');
