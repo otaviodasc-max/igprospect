@@ -819,10 +819,14 @@
   function showClickMarker(x,y){
     try{
       const m=document.createElement('div');
-      m.style.cssText=`position:fixed;left:${x-11}px;top:${y-11}px;width:22px;height:22px;border-radius:50%;background:rgba(244,114,182,0.55);border:2px solid #f472b6;z-index:2147483647;pointer-events:none;box-shadow:0 0 0 6px rgba(244,114,182,0.25)`;
-      document.body.appendChild(m);
-      setTimeout(()=>m.remove(), 4000);
-    }catch(_){}
+      m.id='igp-click-marker';
+      m.style.cssText=`position:fixed;left:${x-35}px;top:${y-35}px;width:70px;height:70px;border-radius:50%;background:rgba(255,0,255,0.5);border:5px solid #ff00ff;z-index:2147483647;pointer-events:none;box-shadow:0 0 0 12px rgba(255,0,255,0.3),0 0 40px 15px #ff00ff`;
+      document.documentElement.appendChild(m);
+      setTimeout(()=>{ try{ m.remove(); }catch(_){} }, 8000);
+      toast(`🎯 Clicando em x:${x} y:${y}`,'info');
+    }catch(err){
+      toast('Erro ao desenhar marcador: '+err.message,'err');
+    }
   }
 
   function pressAndHold(btn, durationSec, done){
