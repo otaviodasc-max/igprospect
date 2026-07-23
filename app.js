@@ -492,6 +492,23 @@ async function loadWeeklyPayments(){ const { data, error }=await sb.from('weekly
    METRICS / CHARTS (portados do original)
 ===================================================================== */
 const metrics = leads => { const c={novo:0,chamado:0,respondeu:0,contato:0}; for(const l of leads){ const s=l.status||'novo'; if(c[s]!=null) c[s]++; } return c; };
+// Contagem CUMULATIVA por etapa de um funil de verdade: um lead na etapa X
+// conta em X e em TODAS as etapas anteriores também, porque pra chegar em X
+// ele necessariamente passou por elas antes. Ou seja, de 1000 leads novos,
+// se 500 foram chamados, o resultado é {novo:1000, chamado:500, ...} — não
+// "1000 novos, 500 chamados" como partições que somam o total; é sempre
+// decrescente (ou igual) etapa a etapa. Mesmo modelo já usado na extensão
+// (funções isUncalled/isContacted). Só serve pra funil/KPIs — o donut de
+// "onde cada lead está agora" precisa da contagem EXCLUSIVA (metrics()).
+function cumulativeStageCounts(leads, stages){
+  const counts=Object.fromEntries(stages.map(s=>[s.key,0]));
+  leads.forEach(l=>{
+    const idx=stages.findIndex(s=>s.key===((l&&l.status)||stages[0].key));
+    if(idx<0) return; // status de outro funil (chaves diferentes) — não pertence a este funil, não conta em nenhuma etapa
+    for(let i=0;i<=idx;i++) counts[stages[i].key]++;
+  });
+  return counts;
+}
 const topNiches = (leads,n=8) => { const m={}; for(const l of leads){ const k=(l.niche||'Sem nicho').trim()||'Sem nicho'; m[k]=(m[k]||0)+1; } return Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,n); };
 const timeline14 = leads => { const t=new Date(); t.setHours(0,0,0,0); return Array.from({length:14},(_,i)=>{ const day=new Date(t); day.setDate(day.getDate()-(13-i)); const nx=new Date(day); nx.setDate(nx.getDate()+1); return { date:day, count:leads.filter(l=>{ if(!l.addedAt)return false; const d=new Date(l.addedAt); return d>=day&&d<nx; }).length }; }); };
 const weeklyTrend = leads => { const now=new Date(); now.setHours(0,0,0,0); return Array.from({length:8},(_,i)=>{ const ri=7-i; const s=new Date(now); s.setDate(s.getDate()-ri*7-6); const e=new Date(now); e.setDate(e.getDate()-ri*7+1); return { label:`S${i+1}`, count:leads.filter(l=>l.addedAt&&new Date(l.addedAt)>=s&&new Date(l.addedAt)<e).length }; }); };
@@ -633,13 +650,17 @@ function routeRender(){ ({dashboard:renderDashboard,goals:renderGoals,leads:rend
 ===================================================================== */
 function renderDashboard(){
   const leads=inPeriod(S.leads,S.period);
+  // `c` = onde cada lead está AGORA (exclusivo, soma = total) — usado só no
+  // donut. `cum` = funil de verdade (cumulativo: quem chegou em X passou
+  // pelas etapas antes de X também) — usado nos KPIs e nas barras do funil.
   const c=metrics(leads), total=leads.length, pct=n=>total?Math.round(n/total*100):0;
   const KICO={ novo:'<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>', chamado:'<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>', respondeu:'<polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>', contato:'<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>' };
   const sts=STS(), sm=SM(), sc=SC();
-  const kpis=[ {k:'novo',cls:'kk-n',lbl:'Total de Leads',val:total,p:null,sub:`${S.leads.length} no total`}, {k:'chamado',cls:'kk-c',lbl:'Chamados',val:c.chamado,p:pct(c.chamado),sub:'do total'}, {k:'respondeu',cls:'kk-r',lbl:'Responderam',val:c.respondeu,p:pct(c.respondeu),sub:'dos chamados'}, {k:'contato',cls:'kk-o',lbl:'Convertidos',val:c.contato,p:pct(c.contato),sub:'taxa de conv.'} ];
+  const cum=cumulativeStageCounts(leads, stagesOf(defaultPipeline()));
+  const kpis=[ {k:'novo',cls:'kk-n',lbl:'Total de Leads',val:total,p:null,sub:`${S.leads.length} no total`}, {k:'chamado',cls:'kk-c',lbl:'Chamados',val:cum.chamado,p:pct(cum.chamado),sub:'do total'}, {k:'respondeu',cls:'kk-r',lbl:'Responderam',val:cum.respondeu,p:cum.chamado?Math.round(cum.respondeu/cum.chamado*100):0,sub:'dos chamados'}, {k:'contato',cls:'kk-o',lbl:'Convertidos',val:cum.contato,p:pct(cum.contato),sub:'taxa de conv.'} ];
   const kpiHtml=kpis.map(x=>`<div class="kpi-card ${x.cls}"><div class="kpi-top"><div class="kpi-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${KICO[x.k]}</svg></div></div><div class="kpi-lbl">${x.lbl}</div><div class="kpi-val" data-cnt="${x.val}">0</div><div class="kpi-sub">${x.p!=null?`<span class="kpi-pct">${x.p}%</span>`:''}${x.sub}</div></div>`).join('');
-  const maxC=Math.max(...sts.map(s=>c[s]||0),1);
-  const funnelHtml=sts.map(s=>{ const n=c[s]||0,w=Math.round(n/maxC*100); return `<div class="funnel-row"><div class="funnel-lbl"><span class="sdot" style="background:${sc[s]}"></span>${sm[s].label}</div><div class="funnel-track"><div class="funnel-fill" style="width:${w}%;background:${sc[s]};opacity:.82"><span>${n>0?pct(n)+'%':''}</span></div></div><div class="funnel-cnt">${n}</div></div>`; }).join('');
+  const maxC=Math.max(...sts.map(s=>cum[s]||0),1);
+  const funnelHtml=sts.map((s,i)=>{ const n=cum[s]||0,w=Math.round(n/maxC*100); const prev=i>0?(cum[sts[i-1]]||0):0; const stepPct=i===0?null:(prev?Math.round(n/prev*100):0); return `<div class="funnel-row"><div class="funnel-lbl"><span class="sdot" style="background:${sc[s]}"></span>${sm[s].label}</div><div class="funnel-track"><div class="funnel-fill" style="width:${w}%;background:${sc[s]};opacity:.82"><span>${stepPct!=null?stepPct+'%':n>0?'100%':''}</span></div></div><div class="funnel-cnt">${n}</div></div>`; }).join('');
   const niches=topNiches(leads),maxN=(niches[0]&&niches[0][1])||1;
   const nichesHtml=niches.length?niches.map(([nm,n],i)=>`<div class="niche-row"><span class="niche-rank">${i+1}</span><span class="niche-nm" title="${esc(nm)}">${esc(nm)}</span><div class="niche-track"><div class="niche-fill" style="width:${Math.round(n/maxN*100)}%"></div></div><span class="niche-cnt">${n}</span></div>`).join(''):'<div style="font-size:.74rem;color:var(--t3);text-align:center;padding:14px 0">Sem dados de nicho</div>';
   const recent=[...leads].sort((a,b)=>new Date(b.addedAt||0)-new Date(a.addedAt||0)).slice(0,6);
@@ -1859,20 +1880,29 @@ function renderRelDash(){
   // status virou "Enviou Contato", não no dia do cadastro do lead.
   const leads=S.leads.filter(l=>(!pipeline||l.pipeline_id===pipeline.id) && inRange(leadEffectiveDate(l)));
   const stages=stagesOf(pipeline);
-  const counts=Object.fromEntries(stages.map(s=>[s.key,0]));
+  // `counts` = onde cada lead está AGORA (exclusivo, soma = total) — só pro
+  // donut. `cumCounts` = funil de verdade (cumulativo): de 1000 leads novos
+  // no período, quantos CHEGARAM em cada etapa (chamado inclui quem já
+  // avançou pra respondeu/contato também, e assim por diante) — é isso que
+  // vai nos cards e nas barras do funil.
   const firstKey=(stages[0]&&stages[0].key)||'novo';
+  const counts=Object.fromEntries(stages.map(s=>[s.key,0]));
   leads.forEach(l=>{ const st=l.status||firstKey; counts[st]=(counts[st]||0)+1; });
+  const cumCounts=cumulativeStageCounts(leads, stages);
   const total=leads.length;
   const pctOf=n=>total?Math.round(n/total*100):0;
-  const maxC=Math.max(...stages.map(s=>counts[s.key]||0),1);
-  const funnelHtml=stages.map(s=>{ const n=counts[s.key]||0, w=Math.round(n/maxC*100); return `<div class="funnel-row"><div class="funnel-lbl"><span class="sdot" style="background:${s.color}"></span>${esc(s.label)}</div><div class="funnel-track"><div class="funnel-fill" style="width:${w}%;background:${s.color};opacity:.82"><span>${n>0?pctOf(n)+'%':''}</span></div></div><div class="funnel-cnt">${n}</div></div>`; }).join('');
+  const maxC=Math.max(...stages.map(s=>cumCounts[s.key]||0),1);
+  const funnelHtml=stages.map((s,i)=>{ const n=cumCounts[s.key]||0, w=Math.round(n/maxC*100); const prev=i>0?(cumCounts[stages[i-1].key]||0):0; const stepPct=i===0?null:(prev?Math.round(n/prev*100):0); return `<div class="funnel-row"><div class="funnel-lbl"><span class="sdot" style="background:${s.color}"></span>${esc(s.label)}</div><div class="funnel-track"><div class="funnel-fill" style="width:${w}%;background:${s.color};opacity:.82"><span>${stepPct!=null?stepPct+'%':n>0?'100%':''}</span></div></div><div class="funnel-cnt">${n}</div></div>`; }).join('');
   const plSel = S.pipelines.length>1 ? `<div class="fld"><label>Funil</label><select class="flt-sel" id="rd-pipeline">${S.pipelines.map(p=>`<option value="${esc(p.id)}" ${p.id===S.relDashPipelineId?'selected':''}>${esc(p.icon||'📋')} ${esc(p.name)}${p.is_default?' (principal)':''}</option>`).join('')}</select></div>` : '';
   const fromLbl=fmtDateOnly(S.relDashFrom), toLbl=fmtDateOnly(S.relDashTo);
 
   // Cartões de estatística — mesmo estilo dos cards de Metas mensais, mas
   // com 1 card por etapa REAL do funil escolhido (não fixo em 4, pois cada
-  // funil pode ter uma quantidade diferente de etapas).
-  const statDefs=[ { label:'Total no período', n:total, color:'#6366F1' }, ...stages.map(s=>({ label:s.label, n:counts[s.key]||0, color:s.color })) ];
+  // funil pode ter uma quantidade diferente de etapas). Contagem cumulativa,
+  // igual às barras do funil — ex.: "Total 1000 · Chamados 500 · Responderam
+  // 400 · Enviou Contato 30", nunca "500 novos + 500 chamados" como se
+  // fossem grupos que somam o total.
+  const statDefs=[ { label:'Total no período', n:total, color:'#6366F1' }, ...stages.map(s=>({ label:s.label, n:cumCounts[s.key]||0, color:s.color })) ];
   const statHtml=statDefs.map(x=>`<div class="card" style="padding:15px;border-left:3px solid ${x.color}">
       <div style="display:flex;align-items:center;gap:10px">
         <div style="width:36px;height:36px;border-radius:9px;background:linear-gradient(135deg,${x.color},${x.color}cc);box-shadow:0 4px 14px ${x.color}55;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:#fff;font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:.74rem">${total?pctOf(x.n)+'%':'—'}</div>
