@@ -1891,22 +1891,27 @@ function renderRelDash(targetId){
   // status virou "Enviou Contato", não no dia do cadastro do lead.
   const leads=S.leads.filter(l=>(!pipeline||l.pipeline_id===pipeline.id) && inRange(leadEffectiveDate(l)));
   const stages=stagesOf(pipeline);
-  // `counts` = onde cada lead está AGORA (exclusivo, soma = total) — vale
-  // pra toda etapa, EXCETO a 1ª ("Novo Lead"/primeira coluna do funil).
-  // Essa é sempre o TOTAL do período, não só quem ainda está parado ali,
-  // porque todo lead passa por ela pra existir (seguir/cadastrar = 1ª
-  // etapa) — sem isso, mudar o status de um lead fazia esse número cair
-  // na hora, dando a impressão de que sumiu gente. As outras etapas
-  // continuam exclusivas de propósito: cada equipe marca status lead a
-  // lead manualmente, então "quantos estão em Chamado agora" já é a
-  // resposta certa sem precisar somar nada.
+  // `counts` = onde cada lead está AGORA (exclusivo) — vale pra toda etapa,
+  // EXCETO a 1ª ("Novo Lead"). "Total no período" mistura duas datas
+  // diferentes por lead (leadEffectiveDate: cadastro OU data da última
+  // mudança de etapa, a que for mais recente) — por isso não serve pra
+  // "Novo Lead": um lead adicionado MÊS PASSADO mas chamado HOJE entra no
+  // total de hoje (pela mudança de etapa), sem ter sido seguido hoje; e um
+  // lead seguido HOJE que só mudou de etapa DEPOIS do período escolhido
+  // pode nem entrar no total. "Novo Lead" tem que ser só quem foi seguido/
+  // cadastrado DE VERDADE dentro do período (added_at puro) — um número
+  // à parte do "Total", não igual a ele. As outras etapas continuam
+  // exclusivas de propósito: cada equipe marca status lead a lead
+  // manualmente, então "quantos estão em Chamado agora" já é a resposta
+  // certa sem precisar de nada especial.
   const firstKey=(stages[0]&&stages[0].key)||'novo';
   const counts=Object.fromEntries(stages.map(s=>[s.key,0]));
   leads.forEach(l=>{ const st=l.status||firstKey; counts[st]=(counts[st]||0)+1; });
   const total=leads.length;
   const pctOf=n=>total?Math.round(n/total*100):0;
-  const displayCount = key => key===firstKey ? total : (counts[key]||0);
-  const maxC=Math.max(total,1);
+  const addedInPeriod=S.leads.filter(l=>(!pipeline||l.pipeline_id===pipeline.id) && l.addedAt && new Date(l.addedAt)>=from && new Date(l.addedAt)<=to).length;
+  const displayCount = key => key===firstKey ? addedInPeriod : (counts[key]||0);
+  const maxC=Math.max(addedInPeriod, ...stages.map(s=>counts[s.key]||0), 1);
   // Cada etapa/o total é clicável — abre a aba Leads já filtrada por ela
   // (e pelo funil escolhido aqui), pra ver a lista de verdade por trás do
   // número. Vale pra qualquer etapa que a equipe tenha cadastrado (não é
