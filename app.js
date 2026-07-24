@@ -2551,21 +2551,34 @@ function stageEditorModal(title, stages, save){
 // personalização), então uma equipe com etapas diferentes vê e configura só
 // as etapas dela.
 function notePresetsModal(){
-  // Cada etapa vira um <details> fechado por padrão — a pessoa clica pra
-  // abrir só a que quer editar, em vez de ver todas as caixas de texto
-  // abertas de uma vez (lista enorme e difícil de achar a etapa certa).
+  // Cada etapa vira um <details> fechado por padrão, em cards retangulares
+  // lado a lado (grid horizontal) em vez de uma lista de barras empilhadas —
+  // cabe mais etapa por tela e fica mais fácil de achar a que se quer editar.
+  // Ao abrir, o card ocupa a linha inteira (via CSS [open]) pra dar espaço
+  // de sobra pra digitar na textarea.
   const stageRow=(s,inputAttr)=>{
     const cur=(s.notes||[]).filter(Boolean);
     const n=cur.length;
-    return `<details class="np-acc" style="border:1px solid var(--border2);border-radius:10px;overflow:hidden">
-      <summary style="padding:10px 12px;cursor:pointer;font-size:.79rem;font-weight:600;color:var(--t1);background:var(--surf2)">${esc(s.label)} <span style="font-weight:400;color:var(--t3);font-size:.7rem">· ${n} observaç${n===1?'ão':'ões'}</span></summary>
-      <div style="padding:10px 12px"><textarea class="stg-input np-inp" ${inputAttr(s)} placeholder="Uma observação por linha…" style="min-height:70px;width:100%;box-sizing:border-box">${esc(cur.join('\n'))}</textarea></div>
+    return `<details class="np-acc">
+      <summary>${esc(s.label)} <span class="np-count">· ${n} observaç${n===1?'ão':'ões'}</span></summary>
+      <div class="np-bd"><textarea class="stg-input np-inp" ${inputAttr(s)} placeholder="Uma observação por linha…">${esc(cur.join('\n'))}</textarea></div>
     </details>`;
   };
-  const section=(title,sub,stages,inputAttr)=>`<div style="margin-bottom:14px"><div class="stg-ri-t">${esc(title)}</div>${sub?`<div class="stg-ri-s" style="margin-bottom:8px">${esc(sub)}</div>`:''}<div style="display:flex;flex-direction:column;gap:8px">${stages.map(s=>stageRow(s,inputAttr)).join('')||'<div class="empty-sub">Nenhuma etapa ainda.</div>'}</div></div>`;
+  const section=(title,sub,stages,inputAttr)=>`<div style="margin-bottom:14px"><div class="stg-ri-t">${esc(title)}</div>${sub?`<div class="stg-ri-s" style="margin-bottom:8px">${esc(sub)}</div>`:''}<div class="np-grid">${stages.map(s=>stageRow(s,inputAttr)).join('')||'<div class="empty-sub">Nenhuma etapa ainda.</div>'}</div></div>`;
   const pipelinesHtml=S.pipelines.map(p=>section(`${p.icon||''} ${p.name}`.trim(),null,stagesOf(p),s=>`data-np-pl="${esc(p.id)}" data-np-stage="${esc(s.key)}"`)).join('');
   const dealsHtml=featOn('deals')?section('Etapas de Negociação','Usadas na aba Negociações',dealStagesRaw(),s=>`data-np-deal="${esc(s.key)}"`):'';
-  openModal(`<div class="modal-ov"><div class="modal-box"><div class="modal-hd"><div><div class="modal-title">Observações pré-prontas</div><div class="modal-sub">Ao marcar um lead/negociação numa etapa, esses textos aparecem numa lista suspensa pra escolher no campo Observações</div></div><div class="x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div></div>
+  openModal(`<style>
+    .np-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px}
+    .np-acc{border:1px solid var(--border2);border-radius:10px;overflow:hidden;align-self:start}
+    .np-acc[open]{grid-column:1/-1}
+    .np-acc summary{padding:12px 14px;cursor:pointer;font-size:.79rem;font-weight:600;color:var(--t1);background:var(--surf2);list-style:none}
+    .np-acc summary::-webkit-details-marker{display:none}
+    .np-acc[open] summary{background:var(--surf3)}
+    .np-count{font-weight:400;color:var(--t3);font-size:.7rem}
+    .np-bd{padding:10px 12px}
+    .np-inp{min-height:70px;width:100%;box-sizing:border-box}
+  </style>
+  <div class="modal-ov"><div class="modal-box"><div class="modal-hd"><div><div class="modal-title">Observações pré-prontas</div><div class="modal-sub">Ao marcar um lead/negociação numa etapa, esses textos aparecem numa lista suspensa pra escolher no campo Observações</div></div><div class="x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div></div>
     <div class="modal-bd">${pipelinesHtml}${dealsHtml}</div>
     <div class="modal-ft"><button class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" id="np-save">Salvar</button></div>
     </div></div>`);
