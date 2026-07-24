@@ -23,9 +23,9 @@ const S = { session:null, profile:null, org:null, route:'dashboard', period:'all
   lf:{ q:'', note:'', status:'', niche:'', pipeline:'', sort:'newest', page:1, ag:'' },
   cf:{ q:'', outcome:'', sort:'newest', page:1 },
   crmPipelineId:'', crmQ:'', dealQ:'', dealPipelineId:'', goalsView:'week', _funnelStages:[], sel:{ mode:false, ids:new Set() },
-  relView:'pay', relWeekOffset:0, relMemberId:'', relWeeksBack:12, relQ:'',
+  relView:'pay', relMemberId:'', relWeeksBack:12, relQ:'',
   relDashFrom:'', relDashTo:'', relDashPipelineId:'',
-  metasPayFrom:'', metasPayTo:'', metasPayMemberId:'' };
+  relPayFrom:'', relPayTo:'' };
 const PAGE_SIZE = 25;
 // Resolve o módulo de profissão ativo na organização atual (ver modules.js).
 // Serve como PONTO DE PARTIDA ao criar uma org (backfill) e como fallback
@@ -1423,7 +1423,7 @@ function renderGoals(){
   const body = view==='week' ? goalsWeekly(g) : goalsMonthly(g);
   $('content').innerHTML=`
     <div class="tbl-controls">
-      <div style="flex:1"><div class="sec-title" style="margin:0">Metas</div><div class="sec-sub" style="margin:2px 0 0">${view==='week'?(MOD().features.weeklyPay?'Pagamento semanal da equipe — leads de prospecção e ligações efetivas.':'Atividade semanal — leads de prospecção e ligações efetivas.'):'Metas do mês — vendas, faturamento e comissão.'}${view==='week'&&MOD().features.weeklyPay?` <b style="color:var(--p)">· pagamento por ${g.payBasis==='chamados'?'leads chamados':'leads seguidos'}</b>`:''}${view==='week'&&g.payRecipientId?` <b style="color:var(--p)">· considera só leads de ${esc(payRecipientName()||'—')}</b>`:''}</div></div>
+      <div style="flex:1"><div class="sec-title" style="margin:0">Metas</div><div class="sec-sub" style="margin:2px 0 0">${view==='week'?'Atividade semanal — leads de prospecção e ligações efetivas.':'Metas do mês — vendas, faturamento e comissão.'}</div></div>
       ${toggle}
       <button class="btn btn-primary" id="goals-edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>Definir metas</button>
     </div>
@@ -1433,7 +1433,6 @@ function renderGoals(){
   $('gw-leads-cnt')&&animateCount($('gw-leads-cnt'),Number($('gw-leads-cnt').dataset.cnt));
   $('gw-calls-cnt')&&animateCount($('gw-calls-cnt'),Number($('gw-calls-cnt').dataset.cnt));
   document.querySelectorAll('[id^="gm-cnt-"]').forEach(el=>animateCount(el,Number(el.dataset.cnt),el.dataset.money==='1'?fmtCurrency:undefined));
-  wireGoalsPayPeriod();
 }
 
 function goalsWeekly(g){
@@ -1493,53 +1492,7 @@ function goalsWeekly(g){
       :`<div style="font-size:.74rem;color:var(--t3);padding:6px 0">Defina uma meta semanal de ligações em <b>Definir metas</b> para acompanhar o progresso.</div>`}
       <div style="font-size:.66rem;color:var(--t3);margin-top:11px;padding-top:9px;border-top:1px solid var(--border)">Efetiva = a pessoa atendeu (interessado, retornar, sem interesse ou fechou). "Não atendeu" não conta.</div>
     </div>
-  </div>${goalsPayPeriod(g)}`;
-}
-
-// Pagamento por período livre (De/Até) — pro dono que paga a equipe num
-// ciclo que não bate com semana/mês de calendário (ex.: prospectou os 31
-// dias de junho, mas o "mês" de pagamento vai de 25/mai a 26/jun). Reusa
-// weekReport()/confirmWeeklyPayment() — ambos já trabalham com datas livres,
-// só quem sempre chamava com semana Seg-Dom era a UI.
-function goalsPayPeriod(g){
-  if(!MOD().features.weeklyPay) return '';
-  if(!S.metasPayFrom||!S.metasPayTo){ const { ws,we }=weekRange(); S.metasPayFrom=isoDate(ws); S.metasPayTo=isoDate(new Date(we-1)); }
-  if(!S.metasPayMemberId || !S.members.some(m=>m.id===S.metasPayMemberId)) S.metasPayMemberId=(S.session&&S.session.user&&S.session.user.id)||(S.members[0]&&S.members[0].id)||'';
-  if(!S.metasPayMemberId) return '<div class="card" style="padding:24px;text-align:center;color:var(--t3);font-size:.8rem;margin-top:14px">Nenhum membro na equipe ainda pra calcular pagamento.</div>';
-  const from=new Date(S.metasPayFrom+'T00:00:00');
-  const toExcl=new Date(S.metasPayTo+'T00:00:00'); toExcl.setDate(toExcl.getDate()+1);
-  const rep=weekReport(from, toExcl, S.metasPayMemberId);
-  const saved=S.weeklyPayments.find(p=>p.memberId===S.metasPayMemberId && p.weekStart===S.metasPayFrom);
-  const memberSel=S.members.length>1?`<div class="fld"><label>Quem recebe</label><select class="flt-sel" id="gm-pay-member">${S.members.map(m=>`<option value="${esc(m.id)}" ${m.id===S.metasPayMemberId?'selected':''}>${esc(memberLabel(m))}</option>`).join('')}</select></div>`:'';
-  return `<div class="card" style="padding:20px;margin-top:14px;border-left:3px solid ${saved?'#10B981':'#F59E0B'}">
-    <div style="margin-bottom:14px">
-      <div style="font-weight:800;font-size:.95rem;margin-bottom:2px">💵 Pagamento por período</div>
-      <div style="font-size:.72rem;color:var(--t3)">Seu ciclo de pagamento não bate com semana ou mês de calendário? Escolha livremente a data de início e fim.</div>
-    </div>
-    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px">
-      <div class="fld"><label>De</label><input type="date" id="gm-pay-from" value="${esc(S.metasPayFrom)}"></div>
-      <div class="fld"><label>Até</label><input type="date" id="gm-pay-to" value="${esc(S.metasPayTo)}"></div>
-      ${memberSel}
-    </div>
-    ${payBreakdownHtml(rep,'gm-pay')}
-    ${saved
-      ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:11px 13px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:10px"><span style="font-weight:700;font-size:.84rem;color:#10B981">✅ Pagamento confirmado</span><span style="font-size:.74rem;color:var(--t3)">${fmtCurrency(saved.total)} · confirmado em ${fmtDate(saved.createdAt)}</span></div>`
-      : `<button class="btn btn-primary" id="gm-pay-confirm" ${rep.total<=0?'disabled':''}>Confirmar pagamento do período (${fmtCurrency(rep.total)})</button>`}
   </div>`;
-}
-function wireGoalsPayPeriod(){
-  if(!MOD().features.weeklyPay || !S.members.length) return;
-  const fromEl=$('gm-pay-from'), toEl=$('gm-pay-to'), sel=$('gm-pay-member'), cf=$('gm-pay-confirm');
-  if(fromEl) fromEl.onchange=e=>{ S.metasPayFrom=e.target.value; renderGoals(); };
-  if(toEl) toEl.onchange=e=>{ S.metasPayTo=e.target.value; renderGoals(); };
-  if(sel) sel.onchange=e=>{ S.metasPayMemberId=e.target.value; renderGoals(); };
-  if(cf) cf.onclick=()=>{
-    const from=new Date(S.metasPayFrom+'T00:00:00');
-    const toExcl=new Date(S.metasPayTo+'T00:00:00'); toExcl.setDate(toExcl.getDate()+1);
-    const rep=weekReport(from, toExcl, S.metasPayMemberId);
-    confirmWeeklyPayment(from, toExcl, S.metasPayMemberId, rep, 'gm-pay-confirm', renderGoals);
-  };
-  animatePayBreakdown('gm-pay');
 }
 
 function goalsMonthly(g){
@@ -1677,7 +1630,7 @@ function goalsForm(){
    e relatório livre por venda/cliente.
 ===================================================================== */
 const REL_VIEWS = [
-  { k:'pay',    label:'Pagamento semanal' },
+  { k:'pay',    label:'Pagamento por período' },
   { k:'leads',  label:'Leads por semana' },
   { k:'calls',  label:'Ligações por semana' },
   { k:'mensal', label:'Dashboard mensal' },
@@ -1739,41 +1692,47 @@ function payBreakdownHtml(rep, idPrefix){
 function animatePayBreakdown(idPrefix){
   ['prospect','pending','total'].forEach(k=>{ const el=$(idPrefix+'-'+k); if(el) animateCount(el,Number(el.dataset.cnt),fmtCurrency); });
 }
+// Pagamento por período livre (De/Até) — era só de Metas, agora é o próprio
+// "Pagamento" de Relatórios (no lugar da navegação semana a semana antiga).
+// Continua escrevendo em weekly_payments com a mesma confirmWeeklyPayment()
+// de sempre, então o histórico abaixo (renderPayHistory) mostra junto TANTO
+// os pagamentos confirmados aqui QUANTO os confirmados antes pela navegação
+// semanal — é a mesma tabela, só muda como a pessoa escolhe o intervalo.
 function renderRelPay(){
   if(!S.members.length){ $('rel-body').innerHTML='<div class="card" style="padding:24px;text-align:center;color:var(--t3);font-size:.8rem">Nenhum membro na equipe ainda.</div>'; return; }
+  const g=getGoals();
+  if(!S.relPayFrom||!S.relPayTo){ const { ws,we }=weekRange(); S.relPayFrom=isoDate(ws); S.relPayTo=isoDate(new Date(we-1)); }
   if(!S.relMemberId || !S.members.some(m=>m.id===S.relMemberId)) S.relMemberId=(S.session&&S.session.user&&S.session.user.id)||S.members[0].id;
-  const off=S.relWeekOffset||0;
-  const { ws, we }=weekRange(off);
-  const wkLbl=`${ws.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'})} a ${new Date(we-1).toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'})}`;
-  const rep=weekReport(ws, we, S.relMemberId);
-  const saved=S.weeklyPayments.find(p=>p.memberId===S.relMemberId && p.weekStart===isoDate(ws));
-  const memberSel=S.members.length>1?`<select class="flt-sel" id="rel-member">${S.members.map(m=>`<option value="${esc(m.id)}" ${m.id===S.relMemberId?'selected':''}>${esc(memberLabel(m))}</option>`).join('')}</select>`:'';
+  const from=new Date(S.relPayFrom+'T00:00:00');
+  const toExcl=new Date(S.relPayTo+'T00:00:00'); toExcl.setDate(toExcl.getDate()+1);
+  const rep=weekReport(from, toExcl, S.relMemberId);
+  const saved=S.weeklyPayments.find(p=>p.memberId===S.relMemberId && p.weekStart===S.relPayFrom);
+  const memberSel=S.members.length>1?`<div class="fld"><label>Quem recebe</label><select class="flt-sel" id="rel-pay-member">${S.members.map(m=>`<option value="${esc(m.id)}" ${m.id===S.relMemberId?'selected':''}>${esc(memberLabel(m))}</option>`).join('')}</select></div>`:'';
   $('rel-body').innerHTML=`
     <div class="card" style="padding:20px;border-left:3px solid ${saved?'#10B981':'#F59E0B'}">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap;margin-bottom:14px">
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-          <button class="btn btn-outline btn-sm" id="rel-prev">‹</button>
-          <div><div style="font-weight:800;font-size:.95rem">Semana ${wkLbl}</div><div style="font-size:.72rem;color:var(--t3)">${off===0?'semana atual':off<0?`${-off} semana(s) atrás`:`daqui a ${off} semana(s)`}</div></div>
-          <button class="btn btn-outline btn-sm" id="rel-next" ${off>=0?'disabled':''}>›</button>
-          ${off!==0?'<button class="btn btn-outline btn-sm" id="rel-today">Hoje</button>':''}
-        </div>
+      <div style="margin-bottom:14px">
+        <div style="font-weight:800;font-size:.95rem;margin-bottom:2px">💵 Pagamento por período</div>
+        <div style="font-size:.72rem;color:var(--t3)">Escolha livremente a data de início e fim do seu ciclo de pagamento.</div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px">
+        <div class="fld"><label>De</label><input type="date" id="rel-pay-from" value="${esc(S.relPayFrom)}"></div>
+        <div class="fld"><label>Até</label><input type="date" id="rel-pay-to" value="${esc(S.relPayTo)}"></div>
         ${memberSel}
       </div>
       ${payBreakdownHtml(rep,'rp')}
       ${saved
         ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:11px 13px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:10px"><span style="font-weight:700;font-size:.84rem;color:#10B981">✅ Pagamento confirmado</span><span style="font-size:.74rem;color:var(--t3)">${fmtCurrency(saved.total)} · confirmado em ${fmtDate(saved.createdAt)}</span></div>`
-        : `<button class="btn btn-primary" id="rel-confirm" ${rep.total<=0?'disabled':''}>Confirmar pagamento da semana (${fmtCurrency(rep.total)})</button>`}
-      <div style="font-size:.68rem;color:var(--t3);margin-top:10px">Seu mês de pagamento não bate com a semana/mês do calendário? Em <b>Metas</b> dá pra confirmar um período com data de início e fim livres.</div>
+        : `<button class="btn btn-primary" id="rel-pay-confirm" ${rep.total<=0?'disabled':''}>Confirmar pagamento do período (${fmtCurrency(rep.total)})</button>`}
+      <div style="font-size:.68rem;color:var(--t3);margin-top:10px">Pagamento por ${g.payBasis==='chamados'?'leads chamados':'leads seguidos'}${g.payRecipientId?` · considera só leads de <b style="color:var(--t2)">${esc(payRecipientName())}</b>`:''} · ajuste em <b>Configurações</b>.</div>
     </div>
     <div class="card" style="padding:18px;margin-top:16px">
       <div class="card-title" style="margin-bottom:10px">Histórico de pagamentos confirmados</div>
       ${renderPayHistory(S.relMemberId)}
     </div>`;
-  $('rel-prev').onclick=()=>{ S.relWeekOffset=off-1; renderRelPay(); };
-  $('rel-next').onclick=()=>{ if(off<0){ S.relWeekOffset=off+1; renderRelPay(); } };
-  const todayBtn=$('rel-today'); if(todayBtn) todayBtn.onclick=()=>{ S.relWeekOffset=0; renderRelPay(); };
-  const sel=$('rel-member'); if(sel) sel.onchange=e=>{ S.relMemberId=e.target.value; renderRelPay(); };
-  const cf=$('rel-confirm'); if(cf) cf.onclick=()=>confirmWeeklyPayment(ws, we, S.relMemberId, rep, 'rel-confirm', renderRelPay);
+  $('rel-pay-from').onchange=e=>{ S.relPayFrom=e.target.value; renderRelPay(); };
+  $('rel-pay-to').onchange=e=>{ S.relPayTo=e.target.value; renderRelPay(); };
+  const sel=$('rel-pay-member'); if(sel) sel.onchange=e=>{ S.relMemberId=e.target.value; renderRelPay(); };
+  const cf=$('rel-pay-confirm'); if(cf) cf.onclick=()=>confirmWeeklyPayment(from, toExcl, S.relMemberId, rep, 'rel-pay-confirm', renderRelPay);
   animatePayBreakdown('rp');
 }
 function renderPayHistory(memberId){
@@ -1785,7 +1744,7 @@ function renderPayHistory(memberId){
 // campo commission_paid usado no formulário de negociação) e grava um snapshot
 // permanente em weekly_payments — daí em diante o valor nunca mais desaparece,
 // mesmo que a semana vire ou os leads/deals mudem de outra forma.
-async function confirmWeeklyPayment(ws, we, memberId, rep, btnId='rel-confirm', onDone=renderRelPay){
+async function confirmWeeklyPayment(ws, we, memberId, rep, btnId='rel-pay-confirm', onDone=renderRelPay){
   const btn=$(btnId); if(btn) btn.disabled=true;
   const now=new Date().toISOString();
   if(rep.dealIds.length){
@@ -1906,12 +1865,12 @@ function renderRelDash(targetId){
   // Borda inteira (não só a lateral colorida) + gap maior que o kpi-grid
   // padrão, pra separar bem um status do outro numa fileira com muitos.
   const statDefs=[ { key:'', label:'Total no período', n:total, color:'#6366F1' }, ...stages.map(s=>({ key:s.key, label:s.label, n:counts[s.key]||0, color:s.color })) ];
-  const statHtml=statDefs.map(x=>`<div class="card rd-clickable" ${gostatusAttr(x.key)} style="padding:15px;border:1px solid var(--border2);border-left:4px solid ${x.color}">
-      <div style="display:flex;align-items:center;gap:10px">
-        <div style="width:36px;height:36px;border-radius:9px;background:linear-gradient(135deg,${x.color},${x.color}cc);box-shadow:0 4px 14px ${x.color}55;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:#fff;font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:.74rem">${total?pctOf(x.n)+'%':'—'}</div>
+  const statHtml=statDefs.map(x=>`<div class="card rd-clickable" ${gostatusAttr(x.key)} style="padding:16px;border:1px solid var(--border2);border-left:4px solid ${x.color}">
+      <div style="display:flex;align-items:center;gap:11px">
+        <div style="width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,${x.color},${x.color}cc);box-shadow:0 4px 14px ${x.color}55;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:#fff;font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:.82rem">${total?pctOf(x.n)+'%':'—'}</div>
         <div style="flex:1;min-width:0">
-          <div style="font-size:.63rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(x.label)}</div>
-          <div class="rd-stat-val" data-cnt="${x.n}" style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:1.4rem;line-height:1.25">0</div>
+          <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(x.label)}</div>
+          <div class="rd-stat-val" data-cnt="${x.n}" style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:1.7rem;line-height:1.25">0</div>
         </div>
       </div>
     </div>`).join('');
