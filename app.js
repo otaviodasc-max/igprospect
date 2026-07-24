@@ -1948,7 +1948,7 @@ function renderRelDash(targetId){
   // resumo. Em Relatórios (targetId='rel-body') os campos continuam dentro
   // do conteúdo, com rótulo, como sempre foram.
   const inHeader = targetId==='content';
-  const presetBtns = `<button class="btn btn-outline btn-sm" data-rdpre="month">Este mês</button><button class="btn btn-outline btn-sm" data-rdpre="lastmonth">Mês passado</button>`;
+  const presetBtns = `<button class="btn btn-outline btn-sm" data-rdpre="all" title="Todos os leads do sistema, sem filtro de data">Tudo</button><button class="btn btn-outline btn-sm" data-rdpre="month">Este mês</button><button class="btn btn-outline btn-sm" data-rdpre="lastmonth">Mês passado</button>`;
   if(inHeader){
     $('tb-controls').innerHTML = `<input type="date" class="tbc-inp" id="rd-from" value="${esc(S.relDashFrom)}" title="De">
       <span style="color:var(--t3);font-size:.68rem">–</span>
@@ -2015,8 +2015,18 @@ function renderRelDash(targetId){
   $('rd-to').onchange=e=>{ S.relDashTo=e.target.value; renderRelDash(targetId); };
   const plSelEl=$('rd-pipeline'); if(plSelEl) plSelEl.onchange=e=>{ S.relDashPipelineId=e.target.value; renderRelDash(targetId); };
   document.querySelectorAll('[data-rdpre]').forEach(b=>b.onclick=()=>{
-    const mb=monthBoundsStr(b.dataset.rdpre==='lastmonth'?-1:0);
-    S.relDashFrom=mb.from; S.relDashTo=mb.to; renderRelDash(targetId);
+    if(b.dataset.rdpre==='all'){
+      // "Tudo" = do lead mais antigo cadastrado até hoje — o filtro De/Até
+      // continua sendo um intervalo de verdade (não um caso especial "sem
+      // filtro"), só que largo o bastante pra cobrir todo mundo.
+      const dates=S.leads.map(l=>l.addedAt).filter(Boolean).map(d=>new Date(d).getTime()).filter(t=>!isNaN(t));
+      const earliest=dates.length?new Date(Math.min(...dates)):new Date();
+      S.relDashFrom=isoDate(earliest); S.relDashTo=isoDate(new Date());
+    } else {
+      const mb=monthBoundsStr(b.dataset.rdpre==='lastmonth'?-1:0);
+      S.relDashFrom=mb.from; S.relDashTo=mb.to;
+    }
+    renderRelDash(targetId);
   });
   // Clique numa etapa (card, barra do funil ou linha do donut) → aba Leads
   // já filtrada por ela (e pelo funil escolhido aqui). Total no período =
