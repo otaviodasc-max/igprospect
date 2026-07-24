@@ -646,6 +646,9 @@ function renderShell(){
   const showPeriod = ['leads','calls','deals'].includes(S.route);
   $('period-tabs').style.display = showPeriod?'flex':'none';
   $('period-tabs').querySelectorAll('.period-tab').forEach(t=>{ t.classList.toggle('active',t.dataset.period===S.period); t.onclick=()=>{ S.period=t.dataset.period; S.lf.page=1; S.cf.page=1; renderShell(); }; });
+  // Limpa os controles do topbar (De/Até/Funil) — só a aba Dashboard os
+  // preenche de novo (ver renderRelDash), senão ficavam presos ao trocar de aba.
+  $('tb-controls').innerHTML='';
   routeRender();
 }
 function routeRender(){ ({dashboard:renderDashboard,goals:renderGoals,leads:renderLeads,crm:renderCRM,deals:renderDeals,calls:renderCalls,relatorios:renderRelatorios,team:renderTeam,settings:renderSettings,admin:renderAdmin}[S.route]||renderDashboard)(); }
@@ -1887,16 +1890,23 @@ function renderRelDash(targetId){
   const total=leads.length;
   const pctOf=n=>total?Math.round(n/total*100):0;
   const maxC=Math.max(...stages.map(s=>counts[s.key]||0),1);
-  const funnelHtml=stages.map(s=>{ const n=counts[s.key]||0, w=Math.round(n/maxC*100); return `<div class="funnel-row"><div class="funnel-lbl"><span class="sdot" style="background:${s.color}"></span>${esc(s.label)}</div><div class="funnel-track"><div class="funnel-fill" style="width:${w}%;background:${s.color};opacity:.82"><span>${n>0?pctOf(n)+'%':''}</span></div></div><div class="funnel-cnt">${n}</div></div>`; }).join('');
-  const plSel = S.pipelines.length>1 ? `<div class="fld"><label>Funil</label><select class="flt-sel" id="rd-pipeline">${S.pipelines.map(p=>`<option value="${esc(p.id)}" ${p.id===S.relDashPipelineId?'selected':''}>${esc(p.icon||'📋')} ${esc(p.name)}${p.is_default?' (principal)':''}</option>`).join('')}</select></div>` : '';
+  // Cada etapa/o total é clicável — abre a aba Leads já filtrada por ela
+  // (e pelo funil escolhido aqui), pra ver a lista de verdade por trás do
+  // número. Vale pra qualquer etapa que a equipe tenha cadastrado (não é
+  // uma lista fixa: vem de `stages`, que é o funil de verdade da equipe).
+  const gostatusAttr = key => `data-gostatus="${esc(key)}" data-gopl="${esc(S.relDashPipelineId||'')}"`;
+  const funnelHtml=stages.map(s=>{ const n=counts[s.key]||0, w=Math.round(n/maxC*100); return `<div class="funnel-row rd-clickable" ${gostatusAttr(s.key)}><div class="funnel-lbl"><span class="sdot" style="background:${s.color}"></span>${esc(s.label)}</div><div class="funnel-track"><div class="funnel-fill" style="width:${w}%;background:${s.color};opacity:.82"><span>${n>0?pctOf(n)+'%':''}</span></div></div><div class="funnel-cnt">${n}</div></div>`; }).join('');
+  const plSel = S.pipelines.length>1 ? `<select class="tbc-inp" id="rd-pipeline" title="Funil">${S.pipelines.map(p=>`<option value="${esc(p.id)}" ${p.id===S.relDashPipelineId?'selected':''}>${esc(p.icon||'📋')} ${esc(p.name)}${p.is_default?' (principal)':''}</option>`).join('')}</select>` : '';
   const fromLbl=fmtDateOnly(S.relDashFrom), toLbl=fmtDateOnly(S.relDashTo);
 
   // Cartões de estatística — mesmo estilo dos cards de Metas mensais, mas
   // com 1 card por etapa REAL do funil escolhido (não fixo em 4, pois cada
   // funil pode ter uma quantidade diferente de etapas). Mesma contagem
   // exclusiva das barras do funil e do donut — sempre bate com a aba Leads.
-  const statDefs=[ { label:'Total no período', n:total, color:'#6366F1' }, ...stages.map(s=>({ label:s.label, n:counts[s.key]||0, color:s.color })) ];
-  const statHtml=statDefs.map(x=>`<div class="card" style="padding:15px;border-left:3px solid ${x.color}">
+  // Borda inteira (não só a lateral colorida) + gap maior que o kpi-grid
+  // padrão, pra separar bem um status do outro numa fileira com muitos.
+  const statDefs=[ { key:'', label:'Total no período', n:total, color:'#6366F1' }, ...stages.map(s=>({ key:s.key, label:s.label, n:counts[s.key]||0, color:s.color })) ];
+  const statHtml=statDefs.map(x=>`<div class="card rd-clickable" ${gostatusAttr(x.key)} style="padding:15px;border:1px solid var(--border2);border-left:4px solid ${x.color}">
       <div style="display:flex;align-items:center;gap:10px">
         <div style="width:36px;height:36px;border-radius:9px;background:linear-gradient(135deg,${x.color},${x.color}cc);box-shadow:0 4px 14px ${x.color}55;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:#fff;font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:.74rem">${total?pctOf(x.n)+'%':'—'}</div>
         <div style="flex:1;min-width:0">
@@ -1912,30 +1922,46 @@ function renderRelDash(targetId){
   // só que alimentados com os dados deste período/funil escolhido.
   const days=Math.round((to-from)/86400000)+1;
   const tlData=periodBuckets(leads, from, to, leadEffectiveDate);
-  const donutLgd=stages.map(s=>{ const n=counts[s.key]||0; return `<div class="donut-row"><div class="donut-dot" style="background:${s.color}"></div><span class="donut-lbl">${esc(s.label)}</span><span class="donut-val">${n}</span><span class="donut-pct">${pctOf(n)}%</span></div>`; }).join('');
+  const donutLgd=stages.map(s=>{ const n=counts[s.key]||0; return `<div class="donut-row rd-clickable" ${gostatusAttr(s.key)}><div class="donut-dot" style="background:${s.color}"></div><span class="donut-lbl">${esc(s.label)}</span><span class="donut-val">${n}</span><span class="donut-pct">${pctOf(n)}%</span></div>`; }).join('');
 
   const recent=[...leads].sort((a,b)=>new Date(leadEffectiveDate(b)||0)-new Date(leadEffectiveDate(a)||0)).slice(0,8);
   const recentHtml=recent.length?recent.map(l=>`<div class="rl-item"><div class="avatar">${esc(ini(l.name||l.username))}</div><div class="rl-info"><div class="rl-name">${esc(l.name||l.username||'—')}</div><div class="rl-user">@${esc(l.username||'—')}</div></div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px"><span class="badge" style="background:${stColor(l)}22;color:${stColor(l)}">${stShort(l)}</span><span class="rl-time">${timeAgo(leadEffectiveDate(l))}</span></div></div>`).join(''):'<div style="font-size:.74rem;color:var(--t3);padding:12px 0">Nenhum lead no período.</div>';
 
-  $(targetId).innerHTML=`
-    <div class="card" style="padding:20px;margin-bottom:16px">
+  // Na aba Dashboard (targetId='content'), De/Até/Funil vivem no topbar, do
+  // lado do título "Dashboard" — o card no topo do conteúdo fica só com o
+  // resumo. Em Relatórios (targetId='rel-body') os campos continuam dentro
+  // do conteúdo, com rótulo, como sempre foram.
+  const inHeader = targetId==='content';
+  const presetBtns = `<button class="btn btn-outline btn-sm" data-rdpre="month">Este mês</button><button class="btn btn-outline btn-sm" data-rdpre="lastmonth">Mês passado</button>`;
+  if(inHeader){
+    $('tb-controls').innerHTML = `<input type="date" class="tbc-inp" id="rd-from" value="${esc(S.relDashFrom)}" title="De">
+      <span style="color:var(--t3);font-size:.68rem">–</span>
+      <input type="date" class="tbc-inp" id="rd-to" value="${esc(S.relDashTo)}" title="Até">
+      ${plSel}${presetBtns}`;
+  }
+  const topCard = inHeader
+    ? `<div class="card" style="padding:14px 20px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <div class="card-title" style="margin:0">${pipeline?esc(pipeline.name):'Funil'} · ${fromLbl} a ${toLbl}</div>
+        <div style="font-size:.78rem;color:var(--t3)"><b style="color:var(--t1);font-size:1rem">${total}</b> lead${total===1?'':'s'} no período</div>
+      </div>`
+    : `<div class="card" style="padding:20px;margin-bottom:16px">
       <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:14px;flex-wrap:wrap;margin-bottom:14px">
         <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
           <div class="fld"><label>De</label><input type="date" id="rd-from" value="${esc(S.relDashFrom)}"></div>
           <div class="fld"><label>Até</label><input type="date" id="rd-to" value="${esc(S.relDashTo)}"></div>
-          ${plSel}
+          ${S.pipelines.length>1?`<div class="fld"><label>Funil</label><select class="flt-sel" id="rd-pipeline">${S.pipelines.map(p=>`<option value="${esc(p.id)}" ${p.id===S.relDashPipelineId?'selected':''}>${esc(p.icon||'📋')} ${esc(p.name)}${p.is_default?' (principal)':''}</option>`).join('')}</select></div>`:''}
         </div>
-        <div style="display:flex;gap:6px">
-          <button class="btn btn-outline btn-sm" data-rdpre="month">Este mês</button>
-          <button class="btn btn-outline btn-sm" data-rdpre="lastmonth">Mês passado</button>
-        </div>
+        <div style="display:flex;gap:6px">${presetBtns}</div>
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
         <div class="card-title" style="margin:0">${pipeline?esc(pipeline.name):'Funil'} · ${fromLbl} a ${toLbl}</div>
         <div style="font-size:.78rem;color:var(--t3)"><b style="color:var(--t1);font-size:1rem">${total}</b> lead${total===1?'':'s'} no período</div>
       </div>
-    </div>
-    <div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">${statHtml}</div>
+    </div>`;
+
+  $(targetId).innerHTML=`
+    ${topCard}
+    <div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px">${statHtml}</div>
     <div class="dash-grid"><div class="dash-col">
       <div class="card"><div class="card-hd"><div class="card-title">Leads no período · ${days<=31?'por dia':'por semana'}</div></div><div class="card-bd"><div class="chart-wrap" style="height:155px"><canvas id="rd-tl-chart"></canvas></div></div></div>
       <div class="card"><div class="card-hd"><div class="card-title">Funil de ${pipeline?esc(pipeline.name):'Prospecção'}</div></div><div class="card-bd"><div class="funnel-wrap">${funnelHtml}</div></div></div>
@@ -1949,6 +1975,13 @@ function renderRelDash(targetId){
   document.querySelectorAll('[data-rdpre]').forEach(b=>b.onclick=()=>{
     const mb=monthBoundsStr(b.dataset.rdpre==='lastmonth'?-1:0);
     S.relDashFrom=mb.from; S.relDashTo=mb.to; renderRelDash(targetId);
+  });
+  // Clique numa etapa (card, barra do funil ou linha do donut) → aba Leads
+  // já filtrada por ela (e pelo funil escolhido aqui). Total no período =
+  // key vazia → mostra o funil inteiro, sem travar num status.
+  document.querySelectorAll('[data-gostatus]').forEach(el=>el.onclick=()=>{
+    S.lf.status=el.dataset.gostatus||''; S.lf.pipeline=el.dataset.gopl||''; S.lf.page=1;
+    S.route='leads'; selReset(); renderShell();
   });
   requestAnimationFrame(()=>{
     bindTimelineHover($('rd-tl-chart'), drawTimeline(tlData, $('rd-tl-chart')));

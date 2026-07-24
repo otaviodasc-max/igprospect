@@ -126,6 +126,10 @@ canvas{display:block}
 .tb-info{flex:1;min-width:0}
 .tb-title{font-family:'Plus Jakarta Sans',sans-serif;font-size:.96rem;font-weight:800}
 .tb-sub{font-size:.66rem;color:var(--t3);margin-top:1px}
+.tb-controls{display:flex;align-items:center;gap:7px;overflow-x:auto;max-width:56vw;scrollbar-width:none}
+.tb-controls::-webkit-scrollbar{display:none}
+.tb-controls:empty{display:none}
+.tbc-inp{padding:6px 9px;background:var(--surf2);border:1px solid var(--border2);border-radius:var(--r6);color:var(--t1);font-size:.74rem;outline:none;flex-shrink:0}
 .period-tabs{display:flex;background:var(--surf2);border-radius:var(--r6);padding:3px;gap:1px;border:1px solid var(--border)}
 .period-tab{padding:4px 10px;border-radius:4px;font-size:.71rem;font-weight:600;color:var(--t3);cursor:pointer;transition:all var(--tr);white-space:nowrap}
 .period-tab.active{background:var(--surf3);color:var(--p)}
@@ -193,6 +197,13 @@ canvas{display:block}
 .donut-legend{flex:1;display:flex;flex-direction:column;gap:9px}
 .donut-row{display:flex;align-items:center;gap:7px;font-size:.7rem;padding:3px 5px;margin:0 -5px;border-radius:6px;transition:background .15s}
 .donut-row:hover{background:var(--surf2)}
+/* Etapas clicáveis no Dashboard (cards de status, barras do funil, linhas do
+   donut) — abrem a aba Leads já filtrada por aquela etapa. */
+.rd-clickable{cursor:pointer}
+.card.rd-clickable{transition:transform .15s,box-shadow .15s,border-color .15s}
+.card.rd-clickable:hover{transform:translateY(-2px);box-shadow:var(--sh);border-color:var(--border2)}
+.funnel-row.rd-clickable{padding:3px 6px;margin:0 -6px;border-radius:6px;transition:background .15s}
+.funnel-row.rd-clickable:hover{background:var(--surf2)}
 .donut-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .donut-lbl{color:var(--t2);flex:1}.donut-val{font-weight:700;font-family:'Plus Jakarta Sans',sans-serif}
 .donut-pct{font-size:.62rem;color:var(--t3);min-width:28px;text-align:right}
@@ -408,6 +419,7 @@ canvas{display:block}
   .main{margin-left:0;width:100%}
   .content{padding:14px 14px calc(78px + env(safe-area-inset-bottom))}
   .topbar{padding:0 14px;gap:10px}
+  .tb-controls{max-width:44vw}
   .bottom-nav{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:130;background:var(--sb-bg);border-top:1px solid var(--sb-bdr);padding:5px 4px calc(5px + env(safe-area-inset-bottom));justify-content:space-around;box-shadow:0 -6px 24px rgba(0,0,0,.4)}
   /* tabelas comuns (admin etc): mantém rolagem horizontal */
   .card{overflow-x:auto}
