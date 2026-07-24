@@ -96,14 +96,21 @@
     return `rgba(${r},${g},${b},${a})`;
   }
   // Converte as etapas reais do funil (org_pipelines.stages: {key,label,short,
-  // color,order}) pro formato que a extensão usa pra desenhar (label+color+bg).
+  // color,order,notes}) pro formato que a extensão usa pra desenhar
+  // (label+color+bg) — mantém `notes` (observações pré-prontas configuradas
+  // em Configurações → Personalização, no sistema) pra sugerir na hora de
+  // escrever a observação de um lead direto na extensão.
   function mapPipelineStages(stages){
     return (stages||[]).slice().sort((a,b)=>(a.order||0)-(b.order||0))
-      .map(s=>({ key:s.key, label:s.label||s.key, color:s.color||'#818cf8', bg:hexToRgba(s.color,0.12) }));
+      .map(s=>({ key:s.key, label:s.label||s.key, color:s.color||'#818cf8', bg:hexToRgba(s.color,0.12), notes:Array.isArray(s.notes)?s.notes.filter(Boolean):[] }));
   }
   // Etapas de VERDADE da equipe conectada — cai pro fallback só se ainda não
   // tiver puxado nada (equipe não conectada, ou pull falhou).
   function currentStatuses(){ return (S.pipelineStages&&S.pipelineStages.length)?S.pipelineStages:DEFAULT_STATUSES; }
+  // Observações pré-prontas da etapa `key` — configuradas no sistema
+  // (Configurações → Personalização → Observações pré-prontas) e trazidas
+  // pra extensão junto com o resto do funil (ver pullPipeline).
+  function stageNotePresets(key){ const s=currentStatuses().find(x=>x.key===key); return (s&&Array.isArray(s.notes))?s.notes:[]; }
   function statusIdx(key){ const i=currentStatuses().findIndex(s=>s.key===key); return i<0?0:i; }
   function firstStatusKey(){ return currentStatuses()[0].key; }
   function lastStatusKey(){ const a=currentStatuses(); return a[a.length-1].key; }
@@ -159,6 +166,7 @@
     showAdd: false,
     form: { name: '', username: '', niche: '', notes: '', mutualFriends: '' },
     phoneLeadId: null, phoneInput: '',
+    notesLeadId: null, notesInput: '',
     open: false,
     openStatusId: null,
     detectedProfile: null,
@@ -794,6 +802,33 @@
       pi.addEventListener('keydown',e=>{if(e.key==='Enter')doConfirmPhone();});
       setTimeout(()=>pi.focus(),50);
     }
+    const ni=shadow.getElementById('igp-notes-inp');
+    if(ni){
+      ni.addEventListener('input',e=>{S.notesInput=e.target.value;});
+      setTimeout(()=>ni.focus(),50);
+    }
+    const nsel=shadow.getElementById('igp-notes-sel');
+    if(nsel){
+      // Escolher uma observação pronta INSERE no texto (não substitui) — dá
+      // pra combinar mais de uma, ou manter o que já tinha sido escrito.
+      nsel.addEventListener('change',e=>{
+        const txt=e.target.value; if(!txt) return;
+        const lines=(S.notesInput||'').split('\n').map(x=>x.trim()).filter(Boolean);
+        if(!lines.includes(txt)) S.notesInput=lines.concat(txt).join('\n');
+        const ta=shadow.getElementById('igp-notes-inp'); if(ta) ta.value=S.notesInput;
+        e.target.value='';
+      });
+    }
+    const fns=shadow.getElementById('igp-form-notes-sel');
+    if(fns){
+      fns.addEventListener('change',e=>{
+        const txt=e.target.value; if(!txt) return;
+        const lines=(S.form.notes||'').split('\n').map(x=>x.trim()).filter(Boolean);
+        if(!lines.includes(txt)) S.form.notes=lines.concat(txt).join('\n');
+        const ta=shadow.querySelector('textarea[data-f="notes"]'); if(ta) ta.value=S.form.notes;
+        e.target.value='';
+      });
+    }
     const oc=shadow.getElementById('igp-orgcode');
     if(oc) oc.addEventListener('input',e=>{S.orgCodeInput=e.target.value;});
     const pr=shadow.getElementById('igp-prospector');
@@ -897,6 +932,12 @@
             `).join('')}
           </div>
           <div style="margin-bottom:8px"><label style="font-size:11px;color:#555;display:block;margin-bottom:3px">Observações</label>
+          ${stageNotePresets(newLeadStatusKey()).length?`
+            <select id="igp-form-notes-sel" class="inp" style="width:100%;font-size:12px;margin-bottom:6px">
+              <option value="">Observação pronta…</option>
+              ${stageNotePresets(newLeadStatusKey()).map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('')}
+            </select>
+          `:''}
           <textarea class="inp fi" data-f="notes" placeholder="Notas...">${esc(S.form.notes)}</textarea></div>
           <div style="display:flex;gap:7px">
             <button class="btn-grad" data-a="save-lead" style="padding:7px 14px;font-size:12px">Salvar</button>
@@ -972,9 +1013,28 @@
             ${l.agendorId||agSt==='ok'||l.agendorManual
               ?`<button class="btn-sm" data-a="unmark-agendor" data-lid="${l.id}" style="color:#4ade80;border-color:rgba(74,222,128,0.3);font-size:10px" title="Clique para desmarcar">✓ Agendor</button>`
               :`<button class="btn-sm" data-a="mark-agendor" data-lid="${l.id}" style="font-size:10px" title="Marcar que já está no Agendor">Agendor?</button>`}
-            <button data-a="del-lead" data-lid="${l.id}" style="background:transparent;border:none;color:#333;cursor:pointer;font-size:14px;line-height:1;padding:2px">✕</button>
+            <div style="display:flex;gap:2px">
+              <button data-a="edit-notes" data-lid="${l.id}" style="background:transparent;border:none;color:${l.notes?'#a5b4fc':'#333'};cursor:pointer;font-size:13px;line-height:1;padding:2px" title="Observações">✎</button>
+              <button data-a="del-lead" data-lid="${l.id}" style="background:transparent;border:none;color:#333;cursor:pointer;font-size:14px;line-height:1;padding:2px">✕</button>
+            </div>
           </div>
         </div>
+        ${S.notesLeadId===l.id?`
+          <div style="margin-top:10px;padding:12px;background:rgba(129,140,248,0.06);border:1px solid rgba(129,140,248,0.25);border-radius:9px">
+            <div style="font-size:12px;font-weight:600;color:#a5b4fc;margin-bottom:6px">✎ Observações de ${esc(l.name)}</div>
+            ${stageNotePresets(l.status).length?`
+              <select id="igp-notes-sel" class="inp" style="width:100%;font-size:12px;margin-bottom:6px">
+                <option value="">Observação pronta…</option>
+                ${stageNotePresets(l.status).map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('')}
+              </select>
+            `:''}
+            <textarea id="igp-notes-inp" class="inp" placeholder="Notas..." style="width:100%;min-height:64px;font-size:13px">${esc(S.notesInput)}</textarea>
+            <div style="display:flex;gap:6px;margin-top:7px">
+              <button class="btn-grad" data-a="save-notes" data-lid="${l.id}" style="padding:7px 14px;font-size:12px">Salvar</button>
+              <button class="btn-ghost" data-a="cancel-notes" style="padding:7px 10px;font-size:12px">Cancelar</button>
+            </div>
+          </div>
+        `:''}
         ${S.phoneLeadId===l.id?`
           <div style="margin-top:10px;padding:12px;background:rgba(244,114,182,0.06);border:1px solid rgba(244,114,182,0.25);border-radius:9px">
             <div style="font-size:12px;font-weight:600;color:#f472b6;margin-bottom:5px">📱 Registrar número que ${esc(l.name)} enviou</div>
@@ -1126,6 +1186,9 @@
         if(S.directDetect){ S.directDismissed=(S.directDetect.leadId||S.directDetect.username||S.directDetect.name||'?')+'|'+S.directDetect.phone; S.directDetect=null; _lastDirectKey=''; updateDirectBar(); }
         break;
       case 'cancel-phone': S.phoneLeadId=null; S.phoneInput=''; renderBody(); break;
+      case 'edit-notes':   doEditNotes(lid); break;
+      case 'save-notes':   doSaveNotes(); break;
+      case 'cancel-notes': S.notesLeadId=null; S.notesInput=''; renderBody(); break;
       case 'sync-agendor': { const lead=S.leads.find(l=>l.id===lid); if(lead) syncAgendor(lead); break; }
       case 'mark-agendor': { S.leads=S.leads.map(l=>l.id===lid?{...l,agendorManual:true}:l); db.save({igp_l:S.leads}); renderBody(); toast('Marcado como já no Agendor','ok'); break; }
       case 'unmark-agendor': { S.leads=S.leads.map(l=>l.id===lid?{...l,agendorManual:false,agendorId:undefined}:l); db.save({igp_l:S.leads}); delete S.agendorStatus[lid]; renderBody(); toast('Desmarcado do Agendor','info'); break; }
@@ -1225,8 +1288,33 @@
       S.leads=S.leads.map(l=>l.id===lid?{...l,status:st}:l);
       db.save({igp_l:S.leads});
       syncLeadUpdateDirect(lid,{status:st});
+      // Se a etapa nova tem observações pré-prontas configuradas no sistema,
+      // já abre o editor de observações com as sugestões na hora — espelha
+      // o fluxo do painel (marcar status → observações já sugeridas).
+      if(stageNotePresets(st).length){
+        const lead=S.leads.find(l=>l.id===lid);
+        S.notesLeadId=lid; S.notesInput=(lead&&lead.notes)||'';
+      }
       renderBody();
     }
+  }
+
+  // Abre/edita a observação de um lead — usada tanto pelo botão ✎ quanto,
+  // automaticamente, depois de marcar um status que tem observações prontas.
+  function doEditNotes(lid){
+    const lead=S.leads.find(l=>l.id===lid); if(!lead) return;
+    S.openStatusId=null; S.notesLeadId=lid; S.notesInput=lead.notes||'';
+    renderBody();
+  }
+  function doSaveNotes(){
+    if(!S.notesLeadId) return;
+    const lid=S.notesLeadId, notes=S.notesInput.trim();
+    S.leads=S.leads.map(l=>l.id===lid?{...l,notes}:l);
+    db.save({igp_l:S.leads});
+    syncLeadUpdateDirect(lid,{notes});
+    S.notesLeadId=null; S.notesInput='';
+    renderBody();
+    toast('Observação salva','ok');
   }
 
   function doConfirmPhone(){
@@ -1344,6 +1432,7 @@
         return { ...loc,
           id:l.ext_id, name:l.name||l.username||'Lead', username:l.username||'',
           phone:l.phone||'', niche:l.niche||'', status:l.status||newLeadStatusKey(),
+          notes:l.notes||'',
           addedAt:l.added_at||loc.addedAt||new Date().toISOString(), synced:true,
         };
       });
@@ -1412,7 +1501,7 @@
   }
   function syncLeadUpdateDirect(extId, patch){
     if(!S.org||!S.org.code||!extId) return;
-    chrome.runtime.sendMessage({ type:'update_lead_direct', code:S.org.code, extId, status:patch.status, phone:patch.phone, name:patch.name, agendorPersonId:patch.agendorPersonId, agendorDealId:patch.agendorDealId, agendorFunnel:patch.agendorFunnel }, res=>{
+    chrome.runtime.sendMessage({ type:'update_lead_direct', code:S.org.code, extId, status:patch.status, phone:patch.phone, name:patch.name, notes:patch.notes, agendorPersonId:patch.agendorPersonId, agendorDealId:patch.agendorDealId, agendorFunnel:patch.agendorFunnel }, res=>{
       if(!res||!res.ok) console.warn('IGProspect: falha ao atualizar lead direto', res&&res.error);
     });
   }

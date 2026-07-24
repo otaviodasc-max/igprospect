@@ -77,9 +77,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'update_lead_direct') {
-    const { code, extId, status, phone, name, agendorPersonId, agendorDealId, agendorFunnel } = msg;
+    const { code, extId, status, phone, name, notes, agendorPersonId, agendorDealId, agendorFunnel } = msg;
     callRpc('extension_update_lead', {
       p_code: code, p_ext_id: String(extId || ''), p_status: status || null, p_phone: phone || null, p_name: name || null,
+      p_notes: notes || null,
       p_agendor_person_id: agendorPersonId ? String(agendorPersonId) : null,
       p_agendor_deal_id: agendorDealId ? String(agendorDealId) : null,
       p_agendor_funnel: agendorFunnel || null,
