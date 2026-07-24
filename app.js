@@ -1951,6 +1951,27 @@ function renderRelDash(targetId){
       <input type="date" class="tbc-inp" id="rd-to" value="${esc(S.relDashTo)}" title="Até">
       ${plSel}${presetBtns}`;
   }
+  // Prévia do "Pagamento por período" (Relatórios) direto no Dashboard — mesmo
+  // De/Até e mesma pessoa configurados por último naquela aba (ou a semana
+  // atual + o próprio usuário, se ainda não foi visitada nesta sessão), pra
+  // não precisar trocar de aba só pra ver quanto tem a receber.
+  let payCard='';
+  if(inHeader && MOD().features.weeklyPay && S.members.length){
+    if(!S.relPayFrom||!S.relPayTo){ const { ws,we }=weekRange(); S.relPayFrom=isoDate(ws); S.relPayTo=isoDate(new Date(we-1)); }
+    if(!S.relMemberId || !S.members.some(m=>m.id===S.relMemberId)) S.relMemberId=(S.session&&S.session.user&&S.session.user.id)||S.members[0].id;
+    const payFrom=new Date(S.relPayFrom+'T00:00:00');
+    const payToExcl=new Date(S.relPayTo+'T00:00:00'); payToExcl.setDate(payToExcl.getDate()+1);
+    const payRep=weekReport(payFrom, payToExcl, S.relMemberId);
+    const payMember=S.members.find(m=>m.id===S.relMemberId);
+    const paySaved=S.weeklyPayments.find(p=>p.memberId===S.relMemberId && p.weekStart===S.relPayFrom);
+    payCard=`<div class="card rd-clickable" id="dash-pay-card" style="padding:16px 20px;margin-bottom:16px;border-left:3px solid ${paySaved?'#10B981':'#F59E0B'};display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+      <div>
+        <div style="font-weight:800;font-size:.88rem">💵 Pagamento por período${payMember?' · '+esc(memberLabel(payMember)):''}</div>
+        <div style="font-size:.72rem;color:var(--t3)">${fmtDateOnly(S.relPayFrom)} a ${fmtDateOnly(S.relPayTo)}${paySaved?' · ✅ confirmado':''} · ver em Relatórios →</div>
+      </div>
+      <div id="dash-pay-total" data-cnt="${payRep.total}" style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.7rem;line-height:1;background:linear-gradient(135deg,#10B981,#34D399);-webkit-background-clip:text;background-clip:text;color:transparent">${fmtCurrency(0)}</div>
+    </div>`;
+  }
   const topCard = inHeader
     ? `<div class="card" style="padding:14px 20px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
         <div class="card-title" style="margin:0">${pipeline?esc(pipeline.name):'Funil'} · ${fromLbl} a ${toLbl}</div>
@@ -1973,6 +1994,7 @@ function renderRelDash(targetId){
 
   $(targetId).innerHTML=`
     ${topCard}
+    ${payCard}
     <div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px">${statHtml}</div>
     <div class="dash-grid"><div class="dash-col">
       <div class="card"><div class="card-hd"><div class="card-title">Leads no período · ${days<=31?'por dia':'por semana'}</div></div><div class="card-bd"><div class="chart-wrap" style="height:155px"><canvas id="rd-tl-chart"></canvas></div></div></div>
@@ -2000,6 +2022,8 @@ function renderRelDash(targetId){
     bindDonutHover($('rd-donut-chart'), drawDonut(counts, total, $('rd-donut-chart'), stages));
   });
   document.querySelectorAll('.rd-stat-val[data-cnt]').forEach(el=>animateCount(el,Number(el.dataset.cnt)));
+  $('dash-pay-card')&&($('dash-pay-card').onclick=()=>{ S.route='relatorios'; S.relView='pay'; renderShell(); });
+  $('dash-pay-total')&&animateCount($('dash-pay-total'),Number($('dash-pay-total').dataset.cnt),fmtCurrency);
 }
 
 // Relatório livre por venda/cliente (deals.report) — editável a qualquer momento.
