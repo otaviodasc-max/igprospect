@@ -760,7 +760,7 @@ function renderLeads(){
   const rows=slice.length?slice.map(l=>{ const pl=leadPipeline(l); return `<tr data-id="${esc(l.id)}"${S.sel.mode&&S.sel.ids.has(l.id)?' style="background:rgba(99,102,241,.08)"':''}>
     ${selCell(l.id)}
     <td class="tdcell-hd"><div class="lead-cell"><div class="avatar">${esc(ini(l.name||l.username))}</div><div><div class="lead-nm">${esc(l.name||'—')}${S.pipelines.length>1?` <span class="tag" style="background:rgba(99,102,241,.14);color:#A5B4FC;border-color:rgba(99,102,241,.25)">${esc(pl?pl.icon:'')} ${esc(pl?pl.name:'')}</span>`:''}</div><div class="lead-un">${l.username?'@'+esc(l.username):esc(l.phone||'—')}${agendorOn()&&l.agendorPersonId?' <span style="font-size:.63rem;color:#6EE7B7;font-weight:600;white-space:nowrap">☁ Agendor</span>':agendorOn()&&l.agendorStatus==='failed'?` <span data-tip="${esc(l.agendorError||'Falha ao enviar ao Agendor')}" style="font-size:.63rem;color:#FCA5A5;font-weight:600;white-space:nowrap;cursor:help">⚠ Agendor</span>`:''}</div></div></div></td>
-    <td data-label="Status"><span class="badge" style="background:${stColor(l)}22;color:${stColor(l)};border:1px solid ${stColor(l)}44">${stLabel(l)}</span></td>
+    <td data-label="Status"><span class="badge" style="background:${stColor(l)}22;color:${stColor(l)};border:1px solid ${stColor(l)}44">${stLabel(l)}</span>${featOn('deals')&&S.deals.some(d=>d.leadId===l.id)?` <span class="tag" data-tip="Já tem negociação — clique para ver/adicionar outra" style="background:rgba(16,185,129,.14);color:#6EE7B7;border-color:rgba(16,185,129,.3);cursor:help">💼 Negociação</span>`:''}</td>
     <td data-label="Nicho">${l.niche?`<span class="tag">${esc(l.niche)}</span>`:'<span style="color:var(--t3)">—</span>'}</td>
     <td data-label="Adicionado" style="color:var(--t2);font-size:.73rem">${fmtDate(l.addedAt)}</td>
     <td data-label="Notas" style="font-size:.72rem;color:var(--t3);max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(l.notes||'—')}</td>
@@ -816,6 +816,37 @@ function renderLeads(){
   $('leads-tbl').onclick=e=>{ if(S.sel.mode){ const chk=e.target.closest('.rowchk'); const tr=e.target.closest('tr[data-id]'); if(chk){selToggle(chk.dataset.sel);renderLeads();return;} if(tr){selToggle(tr.dataset.id);renderLeads();return;} return; } const agrm=e.target.closest('[data-agrm]'),ag=e.target.closest('[data-ag]'),ed=e.target.closest('[data-edit]'),dl=e.target.closest('[data-del]'); if(agrm){removeLeadFromAgendor(agrm.dataset.agrm);return;} if(ag){sendLeadToAgendor(ag.dataset.ag);return;} if(dl){delLead(dl.dataset.del);return;} if(ed){leadForm(ed.dataset.edit);return;} const tr=e.target.closest('tr[data-id]'); if(tr)leadForm(tr.dataset.id); };
   bindSelBar(all.map(l=>l.id), renderLeads, bulkDeleteLeads);
 }
+/* ---------- Observações pré-prontas por etapa (leads e negociações) ----------
+   Cada etapa (de um funil de lead OU das etapas de negociação) pode ter uma
+   lista de textos prontos, configurada em Configurações → Personalização.
+   Guardadas dentro do próprio objeto da etapa (stage.notes), então já são
+   isoladas por org (mesmo mecanismo dos funis/etapas) e cada equipe tem as suas. */
+function leadStageNotePresets(pipeline, stageKey){
+  const s=stagesOf(pipeline).find(x=>x.key===stageKey);
+  return (s&&Array.isArray(s.notes))?s.notes.filter(Boolean):[];
+}
+function dealStageNotePresets(stageKey){
+  const s=dealStagesRaw().find(x=>x.key===stageKey);
+  return (s&&Array.isArray(s.notes))?s.notes.filter(Boolean):[];
+}
+function noteChipsMarkup(list){
+  return list.map(n=>`<div class="period-tab" data-notechip="${esc(n)}">${esc(n)}</div>`).join('');
+}
+// Preenche um wrapper de chips (criado vazio no HTML inicial) e liga o clique
+// de cada chip pra inserir aquele texto na textarea de observações (sem
+// duplicar se já estiver lá, e sem apagar o que a pessoa já tinha digitado).
+function refreshNoteChips(wrapId, textareaId, list){
+  const box=$(wrapId); if(!box) return;
+  box.style.display=list.length?'flex':'none';
+  box.innerHTML=noteChipsMarkup(list);
+  box.querySelectorAll('[data-notechip]').forEach(ch=>ch.onclick=()=>{
+    const txt=ch.dataset.notechip; const ta=$(textareaId); if(!ta) return;
+    const lines=ta.value.split('\n').map(x=>x.trim()).filter(Boolean);
+    if(lines.includes(txt)) return;
+    ta.value=lines.concat(txt).join('\n');
+    ta.focus();
+  });
+}
 function leadForm(id){
   const l=id?S.leads.find(x=>x.id===id):null;
   const curSt=(l&&l.status)||'novo';
@@ -849,10 +880,12 @@ function leadForm(id){
       ${pipelineField}
       <div class="fld"><label>Status</label><select id="f-status">${stOptsFor(curPl)}</select></div>
       ${extraHtml}
-      <div class="fld full"><label>Observações</label><textarea id="f-notes" placeholder="Notas…">${esc(l&&l.notes||'')}</textarea></div>
+      <div class="fld full"><label>Observações</label><textarea id="f-notes" placeholder="Notas…">${esc(l&&l.notes||'')}</textarea><div class="period-tabs" id="f-note-chips" style="flex-wrap:wrap;height:auto;margin-top:6px"></div></div>
     </div>${agendorOn()&&!(l&&l.agendorPersonId)?`<label style="display:flex;align-items:center;gap:9px;margin-top:10px;padding:10px 12px;background:rgba(110,231,183,.07);border:1px solid rgba(110,231,183,.2);border-radius:9px;cursor:pointer"><input type="checkbox" id="f-ag-exists" style="width:16px;height:16px;accent-color:#6EE7B7;cursor:pointer"><span style="font-size:.78rem;color:var(--t2)">☁ Lead já está no Agendor (não enviar novamente)</span></label>`:''}${dealsSection}</div>
     <div class="modal-ft"><button class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" id="f-save">${id?'Salvar':'Cadastrar'}</button></div></div></div>`);
-  $('f-pipeline')&&($('f-pipeline').onchange=e=>{ const p=pipelineById(e.target.value); $('f-status').innerHTML=stOptsFor(p); });
+  $('f-pipeline')&&($('f-pipeline').onchange=e=>{ const p=pipelineById(e.target.value); $('f-status').innerHTML=stOptsFor(p); refreshNoteChips('f-note-chips','f-notes',leadStageNotePresets(p,$('f-status').value)); });
+  $('f-status').onchange=e=>{ const p=$('f-pipeline')?pipelineById($('f-pipeline').value):curPl; refreshNoteChips('f-note-chips','f-notes',leadStageNotePresets(p,e.target.value)); };
+  refreshNoteChips('f-note-chips','f-notes',leadStageNotePresets(curPl,curSt));
   $('lf-add-deal')&&($('lf-add-deal').onclick=()=>addDealForLead(id));
   document.querySelectorAll('[data-dealrow]').forEach(row=>row.onclick=()=>dealForm(row.dataset.dealrow));
   $('f-save').onclick=async()=>{
@@ -1338,7 +1371,7 @@ function dealForm(id){
         <label>Data da venda/negociação</label>
         <input id="df-closeddate" type="date" value="${d.closedAt?isoDate(d.closedAt):''}">
       </div>
-      <div class="fld full"><label>Observações</label><textarea id="df-notes" placeholder="Anotações sobre a negociação…">${esc(d.notes||'')}</textarea></div>
+      <div class="fld full"><label>Observações</label><textarea id="df-notes" placeholder="Anotações sobre a negociação…">${esc(d.notes||'')}</textarea><div class="period-tabs" id="df-note-chips" style="flex-wrap:wrap;height:auto;margin-top:6px"></div></div>
     </div>
     <label id="df-paid-wrap" style="display:${d.status===WON()?'flex':'none'};align-items:center;gap:10px;margin-top:12px;padding:11px 13px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:10px;cursor:pointer">
       <input type="checkbox" id="df-paid" ${d.commissionPaid?'checked':''} style="width:19px;height:19px;accent-color:#10B981;cursor:pointer">
@@ -1374,7 +1407,9 @@ function dealForm(id){
     const isClose=e.target.value===WON()||e.target.value===LOST();
     const w=$('df-paid-wrap'); if(w) w.style.display=e.target.value===WON()?'flex':'none';
     const dw=$('df-date-wrap'); if(dw) dw.style.display=isClose?'flex':'none';
+    refreshNoteChips('df-note-chips','df-notes',dealStageNotePresets(e.target.value));
   });
+  refreshNoteChips('df-note-chips','df-notes',dealStageNotePresets(d.status));
 
   $('df-del').onclick=()=>delDeal(id);
   $('df-save').onclick=async()=>{
@@ -2506,6 +2541,41 @@ function stageEditorModal(title, stages, save){
   };
   render();
 }
+// Textos prontos por etapa, pra sugerir no campo "Observações" de leads e
+// negociações. Cada funil de lead tem suas próprias etapas, e a negociação
+// tem as dela — cada equipe edita as suas (isolado por org, como o resto da
+// personalização), então uma equipe com etapas diferentes vê e configura só
+// as etapas dela.
+function notePresetsModal(){
+  const section=(title,sub,stages,inputAttr)=>`<div style="margin-bottom:14px"><div class="stg-ri-t">${esc(title)}</div>${sub?`<div class="stg-ri-s" style="margin-bottom:8px">${esc(sub)}</div>`:''}<div style="display:flex;flex-direction:column;gap:10px">${stages.map(s=>`<div class="fld"><label>${esc(s.label)}</label><textarea class="stg-input np-inp" ${inputAttr(s)} placeholder="Uma observação por linha…" style="min-height:56px">${esc((s.notes||[]).join('\n'))}</textarea></div>`).join('')||'<div class="empty-sub">Nenhuma etapa ainda.</div>'}</div></div>`;
+  const pipelinesHtml=S.pipelines.map(p=>section(`${p.icon||''} ${p.name}`.trim(),null,stagesOf(p),s=>`data-np-pl="${esc(p.id)}" data-np-stage="${esc(s.key)}"`)).join('');
+  const dealsHtml=featOn('deals')?section('Etapas de Negociação','Usadas na aba Negociações',dealStagesRaw(),s=>`data-np-deal="${esc(s.key)}"`):'';
+  openModal(`<div class="modal-ov"><div class="modal-box"><div class="modal-hd"><div><div class="modal-title">Observações pré-prontas</div><div class="modal-sub">Ao marcar um lead/negociação numa etapa, esses textos aparecem como sugestão clicável no campo Observações</div></div><div class="x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div></div>
+    <div class="modal-bd">${pipelinesHtml}${dealsHtml}</div>
+    <div class="modal-ft"><button class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" id="np-save">Salvar</button></div>
+    </div></div>`);
+  $('np-save').onclick=async()=>{
+    $('np-save').disabled=true;
+    const toList=v=>v.split('\n').map(x=>x.trim()).filter(Boolean);
+    const byPl={};
+    document.querySelectorAll('[data-np-pl]').forEach(ta=>{ const pl=ta.dataset.npPl; (byPl[pl]=byPl[pl]||{})[ta.dataset.npStage]=toList(ta.value); });
+    for(const plId in byPl){
+      const p=S.pipelines.find(x=>x.id===plId); if(!p) continue;
+      const stages=stagesOf(p).map(s=>({...s,notes:byPl[plId][s.key]||[]}));
+      const{error}=await sb.from('org_pipelines').update({stages}).eq('id',plId);
+      if(error){ toast(error.message,'error'); $('np-save').disabled=false; return; }
+    }
+    const dealNp={};
+    document.querySelectorAll('[data-np-deal]').forEach(ta=>{ dealNp[ta.dataset.npDeal]=toList(ta.value); });
+    if(Object.keys(dealNp).length){
+      const stages=dealStagesRaw().map(s=>({...s,notes:dealNp[s.key]||[]}));
+      const{error}=await sb.from('org_deal_stages').upsert({org_id:S.org.id,stages,won_stage:WON(),lost_stage:LOST(),card_types:CARD_TYPES()},{onConflict:'org_id'});
+      if(error){ toast(error.message,'error'); $('np-save').disabled=false; return; }
+    }
+    await loadPipelines(); await loadDealStagesCfg();
+    closeModal(); toast('Observações salvas','success'); renderShell();
+  };
+}
 
 function renderSettings(){
   const owner=S.profile&&S.profile.org_role==='owner';
@@ -2578,6 +2648,7 @@ function renderSettings(){
         <div style="height:1px;background:rgba(255,255,255,.06);margin:10px 0"></div>
         <div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Etapas de Negociação</div><div class="stg-ri-s">${DEAL_STS().length} etapa(s) · usadas na aba Negociações</div></div><button class="btn btn-outline btn-sm" id="deal-stages-edit">Editar</button></div>
         <div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Desfechos de Ligação</div><div class="stg-ri-s">${CALL_OUT().length} opção(ões) · usadas na aba Ligações</div></div><button class="btn btn-outline btn-sm" id="call-out-edit">Editar</button></div>
+        <div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Observações pré-prontas</div><div class="stg-ri-s">Textos sugeridos por etapa, no campo Observações de leads e negociações</div></div><button class="btn btn-outline btn-sm" id="note-presets-edit">Editar</button></div>
       </div></div>`:''}
     <div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(236,72,153,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#F472B6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></div><div><div class="st-title">Extensão do Instagram</div><div class="st-sub">Detecta perfis e adiciona leads direto do Instagram para o seu espaço</div></div></div>
       <div class="stg-bd">
@@ -2696,6 +2767,7 @@ function renderSettings(){
       if(error){toast(error.message,'error');return false;} await loadCallOutcomesCfg(); toast('Desfechos salvos','success'); renderShell(); return true;
     });
   });
+  $('note-presets-edit')&&($('note-presets-edit').onclick=notePresetsModal);
   $('st-logout').onclick=igpLogout;
   $('st-name-save')&&($('st-name-save').onclick=async()=>{
     const name=$('st-name').value.trim();
