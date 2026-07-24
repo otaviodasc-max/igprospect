@@ -8,8 +8,18 @@
 (function () {
   'use strict';
 
+  // Só entrega/aceita mensagens de páginas que o manifest realmente injeta
+  // este script (content_scripts.matches) — sem isso, qualquer script que
+  // rode nessa mesma aba (outra extensão, um iframe, um bug de origem) podia
+  // tanto ler os leads (nome/telefone/e-mail) quanto forjar mensagens
+  // 'request-leads'/'synced-ids' pro bridge aceitar como se fossem do painel.
+  // file:// não tem origin de verdade — o navegador manda a string "null".
+  const ALLOWED_ORIGIN_RE = /^https:\/\/([a-z0-9-]+\.)*netlify\.app$|^https:\/\/otaviodasc-max\.github\.io$/i;
+  function originOk(origin) { return origin === 'null' || ALLOWED_ORIGIN_RE.test(origin || ''); }
+
   function sendLeads(leads) {
-    window.postMessage({ source: 'igp-extension', type: 'leads', leads: leads || [] }, '*');
+    if (!originOk(window.location.origin)) return;
+    window.postMessage({ source: 'igp-extension', type: 'leads', leads: leads || [] }, window.location.origin === 'null' ? '*' : window.location.origin);
   }
 
   function pushCurrent() {
@@ -23,7 +33,7 @@
   //    Evita que um lead capturado com uma equipe aberta seja sincronizado,
   //    depois, para outra equipe que esteja aberta na hora do sync.
   window.addEventListener('message', ev => {
-    if (ev.source !== window) return;
+    if (ev.source !== window || !originOk(ev.origin)) return;
     const d = ev.data;
     if (d && d.source === 'igp-dashboard' && d.type === 'request-leads') {
       // Se a equipe já foi travada na extensão via código (Configurações →
@@ -64,5 +74,7 @@
   } catch (e) { /* sem permissão de storage — ignora */ }
 
   // Sinaliza presença da extensão (o painel mostra "conectado")
-  window.postMessage({ source: 'igp-extension', type: 'hello' }, '*');
+  if (originOk(window.location.origin)) {
+    window.postMessage({ source: 'igp-extension', type: 'hello' }, window.location.origin === 'null' ? '*' : window.location.origin);
+  }
 })();

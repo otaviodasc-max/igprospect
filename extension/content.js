@@ -198,7 +198,7 @@
   // HELPERS
   // ═══════════════════════════════════════════════
   function esc(s) {
-    return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   }
 
   // Usa a etapa DE VERDADE do funil da equipe (currentStatuses/pull_org_pipeline)

@@ -111,7 +111,10 @@ const slugify = s => String(s||'').trim().toLowerCase().normalize('NFD').replace
 
 /* ---------- helpers ---------- */
 const $ = id => document.getElementById(id);
-const esc = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+// Escapa também aspas simples (defesa em profundidade) — o código hoje só
+// interpola dentro de atributos com aspas duplas, mas sem isso um atributo
+// escrito com aspas simples no futuro reabriria um vetor de XSS.
+const esc = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 const ini = n => { if(!n) return '?'; const w=String(n).trim().split(/\s+/); return (w.length>1?w[0][0]+w[w.length-1][0]:w[0].slice(0,2)).toUpperCase(); };
 const fmtNum = n => n!=null ? Number(n).toLocaleString('pt-BR') : '—';
 const fmtDate = iso => { if(!iso) return '—'; try{ return new Date(iso).toLocaleDateString('pt-BR'); }catch(e){ return '—'; } };
