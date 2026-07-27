@@ -12,7 +12,7 @@
 
 -- 0) Confirma os dois ids de equipe (cada select deve dar 1 linha só)
 select id as org_id_arthur, name from public.orgs where name ilike '%SOCIAL SELLING ARTHUR%';
-select id as org_id_irma,   name from public.orgs where name ilike '%NOME DA EQUIPE DA IRMÃ%';
+select id as org_id_irma,   name from public.orgs where name ilike '%EQUIPE DA BRENDA%';
 
 -- 1) Leads importados na equipe do Arthur, agrupados por instante e por
 --    quem importou. Um bloco enorme, tudo no mesmo minuto/hora, com um
@@ -36,7 +36,7 @@ from public.leads a
 join public.leads b
   on lower(a.username) = lower(b.username) and a.username is not null and a.username <> ''
 where a.org_id = (select id from public.orgs where name ilike '%SOCIAL SELLING ARTHUR%')
-  and b.org_id = (select id from public.orgs where name ilike '%NOME DA EQUIPE DA IRMÃ%')
+  and b.org_id = (select id from public.orgs where name ilike '%EQUIPE DA BRENDA%')
   and a.source = 'import';
 
 -- 3) IMPORTANTE antes de decidir apagar: algum desses leads duplicados já
