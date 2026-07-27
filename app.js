@@ -1049,6 +1049,10 @@ function importLeads(){
       rows.push({ name:l.name||'', username:uk||'', phone:l.phone||'', email:l.email||'', niche:l.niche||'', status, tipo, pipeline_id:pipeline&&pipeline.id, funil:l.funil||null, cidade:l.cidade||null, estado:l.estado||null, cnpj:l.cnpj||null, notes, source:l.source||'import', ext_id:extId||null, added_at:addedAt });
     }
     if(!rows.length){ toast('Nada novo para importar (já estão no sistema)','warn'); return; }
+    // Confirmação com o nome da equipe ATIVA agora — importar sem checar isso
+    // já causou leads de uma equipe inteira caindo duplicados em outra
+    // (exportar numa equipe, esquecer de conferir, importar já trocado pra outra).
+    if(!confirm(`Importar ${rows.length} lead(s) para a equipe "${(S.org&&S.org.name)||'?'}"?\n\nConfira se é a equipe certa antes de confirmar.`)) return;
     toast(`Importando ${rows.length} leads…`);
     for(let i=0;i<rows.length;i+=200){ const { error }=await sb.from('leads').upsert(rows.slice(i,i+200),{onConflict:'org_id,ext_id',ignoreDuplicates:true}); if(error){ toast('Erro: '+error.message,'error'); return; } }
     await loadLeads(); await loadDeals(); await backfillEmpresarioDeals(); renderShell(); toast(`${rows.length} leads importados`,'success');

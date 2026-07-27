@@ -1552,9 +1552,18 @@
   });
   // O painel (se aberto, na mesma equipe) ainda pode SUGERIR a equipe ativa —
   // mas nunca sobrescreve uma equipe travada aqui via código (ver doLinkOrg).
+  // Já uma reconexão de verdade (outra aba do Instagram digitou um código novo
+  // em Configurações → Equipe) TEM que propagar pra esta aba também, mesmo já
+  // travada — senão esta aba fica presa pra sempre na equipe antiga e continua
+  // mandando leads pra ela. BUG que já causou vazamento de leads entre equipes:
+  // só doLinkOrg grava locked:true; a sugestão do painel (bridge.js) nunca
+  // grava esse campo, então dá pra distinguir as duas origens por ele.
   try{
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === 'local' && changes.igp_org && !(S.org&&S.org.locked)) S.org = changes.igp_org.newValue || null;
+      if (area !== 'local' || !changes.igp_org) return;
+      const nv = changes.igp_org.newValue;
+      if (nv && nv.locked) { S.org = nv; if(S.open) renderBody(); return; }
+      if (!(S.org && S.org.locked)) S.org = nv || null;
     });
   } catch(e) { /* sem permissão de storage — ignora */ }
 
