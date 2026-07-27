@@ -1,13 +1,20 @@
 -- =====================================================================
 -- DIAGNÓSTICO — só leitura, não apaga nem altera nada.
--- Objetivo: confirmar que os leads da equipe da sua irmã foram DUPLICADOS
--- (não movidos) para a equipe do Arthur (SOCIAL SELLING ARTHUR) através do
--- botão Exportar → Importar do painel (app.js: exportLeads/importLeads).
--- Essa é a única forma no sistema de um lote inteiro de leads de uma
--- equipe aparecer de uma vez em outra — cada linha importada nasce com
--- source='import' no mesmo instante, e created_by é quem clicou "Importar"
--- estando logado na equipe do Arthur na hora.
--- Rode cada bloco no SQL Editor do Supabase, na ordem.
+-- Objetivo original: confirmar que os leads da EQUIPE DA BRENDA foram
+-- DUPLICADOS (não movidos) para a equipe do Arthur (SOCIAL SELLING ARTHUR).
+--
+-- CONCLUSÃO (2026-07-27, ver blocos abaixo): NÃO foi o Exportar/Importar
+-- do painel nem a extensão em uso real — os blocos 1/2 abaixo mostram
+-- source='import' só no dia 21/07 (importações legítimas, batidas com o
+-- Otávio e a Larissa). O lote de verdade tinha source='extensao' no dia
+-- 24/07 (3280 leads), todos com o MESMO created_at até o microssegundo —
+-- ou seja, um INSERT em massa numa transação só, não navegação real no
+-- Instagram. created_by = Otávio (694eb03a-5049-4517-a5ad-e604faee1eac).
+-- A remoção final está em supabase-remover-leads-duplicados-arthur.sql,
+-- já com os valores exatos confirmados.
+--
+-- Rode cada bloco no SQL Editor do Supabase, na ordem, se quiser reproduzir
+-- a investigação.
 -- =====================================================================
 
 -- 0) Confirma os dois ids de equipe (cada select deve dar 1 linha só)
