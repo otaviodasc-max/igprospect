@@ -6,6 +6,12 @@
 const SUPABASE_URL = 'https://guuecwrhwuzbwfetehix.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd1dWVjd3Jod3V6YndmZXRlaGl4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE1NzA2NjAsImV4cCI6MjA5NzE0NjY2MH0.GISYZrdloR5GGezNwMUMKsdVG5E5VstnXeeAxsNqtOY';
 
+// Base da API do CRM = Hub do Corretor, que fala o dialeto do Agendor.
+// A extensão bate DIRETO no Hub (não passa pelo Worker do painel): ela roda
+// como service worker de extensão, onde CORS de página não se aplica — basta
+// o host estar em host_permissions no manifest.json.
+const CRM_BASE = 'https://hubcorretorconsorcio.com.br/api/agendor/v3';
+
 // Chama uma função RPC do Supabase com a chave pública (sem login).
 function callRpc(name, body) {
   return fetch(`${SUPABASE_URL}/rest/v1/rpc/${name}`, {
@@ -159,7 +165,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     (async () => {
       try {
-        const pr = await fetch('https://api.agendor.com.br/v3/people', {
+        const pr = await fetch(`${CRM_BASE}/people`, {
           method: 'POST', headers,
           body: JSON.stringify({
             name: person.name,
@@ -179,10 +185,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         let dealId = null;
         if (personId && deal && deal.dealStage && deal.funnel) {
-          const dr = await fetch(`https://api.agendor.com.br/v3/people/${personId}/deals`, {
+          // Chaves duplicadas de propósito: o Agendor lia dealStage/funnel, o
+          // Hub documentou dealStageId/funnelId. Mandar as quatro faz a
+          // instalação certa achar a sua. dealStage é a POSIÇÃO da etapa
+          // (1,2,3…) e dealStageId é o id — trocar os dois joga o negócio na
+          // 1ª etapa. Mesma lógica de app.js agendorDealBody.
+          const dealBody = {
+            title: deal.title, description: deal.description || '',
+            dealStage: deal.dealStage, funnel: deal.funnel,
+            dealStageId: deal.dealStageId, funnelId: deal.funnel,
+          };
+          // Hub expõe POST /deals (personId no corpo); o Agendor usava a rota
+          // aninhada. Tenta a do Hub e cai pra aninhada se ela não existir.
+          let dr = await fetch(`${CRM_BASE}/deals`, {
             method: 'POST', headers,
-            body: JSON.stringify({ title: deal.title, dealStage: deal.dealStage, funnel: deal.funnel, description: deal.description || '' }),
+            body: JSON.stringify({ ...dealBody, personId }),
           });
+          if (dr.status === 404 || dr.status === 405) {
+            dr = await fetch(`${CRM_BASE}/people/${personId}/deals`, {
+              method: 'POST', headers,
+              body: JSON.stringify(dealBody),
+            });
+          }
           const ddata = await dr.json().catch(() => ({}));
           dealId = (ddata && ddata.data && ddata.data.id) || (ddata && ddata.id) || null;
           // Reforço: o CRM às vezes não respeita dealStage já no POST de
@@ -190,9 +214,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // etapa certa (mesma lógica do painel, ver app.js sendLeadToAgendor).
           if (dealId) {
             try {
-              await fetch(`https://api.agendor.com.br/v3/deals/${dealId}`, {
+              await fetch(`${CRM_BASE}/deals/${dealId}`, {
                 method: 'PUT', headers,
-                body: JSON.stringify({ dealStage: deal.dealStage, funnel: deal.funnel }),
+                body: JSON.stringify({
+                  dealStage: deal.dealStage, funnel: deal.funnel,
+                  dealStageId: deal.dealStageId, funnelId: deal.funnel,
+                }),
               });
             } catch (e) { /* pessoa+negócio já existem; falha aqui só deixa a etapa por conferir */ }
           }

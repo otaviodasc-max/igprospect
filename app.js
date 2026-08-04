@@ -106,7 +106,11 @@ const WON        = () => (S.dealStagesCfg&&S.dealStagesCfg.won_stage) || MOD().d
 const LOST       = () => (S.dealStagesCfg&&S.dealStagesCfg.lost_stage) || MOD().dealFunnel.lostStage;
 const CARD_TYPES = () => (S.dealStagesCfg&&S.dealStagesCfg.card_types&&S.dealStagesCfg.card_types.length) ? S.dealStagesCfg.card_types : MOD().cardTypes;
 
-const AGENDOR_BASE = 'https://api.agendor.com.br/v3';
+// CRM = Hub do Corretor, que expõe uma API no dialeto do Agendor em
+// /api/agendor/v3. Só é usado se AGENDOR_PROXY_URL estiver vazio — o caminho
+// normal é passar pelo Worker (ver config.js), porque o Hub libera CORS
+// apenas pra *.netlify.app e o sistema roda no GitHub Pages.
+const AGENDOR_BASE = CFG.HUB_API_BASE || 'https://hubcorretorconsorcio.com.br/api/agendor/v3';
 const slugify = s => String(s||'').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'')||('etapa_'+Date.now());
 
 /* ---------- helpers ---------- */
@@ -2098,17 +2102,44 @@ function renderRelVendas(){
 function agendorOn(){ return !!(S.org && (S.org.agendor_token||'').trim()); }
 function agendorAutoOn(){ return !(S.org && S.org.settings && S.org.settings.agendorAuto===false); }
 
+// O Agendor usa "Authorization: Token <t>"; o Hub do Corretor não documentou
+// qual esquema aceita. Em vez de chutar, a primeira chamada da sessão testa
+// "Token" e, se levar 401/403, repete com "Bearer" e guarda o que funcionou —
+// as chamadas seguintes já saem certas de primeira.
+let _agAuthScheme = null;
+function agAuthHeader(scheme, token){ return scheme+' '+token; }
+
 async function agendorRequest(path, method='GET', body=null){
   const token=(S.org&&S.org.agendor_token||'').trim();
   if(!token) throw new Error('Token do CRM não configurado');
   const proxy=(CFG.AGENDOR_PROXY_URL||'').trim().replace(/\/+$/,'');
-  const base=proxy||AGENDOR_BASE; // o Worker já aponta para /v3
-  const res=await fetch(base+path,{ method, headers:{ 'Authorization':'Token '+token, 'Content-Type':'application/json' }, body: body?JSON.stringify(body):undefined });
-  let json=null; try{ json=await res.json(); }catch(e){}
-  if(!res.ok){ const msg=json&&json.errors ? (Array.isArray(json.errors)?json.errors.join('; '):JSON.stringify(json.errors)) : ('HTTP '+res.status); throw new Error(msg); }
+  const base=proxy||AGENDOR_BASE; // o Worker já aponta para /api/agendor/v3
+  const payload = body?JSON.stringify(body):undefined;
+
+  const attempt = async scheme => {
+    const res=await fetch(base+path,{ method, headers:{ 'Authorization':agAuthHeader(scheme,token), 'Content-Type':'application/json' }, body: payload });
+    let json=null; try{ json=await res.json(); }catch(e){}
+    return { res, json };
+  };
+
+  const schemes = _agAuthScheme ? [_agAuthScheme] : ['Token','Bearer'];
+  let last=null;
+  for(const scheme of schemes){
+    last = await attempt(scheme);
+    if(last.res.ok){ _agAuthScheme = scheme; break; }
+    // Só vale insistir se o problema foi credencial. 404/500 é outra coisa —
+    // repetir com outro esquema só duplicaria o efeito colateral de um POST.
+    if(last.res.status!==401 && last.res.status!==403) break;
+  }
+
+  const { res, json } = last;
+  if(!res.ok){
+    const msg=json&&json.errors ? (Array.isArray(json.errors)?json.errors.join('; '):JSON.stringify(json.errors)) : ('HTTP '+res.status);
+    const err=new Error(msg); err.status=res.status; throw err;
+  }
   return json;
 }
-function agendorCorsHint(m){ if(/Failed to fetch|NetworkError|CORS/i.test(m)) toast('Bloqueio de CORS — o Worker do proxy precisa estar publicado (config.js).','warn'); }
+function agendorCorsHint(m){ if(/Failed to fetch|NetworkError|CORS/i.test(m)) toast('Sem resposta do CRM — confira se o Worker do proxy está publicado (worker/hub-proxy.js).','warn'); }
 
 // Nome bonito para a PESSOA no CRM: "Nome Real (@usuario)". Evita repetir
 // quando o nome ainda está igual ao @ (dados antigos da extensão). Usado só
@@ -2152,6 +2183,56 @@ function agendorStageFor(lead){
   return null;
 }
 
+// Cria o negócio no CRM. O Hub do Corretor expõe POST /deals (com personId no
+// corpo); o Agendor usava POST /people/{id}/deals. Tentamos a rota do Hub e,
+// se ela não existir nessa instalação (404/405), caímos na aninhada — assim o
+// mesmo código serve pros dois sem depender de mexer no backend de terceiro.
+//
+// As chaves da etapa vão duplicadas de propósito: o Agendor lê
+// dealStage/funnel, o Hub documentou dealStageId/funnelId. Mandar as quatro
+// no mesmo corpo faz a instalação certa achar a sua e ignorar o resto —
+// atenção: dealStage é a POSIÇÃO da etapa (1,2,3…) e dealStageId é o id de
+// verdade; trocar os dois faz o negócio cair sempre na 1ª etapa.
+function agendorDealBody(map, title, description){
+  return { title, description,
+    dealStage: map.stageOrder, funnel: map.funnelId,
+    dealStageId: map.stageId,  funnelId: map.funnelId };
+}
+async function agendorCreateDeal(personId, map, title, description){
+  const body={ ...agendorDealBody(map,title,description), personId };
+  try{
+    return await agendorRequest('/deals','POST',body);
+  }catch(err){
+    if(err.status===404||err.status===405){
+      const { personId:_drop, ...nested } = body;
+      return await agendorRequest(`/people/${personId}/deals`,'POST',nested);
+    }
+    throw err;
+  }
+}
+
+// Move um negócio já criado pra outra etapa. É o que mantém o funil do CRM
+// espelhando o Kanban do sistema. O Hub do Corretor NÃO documentou essa rota
+// (só POST/DELETE de deals), então tentamos PUT e caímos pra PATCH; se as
+// duas derem 404/405, o erro sobe com uma mensagem que diz o que houve, em vez
+// do "HTTP 404" cru — sem isso o negócio congelaria na etapa de criação e
+// ninguém saberia por quê.
+async function agendorSetDealStage(dealId, map){
+  const body=agendorDealBody(map, undefined, undefined);
+  delete body.title; delete body.description;
+  try{
+    return await agendorRequest(`/deals/${dealId}`,'PUT',body);
+  }catch(err){
+    if(err.status!==404 && err.status!==405) throw err;
+    try{
+      return await agendorRequest(`/deals/${dealId}`,'PATCH',body);
+    }catch(err2){
+      if(err2.status!==404 && err2.status!==405) throw err2;
+      throw new Error('O CRM não aceita mudar a etapa de um negócio já criado (sem PUT/PATCH em /deals). O negócio fica na etapa em que nasceu.');
+    }
+  }
+}
+
 async function loadAgendorFunnels(){
   const btn=$('ag-load-funnels'); if(btn) btn.disabled=true;
   try{
@@ -2160,9 +2241,10 @@ async function loadAgendorFunnels(){
     const flat=[];
     // dealStage na API do CRM é a POSIÇÃO da etapa dentro do funil (1,2,3…),
     // não o id da etapa — mandar o id fazia o negócio sempre cair na 1ª etapa
-    // (o número não batia com nenhuma posição válida). st.order, se a API
-    // mandar, é a fonte confiável; a posição no array serve de fallback.
-    for(const f of data){ const stages=f.dealStages||f.stages||[]; stages.forEach((st,i)=>{ flat.push({ funnelId:f.id, funnelName:f.name||('Funil '+f.id), stageId:st.id, stageOrder:st.order||st.position||(i+1), stageName:st.name||('Etapa '+st.id) }); }); }
+    // (o número não batia com nenhuma posição válida). O Hub do Corretor manda
+    // essa posição em "sequence"; o Agendor mandava "order"/"position". A
+    // posição no array só serve de último fallback.
+    for(const f of data){ const stages=f.dealStages||f.stages||[]; stages.forEach((st,i)=>{ flat.push({ funnelId:f.id, funnelName:f.name||('Funil '+f.id), stageId:st.id, stageOrder:st.sequence||st.order||st.position||(i+1), stageName:st.name||('Etapa '+st.id) }); }); }
     S._funnelStages=flat;
     if(!flat.length) toast('Nenhum funil/etapa retornado pelo CRM','warn');
     else toast(`${flat.length} etapas carregadas de ${data.length} funil(is)`,'success');
@@ -2210,14 +2292,14 @@ async function sendLeadToAgendor(id, silent=false){
     const personId=(person&&person.data&&person.data.id)||(person&&person.id);
     let dealId=null, stageWarn=null;
     if(personId){
-      const deal=await agendorRequest(`/people/${personId}/deals`,'POST',{ title:dealTitle, dealStage:map.stageOrder, funnel:map.funnelId, description:`Origem: Redes sociais\nEnviado pelo IGProspect (funil ${map.funnelName}).` });
+      const deal=await agendorCreateDeal(personId, map, dealTitle, `Origem: Redes sociais\nEnviado pelo IGProspect (funil ${map.funnelName}).`);
       dealId=(deal&&deal.data&&deal.data.id)||(deal&&deal.id)||null;
       // Reforço: um PUT logo depois garante a etapa certa mesmo se a API não
       // respeitar dealStage já no POST de criação. Se esse PUT falhar, não
       // derruba o envio (pessoa+negócio já existem), mas o erro precisa
       // aparecer — antes ficava engolido sem log nenhum.
       if(dealId){
-        try{ await agendorRequest(`/deals/${dealId}`,'PUT',{ dealStage:map.stageOrder, funnel:map.funnelId }); }
+        try{ await agendorSetDealStage(dealId, map); }
         catch(e){ console.warn('CRM: PUT de reforço da etapa falhou —',e.message); stageWarn=`Negócio criado, mas não travou na etapa "${map.stageName}": ${e.message}`; }
       }
     }
@@ -2239,7 +2321,7 @@ async function syncAgendorDealStage(lead){
   const map=agendorStageFor(lead);
   if(!map||!map.stageId) return;
   try{
-    await agendorRequest(`/deals/${lead.agendorDealId}`,'PUT',{ dealStage:map.stageOrder, funnel:map.funnelId });
+    await agendorSetDealStage(lead.agendorDealId, map);
     await sb.from('leads').update({ agendor_funnel:map.funnelName, agendor_status:'ok', agendor_error:null }).eq('id',lead.id);
     Object.assign(lead,{ agendorFunnel:map.funnelName, agendorStatus:'ok', agendorError:null });
   }catch(err){
@@ -2301,7 +2383,7 @@ async function sendCallToAgendor(id, silent=false){
     // negócio no funil conforme o tipo do lead vinculado (empresário→Empresários, comum→Negócios)
     const linked=call.leadId?S.leads.find(l=>l.id===call.leadId):null;
     const map=agendorStageFor(linked||{});
-    if(personId&&map&&map.stageId){ try{ await agendorRequest(`/people/${personId}/deals`,'POST',{ title:(call.name||'Lead')+' — '+map.funnelName, dealStage:map.stageOrder, funnel:map.funnelId, description:`Ligação interessada (IGProspect) · funil ${map.funnelName}.` }); }catch(e){} }
+    if(personId&&map&&map.stageId){ try{ await agendorCreateDeal(personId, map, (call.name||'Lead')+' — '+map.funnelName, `Ligação interessada (IGProspect) · funil ${map.funnelName}.`); }catch(e){} }
     if(personId){ const when=call.at||new Date().toISOString(); const txt=`Ligação (${COM()[call.outcome]||call.outcome})`+(call.duration?` · ${call.duration} min`:'')+(call.notes?` — ${call.notes}`:''); try{ await agendorRequest(`/people/${personId}/tasks`,'POST',{ text:txt, type:'Ligação', dueDate:when, done:true }); }catch(e){} }
     toast('Ligação enviada ao CRM ✓','success');
   }catch(err){ toast('Falha ao enviar ligação ao CRM: '+err.message,'error'); agendorCorsHint(err.message); }
@@ -2680,7 +2762,7 @@ function renderSettings(){
     <div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(16,185,129,.12)"><svg viewBox="0 0 24 24" fill="none" stroke="#6EE7B7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></div><div><div class="st-title">Integração CRM</div><div class="st-sub">Envia leads e ligações ao CRM · compartilhada no espaço</div></div></div>
       <div class="stg-bd">
       ${!owner?`<div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Status</div><div class="stg-ri-s">${agendorOn()?'☁ Conectado ao CRM':'Não configurado'}</div></div></div><div class="stg-ri-s">Só o dono da equipe pode editar a integração com o CRM.</div>`:`
-        <div class="stg-field"><label class="stg-label">Token da API</label><input class="stg-input" type="password" id="st-token" value="${esc(S.org&&S.org.agendor_token||'')}" placeholder="Cole o token"></div>
+        <div class="stg-field"><label class="stg-label">Token da API</label><input class="stg-input" type="password" id="st-token" value="${esc(S.org&&S.org.agendor_token||'')}" placeholder="Cole o token"><div class="stg-hint" style="font-size:.72rem;color:var(--t2);margin-top:5px">Token pessoal do Hub do Corretor: <b>CRM → Configurações → aba "Token da API" → Mostrar</b>. Vale a conta inteira, não só o CRM — melhor criar um usuário só pro IGProspect.</div></div>
         <div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Envio automático</div><div class="stg-ri-s">Ao chegar na última etapa de um funil, envia sozinho ao CRM</div></div><label style="cursor:pointer"><input type="checkbox" id="st-auto" ${agendorAutoOn()?'checked':''} style="width:20px;height:20px;cursor:pointer;accent-color:#10B981"></label></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary" id="st-save">Salvar integração</button><button class="btn btn-outline" id="ag-test">Testar conexão</button></div>
         <div style="height:1px;background:rgba(255,255,255,.06);margin:4px 0"></div>

@@ -4,7 +4,7 @@
   "version": "1.10.3",
   "description": "CRM no Instagram: detecta perfis, rastreia leads, converte por contato, sincroniza com CRM e com o Painel Privado.",
   "permissions": ["storage"],
-  "host_permissions": ["https://api.agendor.com.br/*", "https://guuecwrhwuzbwfetehix.supabase.co/*"],
+  "host_permissions": ["https://hubcorretorconsorcio.com.br/*", "https://guuecwrhwuzbwfetehix.supabase.co/*"],
   "background": {
     "service_worker": "background.js"
   },

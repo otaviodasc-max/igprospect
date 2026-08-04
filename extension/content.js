@@ -704,6 +704,9 @@
         title: dealTitle,
         dealStage: map.stageOrder,
         funnel: map.funnelId,
+        // id real da etapa — o Hub do Corretor usa dealStageId, o Agendor usava
+        // a posição em dealStage. O background.js manda os dois.
+        dealStageId: map.stageId,
         description: `Origem: Redes sociais\nEnviado pelo IGProspect (funil ${map.funnelName}).`,
       }
     }, resp=>{
