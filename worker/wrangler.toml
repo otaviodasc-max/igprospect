@@ -8,4 +8,8 @@
 # Confira com:  npx wrangler deployments list --name sweet-butterfly-7f2b
 name = "sweet-butterfly-7f2b"
 main = "hub-proxy.js"
+# Conta otaviodasc@gmail.com — a dona do subdomínio otaviodasc.workers.dev.
+# Fixado aqui porque o wrangler estava reaproveitando o account_id de outra
+# conta em cache mesmo depois do logout/login, e o deploy ia pro lugar errado.
+account_id = "c216662ef27aa60e1bcd1f58ed6cb021"
 compatibility_date = "2025-01-01"

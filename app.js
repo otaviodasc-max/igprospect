@@ -2134,7 +2134,12 @@ async function agendorRequest(path, method='GET', body=null){
 
   const { res, json } = last;
   if(!res.ok){
-    const msg=json&&json.errors ? (Array.isArray(json.errors)?json.errors.join('; '):JSON.stringify(json.errors)) : ('HTTP '+res.status);
+    // O Agendor devolvia {errors:[...]}; o Hub do Corretor devolve
+    // {detail:"..."}. Sem ler as duas formas, todo erro do Hub virava um
+    // "HTTP 401" cru na tela, escondendo a mensagem que explica o problema.
+    const msg = (json && json.errors) ? (Array.isArray(json.errors)?json.errors.join('; '):JSON.stringify(json.errors))
+              : (json && (json.detail||json.message)) ? String(json.detail||json.message)
+              : ('HTTP '+res.status);
     const err=new Error(msg); err.status=res.status; throw err;
   }
   return json;
