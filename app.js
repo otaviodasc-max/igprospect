@@ -2233,7 +2233,11 @@ async function agendorSetDealStage(dealId, map){
       return await agendorRequest(`/deals/${dealId}`,'PATCH',body);
     }catch(err2){
       if(err2.status!==404 && err2.status!==405) throw err2;
-      throw new Error('O CRM não aceita mudar a etapa de um negócio já criado (sem PUT/PATCH em /deals). O negócio fica na etapa em que nasceu.');
+      const e=new Error('O CRM não aceita mudar a etapa de um negócio já criado (sem PUT/PATCH em /deals). O negócio fica na etapa em que nasceu.');
+      // Marca que a ROTA não existe (≠ a rota existir e recusar a mudança).
+      // Quem acabou de criar o negócio usa isso pra não gritar: a etapa já
+      // foi no POST de criação, então não ter PUT ali não é falha nenhuma.
+      e.noStageRoute=true; throw e;
     }
   }
 }
@@ -2305,7 +2309,13 @@ async function sendLeadToAgendor(id, silent=false){
       // aparecer — antes ficava engolido sem log nenhum.
       if(dealId){
         try{ await agendorSetDealStage(dealId, map); }
-        catch(e){ console.warn('CRM: PUT de reforço da etapa falhou —',e.message); stageWarn=`Negócio criado, mas não travou na etapa "${map.stageName}": ${e.message}`; }
+        catch(e){
+          console.warn('CRM: PUT de reforço da etapa falhou —',e.message);
+          // Se a rota de mudar etapa simplesmente não existe nesse CRM, o
+          // reforço era só um "cinto e suspensório" — a etapa já foi no POST.
+          // Marcar ⚠ aqui fazia todo envio bem-sucedido parecer erro.
+          if(!e.noStageRoute) stageWarn=`Negócio criado, mas não travou na etapa "${map.stageName}": ${e.message}`;
+        }
       }
     }
     await sb.from('leads').update({ agendor_person_id:personId?String(personId):null, agendor_deal_id:dealId?String(dealId):null, agendor_funnel:map.funnelName, agendor_status:stageWarn?'failed':'ok', agendor_error:stageWarn }).eq('id',id);
