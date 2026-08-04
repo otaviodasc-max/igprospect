@@ -1,0 +1,11 @@
+# Config de deploy do Worker de proxy do CRM (ver hub-proxy.js).
+#
+# ATENÇÃO ao "name": ele precisa bater EXATAMENTE com o nome do Worker que já
+# existe na Cloudflare. O valor abaixo foi deduzido da URL publicada
+# (https://sweet-butterfly-7f2b.otaviodasc.workers.dev), mas não foi
+# confirmado no painel. Se o nome real for outro, o deploy CRIA UM WORKER
+# NOVO em vez de atualizar o atual — e o painel continua batendo no antigo.
+# Confira com:  npx wrangler deployments list --name sweet-butterfly-7f2b
+name = "sweet-butterfly-7f2b"
+main = "hub-proxy.js"
+compatibility_date = "2025-01-01"
