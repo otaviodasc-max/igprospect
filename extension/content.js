@@ -183,7 +183,7 @@
     orgCodeInput: '',
     orgMembers: [],  // membros da equipe conectada, pra escolher "quem é você" (doPickProspector)
     pipelineStages: null, // etapas reais do funil da equipe (ver currentStatuses/mapPipelineStages)
-    agendorMap: null, // mapeamento etapa→funil/etapa do Agendor (Configurações → Integração Agendor), ver agendorStageFor
+    agendorMap: null, // mapeamento etapa→funil/etapa do CRM (Configurações → Integração CRM), ver agendorStageFor
   };
 
   // ═══════════════════════════════════════════════
@@ -650,7 +650,7 @@
   // ═══════════════════════════════════════════════
   // AGENDOR INTEGRATION
   // ═══════════════════════════════════════════════
-  // Nome bonito da PESSOA no Agendor: "Nome Real (@usuario)". O título do
+  // Nome bonito da PESSOA no CRM: "Nome Real (@usuario)". O título do
   // negócio usa agendorDealTitle (só o nome) — ver syncAgendor abaixo.
   function agendorName(lead){
     const nm=(lead.name||'').trim();
@@ -674,10 +674,10 @@
 
   function syncAgendor(lead) {
     if (!lead.phone) return;
-    // Sem token não dá pra saber se a equipe simplesmente não usa Agendor ou
+    // Sem token não dá pra saber se a equipe simplesmente não usa CRM ou
     // esqueceu de configurar — avisa sempre que marcar "Enviou Contato", já
     // que antes o envio só sumia em silêncio (nenhum toast, nenhum log).
-    if (!S.agendorToken) { toast('☁ Token do Agendor não configurado no sistema — configure em Configurações → Integração Agendor e reconecte a equipe aqui.','err'); return; }
+    if (!S.agendorToken) { toast('☁ Token do CRM não configurado no sistema — configure em Configurações → Integração CRM e reconecte a equipe aqui.','err'); return; }
     if (lead.agendorManual||lead.agendorId) return;
     // Sem destino mapeado pra etapa atual, não envia — mesma regra do painel
     // (Configurações → Roteamento por etapa: "etapas sem mapeamento não são
@@ -707,7 +707,7 @@
         description: `Origem: Redes sociais\nEnviado pelo IGProspect (funil ${map.funnelName}).`,
       }
     }, resp=>{
-      if (chrome.runtime.lastError) { S.agendorStatus[lead.id]='error'; toast('Erro ao conectar com Agendor','err'); renderBody(); return; }
+      if (chrome.runtime.lastError) { S.agendorStatus[lead.id]='error'; toast('Erro ao conectar com CRM','err'); renderBody(); return; }
       if (resp&&resp.ok) {
         S.agendorStatus[lead.id]='ok';
         const agendorId = resp.data&&(resp.data.id||(resp.data.data&&resp.data.data.id));
@@ -715,12 +715,12 @@
         db.save({igp_l:S.leads});
         // Sem isso, o painel nunca fica sabendo que ESTE envio (direto da
         // extensão) já criou pessoa+negócio — o lead ficava com o botão
-        // manual "→ Agendor" pra sempre, mesmo já existindo lá de verdade.
+        // manual "→ CRM" pra sempre, mesmo já existindo lá de verdade.
         if(agendorId) syncLeadUpdateDirect(lead.id,{agendorPersonId:agendorId, agendorDealId:resp.dealId||null, agendorFunnel:map.funnelName});
-        toast(resp.dealId?`✓ Enviado ao Agendor → funil ${map.funnelName}!`:'✓ Sincronizado com Agendor!','ok');
+        toast(resp.dealId?`✓ Enviado ao CRM → funil ${map.funnelName}!`:'✓ Sincronizado com CRM!','ok');
       } else {
         S.agendorStatus[lead.id]='error';
-        toast('Erro no Agendor: '+(resp&&resp.status?`status ${resp.status}`:'sem resposta'),'err');
+        toast('Erro no CRM: '+(resp&&resp.status?`status ${resp.status}`:'sem resposta'),'err');
       }
       renderBody();
     });
@@ -992,8 +992,8 @@
                 ${wa||(S.agendorToken&&!l.agendorId&&agSt!=='ok'&&!l.agendorManual)||l.agendorId||agSt==='ok'||l.agendorManual?`
                   <div style="display:flex;flex-wrap:wrap;gap:6px">
                     ${wa?`<a href="${wa}" target="_blank" style="font-size:11px;color:#25d366;background:rgba(37,211,102,0.1);border:1px solid rgba(37,211,102,0.2);border-radius:6px;padding:3px 8px;text-decoration:none;font-weight:600">WhatsApp ↗</a>`:''}
-                    ${S.agendorToken&&!l.agendorId&&agSt!=='ok'&&!l.agendorManual?`<button class="btn-agendor" data-a="sync-agendor" data-lid="${l.id}">${agSt==='syncing'?'⏳ Sync...':'☁ Agendor'}</button>${agSt!=='syncing'?`<button class="btn-sm" data-a="mark-agendor" data-lid="${l.id}" title="Marcar que já está no Agendor">✓ Já no Agendor</button>`:''}`:''}
-                    ${l.agendorId||agSt==='ok'||l.agendorManual?`<span style="font-size:11px;color:#4ade80;background:rgba(74,222,128,0.1);border:1px solid rgba(74,222,128,0.2);border-radius:6px;padding:3px 8px">✓ Agendor</span>`:''}
+                    ${S.agendorToken&&!l.agendorId&&agSt!=='ok'&&!l.agendorManual?`<button class="btn-agendor" data-a="sync-agendor" data-lid="${l.id}">${agSt==='syncing'?'⏳ Sync...':'☁ CRM'}</button>${agSt!=='syncing'?`<button class="btn-sm" data-a="mark-agendor" data-lid="${l.id}" title="Marcar que já está no CRM">✓ Já no CRM</button>`:''}`:''}
+                    ${l.agendorId||agSt==='ok'||l.agendorManual?`<span style="font-size:11px;color:#4ade80;background:rgba(74,222,128,0.1);border:1px solid rgba(74,222,128,0.2);border-radius:6px;padding:3px 8px">✓ CRM</span>`:''}
                   </div>
                 `:''}
               </div>
@@ -1020,8 +1020,8 @@
               `:''}
             </div>
             ${isContacted(l.status)&&l.phone?'':(l.agendorId||agSt==='ok'||l.agendorManual
-              ?`<button class="btn-sm" data-a="unmark-agendor" data-lid="${l.id}" style="color:#4ade80;border-color:rgba(74,222,128,0.3);font-size:10px" title="Clique para desmarcar">✓ Agendor</button>`
-              :`<button class="btn-sm" data-a="mark-agendor" data-lid="${l.id}" style="font-size:10px" title="Marcar que já está no Agendor">Agendor?</button>`)}
+              ?`<button class="btn-sm" data-a="unmark-agendor" data-lid="${l.id}" style="color:#4ade80;border-color:rgba(74,222,128,0.3);font-size:10px" title="Clique para desmarcar">✓ CRM</button>`
+              :`<button class="btn-sm" data-a="mark-agendor" data-lid="${l.id}" style="font-size:10px" title="Marcar que já está no CRM">CRM?</button>`)}
             <button data-a="del-lead" data-lid="${l.id}" style="background:transparent;border:none;color:#333;cursor:pointer;font-size:14px;line-height:1;padding:2px">✕</button>
           </div>
         </div>
@@ -1088,10 +1088,10 @@
                 <div style="display:flex;gap:5px;justify-content:flex-end;flex-wrap:wrap">
                   <button class="btn-sm" data-a="copy-phone" data-phone="${esc(l.phone||'')}">Copiar</button>
                   ${wa?`<a href="${wa}" target="_blank" style="background:rgba(37,211,102,0.1);border:1px solid rgba(37,211,102,0.2);border-radius:7px;padding:4px 10px;color:#25d366;font-size:11px;font-weight:600;text-decoration:none">WA ↗</a>`:''}
-                  ${S.agendorToken&&!l.agendorId&&agSt!=='ok'&&!l.agendorManual?`<button class="btn-agendor" data-a="sync-agendor" data-lid="${l.id}">${agSt==='syncing'?'⏳':'☁ Agendor'}</button>`:''}
+                  ${S.agendorToken&&!l.agendorId&&agSt!=='ok'&&!l.agendorManual?`<button class="btn-agendor" data-a="sync-agendor" data-lid="${l.id}">${agSt==='syncing'?'⏳':'☁ CRM'}</button>`:''}
                   ${l.agendorId||agSt==='ok'||l.agendorManual
-                    ?`<button class="btn-sm" data-a="unmark-agendor" data-lid="${l.id}" style="color:#4ade80;border-color:rgba(74,222,128,0.3)" title="Clique para desmarcar">✓ Agendor</button>`
-                    :`<button class="btn-sm" data-a="mark-agendor" data-lid="${l.id}" title="Marcar que já está no Agendor">✓ Já no Agendor</button>`}
+                    ?`<button class="btn-sm" data-a="unmark-agendor" data-lid="${l.id}" style="color:#4ade80;border-color:rgba(74,222,128,0.3)" title="Clique para desmarcar">✓ CRM</button>`
+                    :`<button class="btn-sm" data-a="mark-agendor" data-lid="${l.id}" title="Marcar que já está no CRM">✓ Já no CRM</button>`}
                 </div>
               </div>
             </div>
@@ -1133,9 +1133,9 @@
       </div>
 
       <div class="card" style="margin-bottom:10px;border-color:rgba(74,222,128,0.2)">
-        <div style="font-weight:600;font-size:13px;color:#4ade80;margin-bottom:4px">☁ Integração Agendor CRM</div>
+        <div style="font-weight:600;font-size:13px;color:#4ade80;margin-bottom:4px">☁ Integração CRM</div>
         <div style="font-size:12px;color:#555;line-height:1.5">O token já é o mesmo configurado nas Configurações do sistema — puxado sozinho ao conectar a equipe acima, não precisa colar de novo aqui.</div>
-        ${S.agendorToken?`<div style="font-size:11px;color:#4ade80;margin-top:8px">✓ Token configurado — sincronização automática ativa</div>`:`<div style="font-size:11px;color:#555;margin-top:8px">Sem token — configure a integração com o Agendor no sistema (Configurações) e reconecte a equipe aqui.</div>`}
+        ${S.agendorToken?`<div style="font-size:11px;color:#4ade80;margin-top:8px">✓ Token configurado — sincronização automática ativa</div>`:`<div style="font-size:11px;color:#555;margin-top:8px">Sem token — configure a integração com o CRM no sistema (Configurações) e reconecte a equipe aqui.</div>`}
       </div>
 
       <div class="card" style="margin-bottom:10px">
@@ -1196,8 +1196,8 @@
       case 'save-notes':   doSaveNotes(); break;
       case 'cancel-notes': S.notesLeadId=null; S.notesInput=''; renderBody(); break;
       case 'sync-agendor': { const lead=S.leads.find(l=>l.id===lid); if(lead) syncAgendor(lead); break; }
-      case 'mark-agendor': { S.leads=S.leads.map(l=>l.id===lid?{...l,agendorManual:true}:l); db.save({igp_l:S.leads}); renderBody(); toast('Marcado como já no Agendor','ok'); break; }
-      case 'unmark-agendor': { S.leads=S.leads.map(l=>l.id===lid?{...l,agendorManual:false,agendorId:undefined}:l); db.save({igp_l:S.leads}); delete S.agendorStatus[lid]; renderBody(); toast('Desmarcado do Agendor','info'); break; }
+      case 'mark-agendor': { S.leads=S.leads.map(l=>l.id===lid?{...l,agendorManual:true}:l); db.save({igp_l:S.leads}); renderBody(); toast('Marcado como já no CRM','ok'); break; }
+      case 'unmark-agendor': { S.leads=S.leads.map(l=>l.id===lid?{...l,agendorManual:false,agendorId:undefined}:l); db.save({igp_l:S.leads}); delete S.agendorStatus[lid]; renderBody(); toast('Desmarcado do CRM','info'); break; }
       case 'copy-phone':
         navigator.clipboard?.writeText(el.dataset.phone).then(()=>{el.textContent='✓';setTimeout(()=>{el.textContent='Copiar';},2000);});
         break;
@@ -1371,17 +1371,17 @@
       // Reseta a trava de segurança também — é um contador por equipe conectada,
       // não faz sentido carregar o ritmo da equipe anterior pra essa nova.
       recentSyncTimes=[]; syncPaused=false;
-      // CRÍTICO: também zera as etapas/mapeamento do Agendor cacheados — sem
+      // CRÍTICO: também zera as etapas/mapeamento do CRM cacheados — sem
       // isso, se o pullPipeline() da equipe nova demorar ou falhar por
       // qualquer motivo, a extensão continuava usando as etapas (e as KEYS)
-      // da equipe ANTERIOR pra decidir status/Agendor da equipe nova, o que
+      // da equipe ANTERIOR pra decidir status/CRM da equipe nova, o que
       // é pior que usar o fallback genérico: as keys de uma equipe não têm
       // NENHUMA relação com as da outra. Cai no DEFAULT_STATUSES até o pull
       // da equipe nova confirmar as etapas de verdade dela.
       S.pipelineStages=null; S.agendorMap=null;
       // SEMPRE substitui o token pelo da equipe nova, mesmo vazio — antes só
       // atualizava quando a equipe TINHA token, então conectar numa equipe
-      // sem Agendor mantinha o token cacheado de uma equipe anterior (ex.: de
+      // sem CRM mantinha o token cacheado de uma equipe anterior (ex.: de
       // teste), e a extensão mostrava "Token configurado" com o campo vazio
       // no sistema.
       S.agendorToken=res.org.agendor_token||'';
@@ -1413,7 +1413,7 @@
     });
   }
   // Mesma lógica do painel (app.js agendorStageFor): decide o destino no
-  // Agendor conforme a ETAPA ATUAL do lead — mapeamento por etapa primeiro,
+  // CRM conforme a ETAPA ATUAL do lead — mapeamento por etapa primeiro,
   // formato antigo "achatado" só como último recurso.
   function agendorStageFor(lead){
     const map=S.agendorMap; if(!map) return null;
@@ -1430,7 +1430,7 @@
       if(!res||!res.ok){ console.warn('IGProspect: falha ao puxar leads do sistema', res&&res.error); return; }
       const server=res.leads||[];
       // Mescla por cima do que já existe localmente — preserva campos que só
-      // vivem na extensão (notas, marcação manual de Agendor, etc.) em vez de
+      // vivem na extensão (notas, marcação manual de CRM, etc.) em vez de
       // substituir o lead inteiro pela versão "enxuta" que vem do servidor.
       const localById=new Map(S.leads.map(l=>[String(l.id),l]));
       const merged=server.map(l=>{

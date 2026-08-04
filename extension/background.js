@@ -185,7 +185,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           });
           const ddata = await dr.json().catch(() => ({}));
           dealId = (ddata && ddata.data && ddata.data.id) || (ddata && ddata.id) || null;
-          // Reforço: o Agendor às vezes não respeita dealStage já no POST de
+          // Reforço: o CRM às vezes não respeita dealStage já no POST de
           // criação — um PUT logo depois garante que o negócio nasça na
           // etapa certa (mesma lógica do painel, ver app.js sendLeadToAgendor).
           if (dealId) {

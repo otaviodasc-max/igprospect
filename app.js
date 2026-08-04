@@ -204,14 +204,14 @@ async function bulkDeleteLeads(){
   const error=await deleteInChunks('leads',ids);
   if(error){ toast(error.message,'error'); return; }
   for(const l of agLeads){ await deleteFromAgendor(l); }
-  selReset(); closeModal(); toast(`${ids.length} lead(s) excluído(s)${agLeads.length?` · ${agLeads.length} do Agendor`:''}`,'success');
+  selReset(); closeModal(); toast(`${ids.length} lead(s) excluído(s)${agLeads.length?` · ${agLeads.length} do CRM`:''}`,'success');
   await loadLeads(); await loadDeals(); renderShell();
 }
-// Pergunta se os leads sem registro no Agendor já estão cadastrados lá (não reenviar)
+// Pergunta se os leads sem registro no CRM já estão cadastrados lá (não reenviar)
 // ou se devem ser enviados agora. Retorna true=enviar, false=já estão lá, null=cancelou.
 function askAlreadyInAgendor(n){
   return new Promise(resolve=>{
-    openModal(`<div class="modal-ov"><div class="modal-box" style="max-width:460px"><div class="modal-hd"><div><div class="modal-title">Enviar ao Agendor?</div><div class="modal-sub">${n} lead(s) selecionado(s) sem registro no Agendor</div></div><div class="x" id="ag-ask-x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div></div><div class="modal-bd"><p class="confirm-txt">Esses leads já estão cadastrados no Agendor (ex.: você importou eles de lá) ou preciso enviá-los agora?</p></div><div class="modal-ft"><button class="btn btn-outline" id="ag-ask-already">☁ Já estão no Agendor</button><button class="btn btn-primary" id="ag-ask-send">Enviar ao Agendor</button></div></div></div>`);
+    openModal(`<div class="modal-ov"><div class="modal-box" style="max-width:460px"><div class="modal-hd"><div><div class="modal-title">Enviar ao CRM?</div><div class="modal-sub">${n} lead(s) selecionado(s) sem registro no CRM</div></div><div class="x" id="ag-ask-x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div></div><div class="modal-bd"><p class="confirm-txt">Esses leads já estão cadastrados no CRM (ex.: você importou eles de lá) ou preciso enviá-los agora?</p></div><div class="modal-ft"><button class="btn btn-outline" id="ag-ask-already">☁ Já estão no CRM</button><button class="btn btn-primary" id="ag-ask-send">Enviar ao CRM</button></div></div></div>`);
     const finish=v=>{ closeModal(); resolve(v); };
     $('ag-ask-x').onclick=()=>finish(null);
     $('ag-ask-already').onclick=()=>finish(false);
@@ -222,7 +222,7 @@ function askAlreadyInAgendor(n){
 // 1=Chamado, 2=Respondeu, 'last'=Enviou Contato (posição na lista de etapas
 // do FUNIL DE CADA LEAD, respeitando funis customizados). Ao mover pra "Enviou
 // Contato" a negociação é criada automaticamente (mesmo trigger do banco usado
-// no fluxo individual/CRM), e — se o Agendor estiver configurado — pergunta se
+// no fluxo individual/CRM), e — se o CRM estiver configurado — pergunta se
 // os leads sem registro lá já estão cadastrados, pra não duplicar.
 async function bulkSetLeadsStage(idx){
   const ids=[...S.sel.ids]; if(!ids.length){ toast('Selecione ao menos um lead','warn'); return; }
@@ -704,12 +704,12 @@ function renderLeads(){
   const niches=[...new Set(S.leads.map(l=>l.niche||'').filter(Boolean))].sort();
   const rows=slice.length?slice.map(l=>{ const pl=leadPipeline(l); return `<tr data-id="${esc(l.id)}"${S.sel.mode&&S.sel.ids.has(l.id)?' style="background:rgba(99,102,241,.08)"':''}>
     ${selCell(l.id)}
-    <td class="tdcell-hd"><div class="lead-cell"><div class="avatar">${esc(ini(l.name||l.username))}</div><div><div class="lead-nm">${esc(l.name||'—')}${S.pipelines.length>1?` <span class="tag" style="background:rgba(99,102,241,.14);color:#A5B4FC;border-color:rgba(99,102,241,.25)">${esc(pl?pl.icon:'')} ${esc(pl?pl.name:'')}</span>`:''}</div><div class="lead-un">${l.username?'@'+esc(l.username):esc(l.phone||'—')}${agendorOn()&&l.agendorPersonId?' <span style="font-size:.63rem;color:#6EE7B7;font-weight:600;white-space:nowrap">☁ Agendor</span>':agendorOn()&&l.agendorStatus==='failed'?` <span data-tip="${esc(l.agendorError||'Falha ao enviar ao Agendor')}" style="font-size:.63rem;color:#FCA5A5;font-weight:600;white-space:nowrap;cursor:help">⚠ Agendor</span>`:''}</div></div></div></td>
+    <td class="tdcell-hd"><div class="lead-cell"><div class="avatar">${esc(ini(l.name||l.username))}</div><div><div class="lead-nm">${esc(l.name||'—')}${S.pipelines.length>1?` <span class="tag" style="background:rgba(99,102,241,.14);color:#A5B4FC;border-color:rgba(99,102,241,.25)">${esc(pl?pl.icon:'')} ${esc(pl?pl.name:'')}</span>`:''}</div><div class="lead-un">${l.username?'@'+esc(l.username):esc(l.phone||'—')}${agendorOn()&&l.agendorPersonId?' <span style="font-size:.63rem;color:#6EE7B7;font-weight:600;white-space:nowrap">☁ CRM</span>':agendorOn()&&l.agendorStatus==='failed'?` <span data-tip="${esc(l.agendorError||'Falha ao enviar ao CRM')}" style="font-size:.63rem;color:#FCA5A5;font-weight:600;white-space:nowrap;cursor:help">⚠ CRM</span>`:''}</div></div></div></td>
     <td data-label="Status"><span class="badge" style="background:${stColor(l)}22;color:${stColor(l)};border:1px solid ${stColor(l)}44">${stLabel(l)}</span>${featOn('deals')&&S.deals.some(d=>d.leadId===l.id)?` <span class="tag" data-tip="Já tem negociação — clique para ver/adicionar outra" style="background:rgba(16,185,129,.14);color:#6EE7B7;border-color:rgba(16,185,129,.3);cursor:help">💼 Negociação</span>`:''}</td>
     <td data-label="Nicho">${l.niche?`<span class="tag">${esc(l.niche)}</span>`:'<span style="color:var(--t3)">—</span>'}</td>
     <td data-label="Adicionado" style="color:var(--t2);font-size:.73rem">${fmtDate(l.addedAt)}</td>
     <td data-label="Notas" style="font-size:.72rem;color:var(--t3);max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(l.notes||'—')}</td>
-    <td class="tdcell-acts"><div class="tbl-acts">${agendorOn()?(l.agendorPersonId?`<button class="act-btn" data-agrm="${esc(l.id)}" style="color:#6EE7B7" title="Remover do Agendor (mantém no sistema)">☁ Tirar do Agendor</button>`:`<button class="act-btn" data-ag="${esc(l.id)}" style="color:#6EE7B7">→ Agendor</button>`):''}<button class="act-btn" data-edit="${esc(l.id)}">Editar</button><button class="act-btn act-del" data-del="${esc(l.id)}">Excluir</button></div></td></tr>`; }).join('')
+    <td class="tdcell-acts"><div class="tbl-acts">${agendorOn()?(l.agendorPersonId?`<button class="act-btn" data-agrm="${esc(l.id)}" style="color:#6EE7B7" title="Remover do CRM (mantém no sistema)">☁ Tirar do CRM</button>`:`<button class="act-btn" data-ag="${esc(l.id)}" style="color:#6EE7B7">→ CRM</button>`):''}<button class="act-btn" data-edit="${esc(l.id)}">Editar</button><button class="act-btn act-del" data-del="${esc(l.id)}">Excluir</button></div></td></tr>`; }).join('')
     :`<tr><td colspan="${S.sel.mode?7:6}"><div class="empty-state"><div class="empty-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div><div class="empty-title">Nenhum lead encontrado</div><div class="empty-sub">Tente outros filtros ou cadastre um lead.</div></div></td></tr>`;
   let pag=''; if(pages>1){ pag+=`<button class="pag-btn" data-pg="${S.lf.page-1}" ${S.lf.page<=1?'disabled':''}>‹</button>`; for(let i=1;i<=pages;i++){ if(i===1||i===pages||Math.abs(i-S.lf.page)<=1)pag+=`<button class="pag-btn${i===S.lf.page?' active':''}" data-pg="${i}">${i}</button>`; else if(Math.abs(i-S.lf.page)===2)pag+='<span style="color:var(--t3);padding:0 3px">…</span>'; } pag+=`<button class="pag-btn" data-pg="${S.lf.page+1}" ${S.lf.page>=pages?'disabled':''}>›</button>`; }
   const from=(S.lf.page-1)*PAGE_SIZE+1,to=Math.min(S.lf.page*PAGE_SIZE,all.length);
@@ -720,7 +720,7 @@ function renderLeads(){
   const niOpts=['',...niches].map(n=>`<option value="${esc(n)}" ${S.lf.niche===n?'selected':''}>${n||'Todos os nichos'}</option>`).join('');
   const soOpts=[['newest','Mais recentes'],['oldest','Mais antigos'],['name','Nome A–Z']].map(([v,l])=>`<option value="${v}" ${S.lf.sort===v?'selected':''}>${l}</option>`).join('');
   const periodLeads=inPeriod(S.leads,S.period); const nIn=periodLeads.filter(l=>!!l.agendorPersonId).length; const nOut=periodLeads.length-nIn;
-  const agSegs=[['','Todos',periodLeads.length],['in','☁ No Agendor',nIn],['out','Fora do Agendor',nOut]].map(([v,l,n])=>`<div class="period-tab${S.lf.ag===v?' active':''}" data-leadag="${v}">${l} <span style="opacity:.6">(${n})</span></div>`).join('');
+  const agSegs=[['','Todos',periodLeads.length],['in','☁ No CRM',nIn],['out','Fora do CRM',nOut]].map(([v,l,n])=>`<div class="period-tab${S.lf.ag===v?' active':''}" data-leadag="${v}">${l} <span style="opacity:.6">(${n})</span></div>`).join('');
   const NOTE_PRESETS=['Perdido','Sem interesse','Sem retorno'];
   const noteChips=NOTE_PRESETS.map(t=>`<div class="period-tab${(S.lf.note||'').toLowerCase()===t.toLowerCase()?' active':''}" data-note="${esc(t)}">${t}</div>`).join('');
   $('content').innerHTML=`<div class="tbl-controls" style="margin-bottom:10px"><div class="period-tabs" id="leads-ag-tabs">${agSegs}</div></div><div class="tbl-controls">
@@ -820,7 +820,7 @@ function leadForm(id){
       <button class="btn btn-outline btn-sm" id="lf-add-deal">+ Novo negócio</button>
     </div>
     ${leadDeals.length?leadDeals.map(d=>`<div class="stg-row" data-dealrow="${esc(d.id)}" style="cursor:pointer;padding:9px 0;border-bottom:1px solid var(--border)"><div class="stg-ri"><div class="stg-ri-t">${esc(d.cardType||'Negócio sem tipo')}${d.cardValue?` · ${fmtCurrency(d.cardValue)}`:''}</div><div class="stg-ri-s">${esc((DEAL_SM()[d.status]||{}).label||d.status)} · criado em ${fmtDate(d.createdAt)}</div></div><span class="text-link" style="font-size:.72rem">Ver →</span></div>`).join(''):'<div class="empty-sub">Nenhum negócio cadastrado ainda.</div>'}`:'';
-  openModal(`<div class="modal-ov"><div class="modal-box"><div class="modal-hd"><div><div class="modal-title">${id?'Editar Lead':'Cadastrar Lead'}</div><div class="modal-sub">${id?(l&&l.agendorPersonId&&agendorOn()?'Atualize os dados · <span style="color:#6EE7B7;font-size:.75rem">☁ Já no Agendor</span>':'Atualize os dados'):'Adicione manualmente'}</div></div><div class="x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div></div>
+  openModal(`<div class="modal-ov"><div class="modal-box"><div class="modal-hd"><div><div class="modal-title">${id?'Editar Lead':'Cadastrar Lead'}</div><div class="modal-sub">${id?(l&&l.agendorPersonId&&agendorOn()?'Atualize os dados · <span style="color:#6EE7B7;font-size:.75rem">☁ Já no CRM</span>':'Atualize os dados'):'Adicione manualmente'}</div></div><div class="x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div></div>
     <div class="modal-bd"><div class="form-grid">
       <div class="fld full"><label>Nome</label><input id="f-name" value="${esc(l&&l.name||'')}" placeholder="Nome do contato"></div>
       <div class="fld"><label>@usuário</label><input id="f-user" value="${esc(l&&l.username||'')}" placeholder="usuario"></div>
@@ -830,7 +830,7 @@ function leadForm(id){
       <div class="fld"><label>Status</label><select id="f-status">${stOptsFor(curPl)}</select></div>
       ${extraHtml}
       <div class="fld full"><label>Observações</label><textarea id="f-notes" placeholder="Notas…">${esc(l&&l.notes||'')}</textarea><div id="f-note-chips" style="margin-top:6px"></div></div>
-    </div>${agendorOn()&&!(l&&l.agendorPersonId)?`<label style="display:flex;align-items:center;gap:9px;margin-top:10px;padding:10px 12px;background:rgba(110,231,183,.07);border:1px solid rgba(110,231,183,.2);border-radius:9px;cursor:pointer"><input type="checkbox" id="f-ag-exists" style="width:16px;height:16px;accent-color:#6EE7B7;cursor:pointer"><span style="font-size:.78rem;color:var(--t2)">☁ Lead já está no Agendor (não enviar novamente)</span></label>`:''}${dealsSection}</div>
+    </div>${agendorOn()&&!(l&&l.agendorPersonId)?`<label style="display:flex;align-items:center;gap:9px;margin-top:10px;padding:10px 12px;background:rgba(110,231,183,.07);border:1px solid rgba(110,231,183,.2);border-radius:9px;cursor:pointer"><input type="checkbox" id="f-ag-exists" style="width:16px;height:16px;accent-color:#6EE7B7;cursor:pointer"><span style="font-size:.78rem;color:var(--t2)">☁ Lead já está no CRM (não enviar novamente)</span></label>`:''}${dealsSection}</div>
     <div class="modal-ft"><button class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" id="f-save">${id?'Salvar':'Cadastrar'}</button></div></div></div>`);
   $('f-pipeline')&&($('f-pipeline').onchange=e=>{ const p=pipelineById(e.target.value); $('f-status').innerHTML=stOptsFor(p); refreshNoteChips('f-note-chips','f-notes',leadStageNotePresets(p,$('f-status').value)); });
   $('f-status').onchange=e=>{ const p=$('f-pipeline')?pipelineById($('f-pipeline').value):curPl; refreshNoteChips('f-note-chips','f-notes',leadStageNotePresets(p,e.target.value)); };
@@ -857,7 +857,7 @@ function leadForm(id){
 }
 function delLead(id){ const l=S.leads.find(x=>x.id===id);
   const hasAg = !!(l && agendorOn() && l.agendorPersonId);
-  openModal(`<div class="modal-ov"><div class="modal-box"><div class="modal-hd"><div class="modal-title">Excluir Lead</div><div class="x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div></div><div class="modal-bd"><p class="confirm-txt">Excluir <b>${esc(l&&(l.name||l.username)||'este lead')}</b>? Não pode ser desfeito.</p>${hasAg?`<label style="display:flex;align-items:center;gap:9px;margin-top:12px;padding:10px 12px;background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.22);border-radius:9px;cursor:pointer"><input type="checkbox" id="d-ag" checked style="width:18px;height:18px;accent-color:#10B981;cursor:pointer"><span style="font-size:.78rem;color:var(--t2)">Remover também do Agendor (apaga a pessoa e o negócio que foram enviados por engano)</span></label>`:''}</div><div class="modal-ft"><button class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-danger" id="d-ok">Excluir</button></div></div></div>`);
+  openModal(`<div class="modal-ov"><div class="modal-box"><div class="modal-hd"><div class="modal-title">Excluir Lead</div><div class="x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div></div><div class="modal-bd"><p class="confirm-txt">Excluir <b>${esc(l&&(l.name||l.username)||'este lead')}</b>? Não pode ser desfeito.</p>${hasAg?`<label style="display:flex;align-items:center;gap:9px;margin-top:12px;padding:10px 12px;background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.22);border-radius:9px;cursor:pointer"><input type="checkbox" id="d-ag" checked style="width:18px;height:18px;accent-color:#10B981;cursor:pointer"><span style="font-size:.78rem;color:var(--t2)">Remover também do CRM (apaga a pessoa e o negócio que foram enviados por engano)</span></label>`:''}</div><div class="modal-ft"><button class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-danger" id="d-ok">Excluir</button></div></div></div>`);
   $('d-ok').onclick=async()=>{
     $('d-ok').disabled=true;
     if(hasAg && $('d-ag') && $('d-ag').checked) await deleteFromAgendor(l);
@@ -1107,9 +1107,9 @@ function renderCRM(){
   const rail=[['','TODOS',allP.length],...S.pipelines.map(p=>[p.id,pipelineSigla(p),allP.filter(l=>(l.pipeline_id||(defaultPipeline()&&defaultPipeline().id))===p.id).length])]
     .map(([v,sg,n])=>`<button class="crm-rail-btn${S.crmPipelineId===v?' active':''}" data-crmpl="${v}" title="${esc(v?(S.pipelines.find(p=>p.id===v)||{}).name:'Todos os funis')} (${n})">${esc(sg)}${n?`<span class="rail-cnt">${n}</span>`:''}</button>`).join('');
   const board=cols.map(st=>{ const items=leads.filter(l=>bucket(l)===st).sort((a,b)=>new Date(b.addedAt||0)-new Date(a.addedAt||0));
-    const cards=items.length?items.map(l=>`<div class="crm-card${S.sel.mode&&S.sel.ids.has(l.id)?' sel-on':''}" draggable="${!S.sel.mode}" data-id="${esc(l.id)}"><div class="crm-card-top">${selChk(l.id)}<div class="avatar">${esc(ini(l.name||l.username))}</div><div style="min-width:0;flex:1"><div class="crm-card-nm">${esc(l.name||l.username||'—')}</div><div class="crm-card-un">${l.username?'@'+esc(l.username):esc(l.phone||'—')}</div></div></div><div class="crm-card-meta">${l.niche?`<span class="tag">${esc(l.niche)}</span>`:''}${l.agendorPersonId&&agendorOn()?`<span class="info-chip" style="color:#6EE7B7">☁</span>`:agendorOn()&&l.agendorStatus==='failed'?`<span class="info-chip" data-tip="${esc(l.agendorError||'Falha ao enviar ao Agendor')}" style="color:#FCA5A5;cursor:help">⚠</span>`:''}</div></div>`).join(''):'<div class="crm-card-empty">Arraste aqui</div>';
+    const cards=items.length?items.map(l=>`<div class="crm-card${S.sel.mode&&S.sel.ids.has(l.id)?' sel-on':''}" draggable="${!S.sel.mode}" data-id="${esc(l.id)}"><div class="crm-card-top">${selChk(l.id)}<div class="avatar">${esc(ini(l.name||l.username))}</div><div style="min-width:0;flex:1"><div class="crm-card-nm">${esc(l.name||l.username||'—')}</div><div class="crm-card-un">${l.username?'@'+esc(l.username):esc(l.phone||'—')}</div></div></div><div class="crm-card-meta">${l.niche?`<span class="tag">${esc(l.niche)}</span>`:''}${l.agendorPersonId&&agendorOn()?`<span class="info-chip" style="color:#6EE7B7">☁</span>`:agendorOn()&&l.agendorStatus==='failed'?`<span class="info-chip" data-tip="${esc(l.agendorError||'Falha ao enviar ao CRM')}" style="color:#FCA5A5;cursor:help">⚠</span>`:''}</div></div>`).join(''):'<div class="crm-card-empty">Arraste aqui</div>';
     return `<div class="crm-col" data-status="${st}"><div class="crm-col-hd"><span class="crm-col-dot" style="background:${colSC[st]}"></span><span class="crm-col-nm">${(colSM[st]||{}).label||st}</span><span class="crm-col-cnt">${items.length}</span></div><div class="crm-col-bd">${cards}</div></div>`; }).join('');
-  const hint='Arraste os cartões entre as colunas. Ao chegar na última etapa, vira negociação e (se configurado) vai ao Agendor.';
+  const hint='Arraste os cartões entre as colunas. Ao chegar na última etapa, vira negociação e (se configurado) vai ao CRM.';
   const boardHtml = leads.length?board:`<div class="empty-state"><div class="empty-title">${q?'Nenhum resultado':'Nenhum lead'}</div><div class="empty-sub">${q?`Nada encontrado para "${esc(S.crmQ)}".`:'Cadastre um lead para começar.'}</div></div>`;
   $('content').innerHTML=`<div class="tbl-controls"><div class="sec-title" style="margin:0;flex:1">Pipeline</div><button class="btn btn-primary" id="crm-add"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Cadastrar Lead</button></div><div class="tbl-controls" style="margin-bottom:10px"><div class="search-wrap" style="flex:0 1 280px;min-width:160px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input class="search-inp" id="crm-q" placeholder="Buscar no funil…" value="${esc(S.crmQ)}"></div><p class="sec-sub" style="margin:0;flex:1">${S.sel.mode?'Toque nos cartões para selecionar.':hint}</p>${selBar()}</div><div class="crm-layout"><div class="crm-rail" id="crm-tabs">${rail}</div><div class="crm-board-wrap"><div class="crm-board" id="crm-board">${boardHtml}</div></div></div>`;
   $('crm-add').onclick=()=>leadForm();
@@ -1207,7 +1207,7 @@ function callForm(id){
     if(id){ const{error}=await sb.from('calls').update(callToRow(data)).eq('id',id); if(error){toast(error.message,'error');return;} toast('Ligação atualizada','success'); }
     else { const{data:ins,error}=await sb.from('calls').insert(callToRow(data)).select('id').single(); if(error){toast(error.message,'error');return;} savedId=ins&&ins.id; toast('Ligação registrada','success'); }
     closeModal(); await loadCalls(); renderShell();
-    // Auto-envio ao Agendor para ligações interessadas/fechadas (roteia funil pelo tipo do lead vinculado)
+    // Auto-envio ao CRM para ligações interessadas/fechadas (roteia funil pelo tipo do lead vinculado)
     if(savedId && (data.outcome==='interessado'||data.outcome==='fechado') && agendorOn() && agendorAutoOn()) sendCallToAgendor(savedId,true);
   };
 }
@@ -1252,7 +1252,7 @@ function renderDeals(){
           ${selChk(d.id)}
           <div class="avatar" style="background:${dealSc[d.status]}">${esc(ini(nm))}</div>
           <div style="min-width:0;flex:1">
-            <div class="crm-card-nm">${esc(nm)}${dealLead&&dealLead.agendorPersonId&&agendorOn()?'<span style="font-size:.6rem;color:#6EE7B7;font-weight:600;margin-left:4px">☁ Agendor</span>':''}</div>
+            <div class="crm-card-nm">${esc(nm)}${dealLead&&dealLead.agendorPersonId&&agendorOn()?'<span style="font-size:.6rem;color:#6EE7B7;font-weight:600;margin-left:4px">☁ CRM</span>':''}</div>
             <div class="crm-card-un">${un?'@'+esc(un):''}${un&&ph?' · ':''}${ph?esc(ph):''}</div>
           </div>
         </div>
@@ -2100,7 +2100,7 @@ function agendorAutoOn(){ return !(S.org && S.org.settings && S.org.settings.age
 
 async function agendorRequest(path, method='GET', body=null){
   const token=(S.org&&S.org.agendor_token||'').trim();
-  if(!token) throw new Error('Token do Agendor não configurado');
+  if(!token) throw new Error('Token do CRM não configurado');
   const proxy=(CFG.AGENDOR_PROXY_URL||'').trim().replace(/\/+$/,'');
   const base=proxy||AGENDOR_BASE; // o Worker já aponta para /v3
   const res=await fetch(base+path,{ method, headers:{ 'Authorization':'Token '+token, 'Content-Type':'application/json' }, body: body?JSON.stringify(body):undefined });
@@ -2110,7 +2110,7 @@ async function agendorRequest(path, method='GET', body=null){
 }
 function agendorCorsHint(m){ if(/Failed to fetch|NetworkError|CORS/i.test(m)) toast('Bloqueio de CORS — o Worker do proxy precisa estar publicado (config.js).','warn'); }
 
-// Nome bonito para a PESSOA no Agendor: "Nome Real (@usuario)". Evita repetir
+// Nome bonito para a PESSOA no CRM: "Nome Real (@usuario)". Evita repetir
 // quando o nome ainda está igual ao @ (dados antigos da extensão). Usado só
 // no cadastro da pessoa — o título do negócio usa agendorDealTitle (só nome).
 function agendorDisplayName(lead){
@@ -2133,12 +2133,12 @@ function agendorDealTitle(lead){
   return 'Lead IGProspect';
 }
 
-// Decide o funil/etapa do Agendor conforme a ETAPA ATUAL do lead (novo,
+// Decide o funil/etapa do CRM conforme a ETAPA ATUAL do lead (novo,
 // chamado, interessado, etc.) — cada pipeline mapeia CADA uma das suas
-// etapas pra uma etapa correspondente no Agendor (org_pipelines.agendor_map
+// etapas pra uma etapa correspondente no CRM (org_pipelines.agendor_map
 // = { [stageKey]: {funnelId,funnelName,stageId,stageName} }). Antes só
 // existia UM destino fixo pro pipeline inteiro — todo lead caía sempre na
-// mesma etapa do Agendor, não importa em que etapa estivesse no sistema.
+// mesma etapa do CRM, não importa em que etapa estivesse no sistema.
 function agendorStageFor(lead){
   const p=leadPipeline(lead);
   const map=(p&&p.agendor_map)||null;
@@ -2158,13 +2158,13 @@ async function loadAgendorFunnels(){
     const res=await agendorRequest('/funnels');
     const data=(res&&res.data)||res||[];
     const flat=[];
-    // dealStage na API do Agendor é a POSIÇÃO da etapa dentro do funil (1,2,3…),
+    // dealStage na API do CRM é a POSIÇÃO da etapa dentro do funil (1,2,3…),
     // não o id da etapa — mandar o id fazia o negócio sempre cair na 1ª etapa
     // (o número não batia com nenhuma posição válida). st.order, se a API
     // mandar, é a fonte confiável; a posição no array serve de fallback.
     for(const f of data){ const stages=f.dealStages||f.stages||[]; stages.forEach((st,i)=>{ flat.push({ funnelId:f.id, funnelName:f.name||('Funil '+f.id), stageId:st.id, stageOrder:st.order||st.position||(i+1), stageName:st.name||('Etapa '+st.id) }); }); }
     S._funnelStages=flat;
-    if(!flat.length) toast('Nenhum funil/etapa retornado pelo Agendor','warn');
+    if(!flat.length) toast('Nenhum funil/etapa retornado pelo CRM','warn');
     else toast(`${flat.length} etapas carregadas de ${data.length} funil(is)`,'success');
     renderSettings();
   }catch(err){ toast('Falha ao carregar funis: '+err.message,'error'); agendorCorsHint(err.message); }
@@ -2182,17 +2182,17 @@ async function testAgendor(){
 // no lead. Mesmo sem mapeamento (ou em modo silencioso, disparado sozinho ao
 // chegar na última etapa) SEMPRE grava um status — antes, "sem mapeamento" +
 // silent=true saía sem deixar rastro nenhum, e o time não tinha como saber
-// se aquele lead tinha ido ao Agendor ou não.
+// se aquele lead tinha ido ao CRM ou não.
 async function sendLeadToAgendor(id, silent=false){
   const lead=S.leads.find(l=>l.id===id); if(!lead) return;
-  if(!agendorOn()){ if(!silent){ toast('Configure o token do Agendor nas Configurações','warn'); S.route='settings'; renderShell(); } return; }
+  if(!agendorOn()){ if(!silent){ toast('Configure o token do CRM nas Configurações','warn'); S.route='settings'; renderShell(); } return; }
   const map=agendorStageFor(lead);
   const tipoLbl=(leadPipeline(lead)&&leadPipeline(lead).name)||'Negócios';
   if(!map||!map.stageId){
-    const msg=`Sem destino no Agendor mapeado para a etapa "${stLabel(lead)}" do funil "${tipoLbl}"`;
+    const msg=`Sem destino no CRM mapeado para a etapa "${stLabel(lead)}" do funil "${tipoLbl}"`;
     lead.agendorStatus='failed'; lead.agendorError=msg;
     try{ await sb.from('leads').update({ agendor_status:'failed', agendor_error:msg }).eq('id',id); }catch(e){}
-    if(!silent){ toast(`Defina o destino no Agendor da etapa "${stLabel(lead)}" nas Configurações`,'warn'); S.route='settings'; renderShell(); }
+    if(!silent){ toast(`Defina o destino no CRM da etapa "${stLabel(lead)}" nas Configurações`,'warn'); S.route='settings'; renderShell(); }
     else if(S.route==='leads'||S.route==='crm') renderShell();
     return;
   }
@@ -2218,20 +2218,20 @@ async function sendLeadToAgendor(id, silent=false){
       // aparecer — antes ficava engolido sem log nenhum.
       if(dealId){
         try{ await agendorRequest(`/deals/${dealId}`,'PUT',{ dealStage:map.stageOrder, funnel:map.funnelId }); }
-        catch(e){ console.warn('Agendor: PUT de reforço da etapa falhou —',e.message); stageWarn=`Negócio criado, mas não travou na etapa "${map.stageName}": ${e.message}`; }
+        catch(e){ console.warn('CRM: PUT de reforço da etapa falhou —',e.message); stageWarn=`Negócio criado, mas não travou na etapa "${map.stageName}": ${e.message}`; }
       }
     }
     await sb.from('leads').update({ agendor_person_id:personId?String(personId):null, agendor_deal_id:dealId?String(dealId):null, agendor_funnel:map.funnelName, agendor_status:stageWarn?'failed':'ok', agendor_error:stageWarn }).eq('id',id);
     Object.assign(lead,{ agendorPersonId:personId, agendorDealId:dealId, agendorFunnel:map.funnelName, agendorStatus:stageWarn?'failed':'ok', agendorError:stageWarn });
-    toast(stageWarn?`Enviado ao Agendor, mas com aviso: ${stageWarn}`:`Enviado ao Agendor → funil ${map.funnelName} ✓`, stageWarn?'warn':'success');
+    toast(stageWarn?`Enviado ao CRM, mas com aviso: ${stageWarn}`:`Enviado ao CRM → funil ${map.funnelName} ✓`, stageWarn?'warn':'success');
   }catch(err){
     lead.agendorStatus='failed'; lead.agendorError=err.message;
     try{ await sb.from('leads').update({ agendor_status:'failed', agendor_error:err.message }).eq('id',id); }catch(e){}
-    toast('Falha ao enviar ao Agendor: '+err.message,'error'); agendorCorsHint(err.message);
+    toast('Falha ao enviar ao CRM: '+err.message,'error'); agendorCorsHint(err.message);
   }
   if(S.route==='leads'||S.route==='crm') renderShell();
 }
-// Depois que um lead JÁ tem negócio no Agendor, avançar a etapa no sistema
+// Depois que um lead JÁ tem negócio no CRM, avançar a etapa no sistema
 // deve mover a etapa lá também — sem isso o negócio ficava travado na etapa
 // em que foi criado, mesmo o lead avançando no funil do sistema.
 async function syncAgendorDealStage(lead){
@@ -2243,7 +2243,7 @@ async function syncAgendorDealStage(lead){
     await sb.from('leads').update({ agendor_funnel:map.funnelName, agendor_status:'ok', agendor_error:null }).eq('id',lead.id);
     Object.assign(lead,{ agendorFunnel:map.funnelName, agendorStatus:'ok', agendorError:null });
   }catch(err){
-    console.warn('Agendor: PUT de mudança de etapa falhou —',err.message);
+    console.warn('CRM: PUT de mudança de etapa falhou —',err.message);
     lead.agendorStatus='failed'; lead.agendorError=err.message;
     try{ await sb.from('leads').update({ agendor_status:'failed', agendor_error:err.message }).eq('id',lead.id); }catch(e){}
   }
@@ -2255,7 +2255,7 @@ async function syncAgendorDealStage(lead){
 
 // Ponto único de disparo do envio automático — chamado sempre que a etapa de
 // um lead muda (formulário, kanban do CRM, sync da extensão). Decide sozinho
-// se é a primeira vez (cria pessoa+negócio) ou se o lead já está no Agendor
+// se é a primeira vez (cria pessoa+negócio) ou se o lead já está no CRM
 // (só move a etapa). Só age conforme o mapeamento por etapa salvo em
 // Configurações — etapa sem destino mapeado não faz nada.
 async function autoSyncAgendor(lead){
@@ -2265,26 +2265,26 @@ async function autoSyncAgendor(lead){
   else await sendLeadToAgendor(lead.id,true);
 }
 
-// Remove a pessoa (e o negócio) do Agendor. Retorna true se removeu.
+// Remove a pessoa (e o negócio) do CRM. Retorna true se removeu.
 async function deleteFromAgendor(lead){
   if(!lead || !agendorOn() || !lead.agendorPersonId) return false;
   try{
     if(lead.agendorDealId){ try{ await agendorRequest('/deals/'+lead.agendorDealId,'DELETE'); }catch(e){} }
     await agendorRequest('/people/'+lead.agendorPersonId,'DELETE');
     return true;
-  }catch(err){ toast('Falha ao remover do Agendor: '+err.message,'warn'); agendorCorsHint(err.message); return false; }
+  }catch(err){ toast('Falha ao remover do CRM: '+err.message,'warn'); agendorCorsHint(err.message); return false; }
 }
-// Tira o lead APENAS do Agendor, mantendo-o no sistema
+// Tira o lead APENAS do CRM, mantendo-o no sistema
 function removeLeadFromAgendor(id){
   const l=S.leads.find(x=>x.id===id); if(!l) return;
-  openModal(`<div class="modal-ov"><div class="modal-box"><div class="modal-hd"><div class="modal-title">Tirar do Agendor</div><div class="x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div></div><div class="modal-bd"><p class="confirm-txt">Remover <b>${esc(l.name||l.username||'este lead')}</b> do Agendor? <b>Ele continua no sistema</b> — só sai do Agendor.</p></div><div class="modal-ft"><button class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-danger" id="agrm-ok">Tirar do Agendor</button></div></div></div>`);
+  openModal(`<div class="modal-ov"><div class="modal-box"><div class="modal-hd"><div class="modal-title">Tirar do CRM</div><div class="x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div></div><div class="modal-bd"><p class="confirm-txt">Remover <b>${esc(l.name||l.username||'este lead')}</b> do CRM? <b>Ele continua no sistema</b> — só sai do CRM.</p></div><div class="modal-ft"><button class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-danger" id="agrm-ok">Tirar do CRM</button></div></div></div>`);
   $('agrm-ok').onclick=async()=>{
     $('agrm-ok').disabled=true;
     const ok=await deleteFromAgendor(l);
     if(ok){
       await sb.from('leads').update({ agendor_person_id:null, agendor_deal_id:null, agendor_funnel:null, agendor_status:null }).eq('id',id);
       Object.assign(l,{ agendorPersonId:null, agendorDealId:null, agendorFunnel:null, agendorStatus:null });
-      toast('Removido do Agendor — mantido no sistema','success');
+      toast('Removido do CRM — mantido no sistema','success');
     }
     closeModal(); renderShell();
   };
@@ -2292,7 +2292,7 @@ function removeLeadFromAgendor(id){
 
 async function sendCallToAgendor(id, silent=false){
   const call=S.calls.find(c=>c.id===id); if(!call) return;
-  if(!agendorOn()){ if(!silent){ toast('Configure o token do Agendor nas Configurações','warn'); S.route='settings'; renderShell(); } return; }
+  if(!agendorOn()){ if(!silent){ toast('Configure o token do CRM nas Configurações','warn'); S.route='settings'; renderShell(); } return; }
   try{
     const personPayload={ name: call.name||call.phone||'Lead IGProspect', description:'Lead da prospecção IGProspect.' };
     if(call.phone) personPayload.contact={ mobile:call.phone };
@@ -2303,8 +2303,8 @@ async function sendCallToAgendor(id, silent=false){
     const map=agendorStageFor(linked||{});
     if(personId&&map&&map.stageId){ try{ await agendorRequest(`/people/${personId}/deals`,'POST',{ title:(call.name||'Lead')+' — '+map.funnelName, dealStage:map.stageOrder, funnel:map.funnelId, description:`Ligação interessada (IGProspect) · funil ${map.funnelName}.` }); }catch(e){} }
     if(personId){ const when=call.at||new Date().toISOString(); const txt=`Ligação (${COM()[call.outcome]||call.outcome})`+(call.duration?` · ${call.duration} min`:'')+(call.notes?` — ${call.notes}`:''); try{ await agendorRequest(`/people/${personId}/tasks`,'POST',{ text:txt, type:'Ligação', dueDate:when, done:true }); }catch(e){} }
-    toast('Ligação enviada ao Agendor ✓','success');
-  }catch(err){ toast('Falha ao enviar ligação ao Agendor: '+err.message,'error'); agendorCorsHint(err.message); }
+    toast('Ligação enviada ao CRM ✓','success');
+  }catch(err){ toast('Falha ao enviar ligação ao CRM: '+err.message,'error'); agendorCorsHint(err.message); }
 }
 
 /* =====================================================================
@@ -2376,7 +2376,7 @@ function subscribeMessages(){
 // extensão instalada NESTE MESMO navegador com a aba certa aberta. Realtime
 // do Supabase reflete qualquer escrita na tabela leads, de qualquer origem,
 // sem precisar de F5. Só atualiza o estado em memória e redesenha — não
-// dispara Agendor nem cria negociação (isso é responsabilidade de quem fez
+// dispara CRM nem cria negociação (isso é responsabilidade de quem fez
 // a mudança de verdade, ver comentário em importExtensionLeads).
 let leadsChannel=null, leadsChannelOrgId=null;
 function subscribeLeads(){
@@ -2677,17 +2677,17 @@ function renderSettings(){
       return `<div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(244,114,182,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#F472B6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></div><div><div class="st-title">Notificações</div><div class="st-sub">Avisa a equipe quando um lead envia contato ou chega mensagem nova</div></div></div>
         <div class="stg-bd"><div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Notificações neste aparelho</div><div class="stg-ri-s">${statusTxt}</div></div>${btn}</div>${iosHint}</div></div>`;
     })()}
-    <div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(16,185,129,.12)"><svg viewBox="0 0 24 24" fill="none" stroke="#6EE7B7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></div><div><div class="st-title">Integração Agendor</div><div class="st-sub">Envia leads e ligações ao CRM · compartilhada no espaço</div></div></div>
+    <div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(16,185,129,.12)"><svg viewBox="0 0 24 24" fill="none" stroke="#6EE7B7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></div><div><div class="st-title">Integração CRM</div><div class="st-sub">Envia leads e ligações ao CRM · compartilhada no espaço</div></div></div>
       <div class="stg-bd">
-      ${!owner?`<div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Status</div><div class="stg-ri-s">${agendorOn()?'☁ Conectado ao Agendor':'Não configurado'}</div></div></div><div class="stg-ri-s">Só o dono da equipe pode editar a integração com o Agendor.</div>`:`
+      ${!owner?`<div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Status</div><div class="stg-ri-s">${agendorOn()?'☁ Conectado ao CRM':'Não configurado'}</div></div></div><div class="stg-ri-s">Só o dono da equipe pode editar a integração com o CRM.</div>`:`
         <div class="stg-field"><label class="stg-label">Token da API</label><input class="stg-input" type="password" id="st-token" value="${esc(S.org&&S.org.agendor_token||'')}" placeholder="Cole o token"></div>
-        <div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Envio automático</div><div class="stg-ri-s">Ao chegar na última etapa de um funil, envia sozinho ao Agendor</div></div><label style="cursor:pointer"><input type="checkbox" id="st-auto" ${agendorAutoOn()?'checked':''} style="width:20px;height:20px;cursor:pointer;accent-color:#10B981"></label></div>
+        <div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Envio automático</div><div class="stg-ri-s">Ao chegar na última etapa de um funil, envia sozinho ao CRM</div></div><label style="cursor:pointer"><input type="checkbox" id="st-auto" ${agendorAutoOn()?'checked':''} style="width:20px;height:20px;cursor:pointer;accent-color:#10B981"></label></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary" id="st-save">Salvar integração</button><button class="btn btn-outline" id="ag-test">Testar conexão</button></div>
         <div style="height:1px;background:rgba(255,255,255,.06);margin:4px 0"></div>
         <div class="stg-ri-t">Roteamento por etapa</div>
-        <div class="stg-ri-s" style="margin-bottom:8px">Cada ETAPA de cada funil de lead aponta pra uma etapa do Agendor — quando o lead muda de etapa aqui, o negócio move de etapa lá também (não fica sempre no mesmo destino fixo). Etapas sem mapeamento não são enviadas.</div>
-        <button class="btn btn-outline btn-sm" id="ag-load-funnels" style="align-self:flex-start">↻ Carregar funis do Agendor</button>
-        ${!S._funnelStages.length?`<div class="stg-ri-s">Carregue os funis do Agendor acima pra mapear cada etapa.</div>`:S.pipelines.map(p=>{
+        <div class="stg-ri-s" style="margin-bottom:8px">Cada ETAPA de cada funil de lead aponta pra uma etapa do CRM — quando o lead muda de etapa aqui, o negócio move de etapa lá também (não fica sempre no mesmo destino fixo). Etapas sem mapeamento não são enviadas.</div>
+        <button class="btn btn-outline btn-sm" id="ag-load-funnels" style="align-self:flex-start">↻ Carregar funis do CRM</button>
+        ${!S._funnelStages.length?`<div class="stg-ri-s">Carregue os funis do CRM acima pra mapear cada etapa.</div>`:S.pipelines.map(p=>{
           const stages=stagesOf(p);
           const flatMap = (p.agendor_map&&!p.agendor_map.stageId) ? p.agendor_map : null;
           const rows=stages.map(s=>{
@@ -2699,7 +2699,7 @@ function renderSettings(){
           return `<div style="margin-bottom:12px;padding-bottom:2px"><div style="font-size:.74rem;font-weight:700;color:var(--t2);margin-bottom:6px">${esc(p.icon||'')} ${esc(p.name)}</div><div class="form-grid">${rows}</div></div>`;
         }).join('')}
         ${S._funnelStages.length?`<button class="btn btn-primary btn-sm" id="ag-save-map" style="align-self:flex-start">Salvar mapeamento</button>`:''}
-        <div style="font-size:.72rem;color:var(--t2);margin-top:6px;padding:9px 11px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:8px">⚠️ O navegador bloqueia chamadas diretas à API do Agendor (CORS) — por isso o envio passa por um proxy (Cloudflare Worker) já configurado no sistema.</div>
+        <div style="font-size:.72rem;color:var(--t2);margin-top:6px;padding:9px 11px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:8px">⚠️ O navegador bloqueia chamadas diretas à API do CRM (CORS) — por isso o envio passa por um proxy (Cloudflare Worker) já configurado no sistema.</div>
       `}
       </div></div>
     ${owner&&MOD().features.weeklyPay?(()=>{ const g=getGoals(); return `<div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(16,185,129,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#6EE7B7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div><div><div class="st-title">Pagamento da meta</div><div class="st-sub">Só o dono vê · escolhe quem recebe o valor calculado na aba Metas</div></div></div>
@@ -3017,12 +3017,12 @@ async function importExtensionLeads(incoming){
       // garante negociação para todo lead que está em "contato" (novos ou atualizados)
       for(const l of S.leads){ if(isLastStage(l.status,leadPipeline(l))||l.tipo==='empresario') await ensureDealForLead(l.id); }
       // NÃO chamar autoSyncAgendor aqui: a própria extensão já envia direto ao
-      // Agendor (extension/content.js syncAgendor), independente do painel estar
+      // CRM (extension/content.js syncAgendor), independente do painel estar
       // aberto, e grava o agendor_person_id de volta no banco. Se o painel também
       // dispara autoSyncAgendor pra esse mesmo lead nesta janela de sincronização,
       // as duas chamadas correm em paralelo (uma da extensão, uma daqui) antes de
       // qualquer uma delas gravar o agendor_person_id — isso duplicava pessoa+
-      // negócio no Agendor, ou fazia uma das duas ser rejeitada pelo Agendor
+      // negócio no CRM, ou fazia uma das duas ser rejeitada pelo CRM
       // (aparecia como "às vezes vai, às vezes não" ao repetir o mesmo número em
       // leads diferentes). Sincronizar isso é responsabilidade só de quem fez a
       // mudança: extensão avisa aqui só via agendor_person_id/status vindos do
