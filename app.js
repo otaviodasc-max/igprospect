@@ -2193,15 +2193,20 @@ function agendorStageFor(lead){
 // se ela não existir nessa instalação (404/405), caímos na aninhada — assim o
 // mesmo código serve pros dois sem depender de mexer no backend de terceiro.
 //
-// As chaves da etapa vão duplicadas de propósito: o Agendor lê
-// dealStage/funnel, o Hub documentou dealStageId/funnelId. Mandar as quatro
-// no mesmo corpo faz a instalação certa achar a sua e ignorar o resto —
-// atenção: dealStage é a POSIÇÃO da etapa (1,2,3…) e dealStageId é o id de
-// verdade; trocar os dois faz o negócio cair sempre na 1ª etapa.
+// Só as chaves do Hub: dealStageId (ID REAL da etapa) e funnelId.
+//
+// Antes isso ia duplicado, com dealStage/funnel (formato Agendor) junto, pra
+// funcionar nos dois sistemas sem saber qual o Hub lia. Deu errado na prática:
+// o lead caía numa etapa diferente da configurada, porque dealStage carrega a
+// POSIÇÃO (1,2,3…) e o Hub aparentemente lia essa chave tratando o número como
+// se fosse ID. Mandar as duas formas não era "compatibilidade", era ambiguidade.
 function agendorDealBody(map, title, description){
-  return { title, description,
-    dealStage: map.stageOrder, funnel: map.funnelId,
-    dealStageId: map.stageId,  funnelId: map.funnelId };
+  return { title, description, dealStageId: map.stageId, funnelId: map.funnelId };
+}
+// Corpo no dialeto antigo do Agendor, só pra rota aninhada de fallback, onde
+// a posição é que vale.
+function agendorDealBodyLegacy(map, title, description){
+  return { title, description, dealStage: map.stageOrder, funnel: map.funnelId };
 }
 async function agendorCreateDeal(personId, map, title, description){
   const body={ ...agendorDealBody(map,title,description), personId };
@@ -2209,8 +2214,7 @@ async function agendorCreateDeal(personId, map, title, description){
     return await agendorRequest('/deals','POST',body);
   }catch(err){
     if(err.status===404||err.status===405){
-      const { personId:_drop, ...nested } = body;
-      return await agendorRequest(`/people/${personId}/deals`,'POST',nested);
+      return await agendorRequest(`/people/${personId}/deals`,'POST',agendorDealBodyLegacy(map,title,description));
     }
     throw err;
   }

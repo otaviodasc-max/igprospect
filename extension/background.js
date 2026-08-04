@@ -185,18 +185,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         let dealId = null;
         if (personId && deal && deal.dealStage && deal.funnel) {
-          // Chaves duplicadas de propósito: o Agendor lia dealStage/funnel, o
-          // Hub documentou dealStageId/funnelId. Mandar as quatro faz a
-          // instalação certa achar a sua. dealStage é a POSIÇÃO da etapa
-          // (1,2,3…) e dealStageId é o id — trocar os dois joga o negócio na
-          // 1ª etapa. Mesma lógica de app.js agendorDealBody.
+          // Só as chaves do Hub: dealStageId é o ID REAL da etapa. Mandar
+          // junto o dealStage do Agendor (que é a POSIÇÃO, 1/2/3…) fazia o
+          // negócio nascer numa etapa diferente da configurada — o Hub lia a
+          // chave antiga e tratava o número como id. Ver app.js
+          // agendorDealBody, mesma correção.
           const dealBody = {
             title: deal.title, description: deal.description || '',
-            dealStage: deal.dealStage, funnel: deal.funnel,
             dealStageId: deal.dealStageId, funnelId: deal.funnel,
           };
           // Hub expõe POST /deals (personId no corpo); o Agendor usava a rota
-          // aninhada. Tenta a do Hub e cai pra aninhada se ela não existir.
+          // aninhada, onde vale o dialeto antigo (posição da etapa).
           let dr = await fetch(`${CRM_BASE}/deals`, {
             method: 'POST', headers,
             body: JSON.stringify({ ...dealBody, personId }),
@@ -204,7 +203,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (dr.status === 404 || dr.status === 405) {
             dr = await fetch(`${CRM_BASE}/people/${personId}/deals`, {
               method: 'POST', headers,
-              body: JSON.stringify(dealBody),
+              body: JSON.stringify({
+                title: deal.title, description: deal.description || '',
+                dealStage: deal.dealStage, funnel: deal.funnel,
+              }),
             });
           }
           const ddata = await dr.json().catch(() => ({}));
@@ -216,10 +218,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             try {
               await fetch(`${CRM_BASE}/deals/${dealId}`, {
                 method: 'PUT', headers,
-                body: JSON.stringify({
-                  dealStage: deal.dealStage, funnel: deal.funnel,
-                  dealStageId: deal.dealStageId, funnelId: deal.funnel,
-                }),
+                body: JSON.stringify({ dealStageId: deal.dealStageId, funnelId: deal.funnel }),
               });
             } catch (e) { /* pessoa+negócio já existem; falha aqui só deixa a etapa por conferir */ }
           }
