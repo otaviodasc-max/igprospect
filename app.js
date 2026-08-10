@@ -2216,9 +2216,22 @@ const AG_ORIGIN_FIELDS=['dealSource','dealSourceId','source','sourceId','origin'
 function agendorOriginFor(lead){
   const p=leadPipeline(lead);
   const o=p&&p.agendor_origin;
-  return (o && o.id!=null) ? o : null;
+  if(!o) return null;
+  if(o.id==null && !(o.name||'').trim()) return null;
+  // O campo salvo no funil vale, mas se o dono trocar a escolha global depois
+  // do teste, a global manda — senão seria preciso re-salvar funil por funil.
+  return { ...o, field: agendorOriginField() || o.field };
 }
 function agendorOriginName(origin){ return (origin&&origin.name) || 'Redes sociais'; }
+
+// Nome do campo que ESTA instalação do Hub usa pra gravar a origem. Não dá
+// pra descobrir lendo a API (ela não devolve negócio nenhum), então quem
+// decide é o dono, depois de olhar o negócio de teste no CRM — ver
+// agendorOriginTest, que manda um valor diferente em cada campo candidato
+// justamente pra o CRM revelar qual deles ele leu.
+function agendorOriginField(){
+  return (S.org && S.org.settings && S.org.settings.crmOriginField) || S._originField || AG_ORIGIN_DEFAULT_FIELD;
+}
 
 // Lê um negócio real do CRM só pra descobrir COMO ele chama o campo de origem.
 // É o único jeito honesto de acertar o nome sem documentação — e é barato
@@ -2305,6 +2318,41 @@ async function diagAgendorOrigins(){
   if(btn){ btn.disabled=false; btn.textContent='🔍 Diagnosticar origens'; }
 }
 
+// Cria UM negócio de teste mandando um valor DIFERENTE em cada campo
+// candidato ("SRC-dealSource", "SRC-source", …). O CRM só consegue exibir o
+// campo que ele realmente lê, então o texto que aparecer na Origem do
+// negócio de teste é a resposta — sem documentação e sem adivinhação.
+// É o oposto do erro que já custou caro aqui (mandar dealStage e dealStageId
+// juntos sem saber qual valia): lá os valores eram equivalentes e o
+// resultado era ambíguo; aqui cada valor identifica sua própria chave.
+async function agendorOriginTest(){
+  const btn=$('ag-origin-test'); if(btn){ btn.disabled=true; btn.textContent='Criando…'; }
+  try{
+    // Usa o primeiro destino já mapeado — o negócio de teste precisa nascer
+    // em algum funil/etapa de verdade pra aparecer no CRM.
+    let map=null;
+    for(const p of S.pipelines){ const m=p.agendor_map; if(m){ for(const k in m){ if(m[k]&&m[k].stageId){ map=m[k]; break; } } } if(map) break; }
+    if(!map){ toast('Mapeie pelo menos uma etapa antes — o negócio de teste precisa de um funil.','warn'); return; }
+
+    const person=await agendorRequest('/people','POST',{ name:'TESTE IGProspect (pode apagar)', description:'Negócio de teste pra descobrir o campo de Origem. Pode apagar.' });
+    const personId=(person&&person.data&&person.data.id)||(person&&person.id);
+    if(!personId){ toast('O CRM não devolveu o id da pessoa de teste','error'); return; }
+
+    const body={ title:'TESTE ORIGEM (pode apagar)', description:'Veja o campo Origem deste negócio e informe no IGProspect.', dealStageId:map.stageId, funnelId:map.funnelId, personId };
+    AG_ORIGIN_FIELDS.forEach(f=>{ body[f]='SRC-'+f; });
+    await agendorRequest('/deals','POST',body);
+    openModal(`<div class="modal-ov"><div class="modal-box" style="max-width:560px"><div class="modal-hd"><div><div class="modal-title">Negócio de teste criado ✓</div><div class="modal-sub">Funil ${esc(map.funnelName)} · etapa ${esc(map.stageName)}</div></div><div class="x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div></div>
+      <div class="modal-bd"><div style="font-size:.85rem;line-height:1.7;color:var(--t2)">
+        1. Abra o CRM e procure o negócio <b>"TESTE ORIGEM (pode apagar)"</b>.<br>
+        2. Olhe o campo <b>Origem</b> dele. Vai estar escrito algo como <code>SRC-dealSource</code> ou <code>SRC-source</code>.<br>
+        3. Volte aqui e escolha esse mesmo nome em <b>"Campo da origem na API"</b>.<br>
+        4. Apague o negócio e a pessoa de teste no CRM.<br><br>
+        Se a Origem continuar aparecendo como <b>"IGProspect"</b>, é sinal de que a API não deixa definir a origem — me avise, que aí o caminho é outro.
+      </div><div style="margin-top:12px"><button class="btn btn-primary btn-sm" onclick="closeModal()">Entendi</button></div></div></div></div>`);
+  }catch(err){ toast('Falha ao criar o negócio de teste: '+err.message,'error'); agendorCorsHint(err.message); }
+  finally{ const b=$('ag-origin-test'); if(b){ b.disabled=false; b.textContent='🧪 Descobrir campo da origem'; } }
+}
+
 async function loadAgendorOrigins(){
   const routes = S._originsRoute ? [S._originsRoute, ...AG_ORIGIN_ROUTES] : AG_ORIGIN_ROUTES;
   for(const route of routes){
@@ -2338,16 +2386,26 @@ async function loadAgendorOrigins(){
 // o lead caía numa etapa diferente da configurada, porque dealStage carrega a
 // POSIÇÃO (1,2,3…) e o Hub aparentemente lia essa chave tratando o número como
 // se fosse ID. Mandar as duas formas não era "compatibilidade", era ambiguidade.
+// A API do Hub não lista as origens (ver diagAgendorOrigins: toda rota
+// responde 200 vazio), então na prática a origem vai como TEXTO — o mesmo
+// nome que está na lista do Hub. Quando existe id, ele tem precedência.
+function agendorOriginValue(origin){
+  if(!origin) return null;
+  if(origin.id!=null) return origin.id;
+  return (origin.name||'').trim() || null;
+}
 function agendorDealBody(map, title, description, origin){
   const body={ title, description, dealStageId: map.stageId, funnelId: map.funnelId };
-  if(origin && origin.id!=null) body[origin.field||AG_ORIGIN_DEFAULT_FIELD]=origin.id;
+  const v=agendorOriginValue(origin);
+  if(v!=null) body[origin.field||agendorOriginField()]=v;
   return body;
 }
 // Corpo no dialeto antigo do Agendor, só pra rota aninhada de fallback, onde
 // a posição é que vale.
 function agendorDealBodyLegacy(map, title, description, origin){
   const body={ title, description, dealStage: map.stageOrder, funnel: map.funnelId };
-  if(origin && origin.id!=null) body[origin.field||AG_ORIGIN_DEFAULT_FIELD]=origin.id;
+  const v=agendorOriginValue(origin);
+  if(v!=null) body[origin.field||agendorOriginField()]=v;
   return body;
 }
 // Cria o negócio tentando com a origem escolhida. Se o CRM recusar o CAMPO da
@@ -2982,7 +3040,9 @@ function renderSettings(){
         <div style="height:1px;background:rgba(255,255,255,.06);margin:4px 0"></div>
         <div class="stg-ri-t">Roteamento por etapa e origem</div>
         <div class="stg-ri-s" style="margin-bottom:8px">Cada ETAPA de cada funil de lead aponta pra uma etapa do CRM — quando o lead muda de etapa aqui, o negócio move de etapa lá também (não fica sempre no mesmo destino fixo). Etapas sem mapeamento não são enviadas. A <b>Origem</b> é escolhida uma vez por funil (ex.: funil "Instagram" → origem "Instagram") e vai carimbada no negócio; sem ela, o CRM marca tudo como "IGProspect".</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-outline btn-sm" id="ag-load-funnels">↻ Carregar funis e origens do CRM</button>${S._funnelStages.length&&!S._origins.length?`<button class="btn btn-outline btn-sm" id="ag-diag">🔍 Diagnosticar origens</button>`:''}</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-outline btn-sm" id="ag-load-funnels">↻ Carregar funis e origens do CRM</button><button class="btn btn-outline btn-sm" id="ag-origin-test">🧪 Descobrir campo da origem</button><button class="btn btn-outline btn-sm" id="ag-diag">🔍 Diagnosticar origens</button></div>
+        <datalist id="ag-origins-list">${S._origins.map(o=>`<option value="${esc(o.name)}">`).join('')}</datalist>
+        <div class="stg-field" style="max-width:320px"><label class="stg-label">Campo da origem na API</label><select class="stg-input" id="ag-origin-field">${AG_ORIGIN_FIELDS.map(f=>`<option value="${f}" ${agendorOriginField()===f?'selected':''}>${f}</option>`).join('')}</select><div class="stg-hint" style="font-size:.72rem;color:var(--t2);margin-top:5px">Este CRM não publica a lista de origens, então o nome do campo é descoberto uma vez: clique em <b>🧪 Descobrir campo da origem</b>, veja no CRM qual <code>SRC-…</code> apareceu no negócio de teste e escolha o mesmo aqui.</div></div>
         ${!S._funnelStages.length?`<div class="stg-ri-s">Carregue os funis do CRM acima pra mapear cada etapa.</div>`:S.pipelines.map(p=>{
           const stages=stagesOf(p);
           const flatMap = (p.agendor_map&&!p.agendor_map.stageId) ? p.agendor_map : null;
@@ -2996,11 +3056,11 @@ function renderSettings(){
           // essa origem agora — assim recarregar os funis não apaga em
           // silêncio uma escolha que já estava valendo nos envios.
           const curOrigin=p.agendor_origin&&p.agendor_origin.id!=null?p.agendor_origin:null;
-          const originList=S._origins.slice();
-          if(curOrigin && !originList.some(o=>String(o.id)===String(curOrigin.id))) originList.unshift({id:curOrigin.id,name:curOrigin.name+' (não está mais no CRM)'});
-          const originRow = originList.length
-            ? `<div class="stg-field"><label class="stg-label">Origem no CRM</label><select class="stg-input ag-map-origin" data-pl="${p.id}"><option value="">— deixar o CRM decidir —</option>${originList.map(o=>`<option value="${esc(String(o.id))}" ${curOrigin&&String(curOrigin.id)===String(o.id)?'selected':''}>${esc(o.name)}</option>`).join('')}</select></div>`
-            : `<div class="stg-ri-s" style="margin-bottom:6px">Sem origens disponíveis — o CRM não devolveu nenhuma lista de origens.</div>`;
+          // Campo de TEXTO, não lista fechada: a API deste CRM não devolve as
+          // origens cadastradas, então quem digita o nome é o dono — igualzinho
+          // ao que está escrito na lista de Origem do CRM. O datalist só
+          // sugere, quando por acaso a listagem funcionar em outra instalação.
+          const originRow = `<div class="stg-field"><label class="stg-label">Origem no CRM</label><input class="stg-input ag-map-origin" data-pl="${p.id}" list="ag-origins-list" value="${esc(curOrigin?curOrigin.name:'')}" placeholder="ex.: Instagram — vazio deixa o CRM decidir" maxlength="80"></div>`;
           return `<div style="margin-bottom:12px;padding-bottom:2px"><div style="font-size:.74rem;font-weight:700;color:var(--t2);margin-bottom:6px">${esc(p.icon||'')} ${esc(p.name)}</div><div class="form-grid">${originRow}${rows}</div></div>`;
         }).join('')}
         ${S._funnelStages.length?`<button class="btn btn-primary btn-sm" id="ag-save-map" style="align-self:flex-start">Salvar mapeamento</button>`:''}
@@ -3051,6 +3111,13 @@ function renderSettings(){
   $('ag-test')&&($('ag-test').onclick=testAgendor);
   $('ag-load-funnels')&&($('ag-load-funnels').onclick=loadAgendorFunnels);
   $('ag-diag')&&($('ag-diag').onclick=diagAgendorOrigins);
+  $('ag-origin-test')&&($('ag-origin-test').onclick=agendorOriginTest);
+  $('ag-origin-field')&&($('ag-origin-field').onchange=async e=>{
+    const settings={ ...(S.org.settings||{}), crmOriginField:e.target.value };
+    const{error}=await sb.from('orgs').update({settings}).eq('id',S.org.id);
+    if(error){toast(error.message,'error');return;}
+    S.org={...S.org,settings}; toast('Campo da origem: '+e.target.value,'success');
+  });
   $('ag-save-map')&&($('ag-save-map').onclick=async()=>{
     const parse=v=>{ if(!v) return null; const [fid,sid]=v.split(':'); const f=S._funnelStages.find(x=>String(x.funnelId)===fid&&String(x.stageId)===sid); return f?{funnelId:f.funnelId,stageId:f.stageId,stageOrder:f.stageOrder,funnelName:f.funnelName,stageName:f.stageName}:null; };
     const byPl={};
@@ -3062,15 +3129,16 @@ function renderSettings(){
     // CRM usa pra gravar origem (descoberto ao carregar) — sem isso, todo
     // envio teria que redescobrir, e um envio automático (sem ninguém nas
     // Configurações) não teria como.
+    const field=agendorOriginField();
     const originByPl={};
-    document.querySelectorAll('.ag-map-origin').forEach(sel=>{
-      const pl=sel.dataset.pl;
-      const id=sel.value;
-      if(!id){ originByPl[pl]=null; return; }
-      const found=S._origins.find(o=>String(o.id)===String(id));
-      const prev=(S.pipelines.find(p=>String(p.id)===String(pl))||{}).agendor_origin;
-      const name=found?found.name:(prev&&prev.name)||('Origem '+id);
-      originByPl[pl]={ id: found?found.id:(prev&&prev.id!=null?prev.id:id), name, field: S._originField || (prev&&prev.field) || AG_ORIGIN_DEFAULT_FIELD };
+    document.querySelectorAll('.ag-map-origin').forEach(inp=>{
+      const pl=inp.dataset.pl;
+      const name=(inp.value||'').trim();
+      if(!name){ originByPl[pl]=null; return; }
+      // Se a origem digitada casar com uma da listagem (quando ela funcionar),
+      // manda o id — mais preciso que o texto. Senão vai o nome mesmo.
+      const found=S._origins.find(o=>String(o.name).toLowerCase()===name.toLowerCase());
+      originByPl[pl]={ id: found?found.id:null, name, field };
     });
     const plIds=new Set([...Object.keys(byPl), ...Object.keys(originByPl)]);
     for(const plId of plIds){

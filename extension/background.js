@@ -198,8 +198,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // com a origem da integração ("IGProspect"). O nome do campo vem
           // pronto do painel (deal.origin.field), que o descobre lendo um
           // negócio real do CRM — ver app.js detectAgendorOriginField.
-          const origin = (deal.origin && deal.origin.id != null) ? deal.origin : null;
-          const originPatch = origin ? { [origin.field || 'dealSource']: origin.id } : {};
+          const origin = deal.origin || null;
+          const originValue = origin ? (origin.id != null ? origin.id : (origin.name || '').trim() || null) : null;
+          const originPatch = originValue != null ? { [origin.field || 'dealSource']: originValue } : {};
           Object.assign(dealBody, originPatch);
           // Hub expõe POST /deals (personId no corpo); o Agendor usava a rota
           // aninhada, onde vale o dialeto antigo (posição da etapa).

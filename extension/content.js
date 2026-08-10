@@ -693,7 +693,10 @@
     const dealTitle=agendorDealTitle(lead);
     // Origem configurada no painel pro funil da equipe (Configurações →
     // Integração CRM). Sem ela, o Hub carimba o negócio como "IGProspect".
-    const origin=(S.agendorOrigin&&S.agendorOrigin.id!=null)?S.agendorOrigin:null;
+    const o=S.agendorOrigin;
+    // id quando existir, senão o nome digitado — a API deste CRM não lista as
+    // origens, então na prática o que vai é o texto (ver app.js agendorOriginValue).
+    const origin=(o && (o.id!=null || (o.name||'').trim())) ? o : null;
     const originName=(origin&&origin.name)||'Redes sociais';
     chrome.runtime.sendMessage({
       type: 'agendor_create_person',
