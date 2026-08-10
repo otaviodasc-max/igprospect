@@ -2237,6 +2237,65 @@ async function detectAgendorOriginField(){
   return null;
 }
 
+// ---------------------------------------------------------------------
+// DIAGNÓSTICO da API do CRM (só o dono, nas Configurações)
+// ---------------------------------------------------------------------
+// Nenhuma rota candidata de origens respondeu nesta instalação do Hub, e a
+// API não tem documentação pública. Em vez de continuar chutando nomes de
+// rota às cegas, esta tela pergunta ao próprio CRM: bate em cada candidata,
+// mostra o status cru de cada uma e despeja um negócio real — é nele que
+// aparece o nome verdadeiro do campo de origem (e o id da origem atual,
+// "IGProspect"). O resultado é copiável, pra virar ajuste no código.
+const AG_PROBE_ROUTES=[
+  '/deal_sources','/deal-sources','/dealSources','/deal_source',
+  '/origins','/origin','/sources','/source',
+  '/deal_origins','/deal-origins','/lead_sources','/lead-sources',
+  '/origens','/origem','/deals/sources','/deals/origins',
+  '/settings/deal_sources','/config/deal_sources','/categories','/deal_categories',
+];
+
+// fetch cru: diferente de agendorRequest, NÃO joga erro nem interpreta o
+// corpo — num diagnóstico o status e o texto exato são justamente o dado.
+async function agendorProbe(path){
+  const token=(S.org&&S.org.agendor_token||'').trim();
+  const proxy=(CFG.AGENDOR_PROXY_URL||'').trim().replace(/\/+$/,'');
+  const base=proxy||AGENDOR_BASE;
+  try{
+    const res=await fetch(base+path,{ headers:{ 'Authorization':agAuthHeader(_agAuthScheme||'Token',token), 'Content-Type':'application/json' } });
+    const txt=await res.text();
+    return { path, status:res.status, body:txt };
+  }catch(err){ return { path, status:0, body:'ERRO DE REDE: '+err.message }; }
+}
+
+async function diagAgendorOrigins(){
+  const btn=$('ag-diag'); if(btn){ btn.disabled=true; btn.textContent='Consultando o CRM…'; }
+  const lines=[];
+  lines.push('=== ROTAS DE ORIGEM TESTADAS ===');
+  for(const p of AG_PROBE_ROUTES){
+    const r=await agendorProbe(p);
+    // 404/405 é o esperado pra rota que não existe: uma linha só, senão o
+    // relatório vira um muro de HTML de página de erro.
+    const resumo = (r.status===404||r.status===405) ? '(rota não existe)' : r.body.replace(/\s+/g,' ').slice(0,400);
+    lines.push(`${r.status} ${p} ${resumo}`);
+  }
+  lines.push('');
+  lines.push('=== UM NEGÓCIO REAL (procurar aqui o campo de origem) ===');
+  const deal=await agendorProbe('/deals?per_page=1');
+  lines.push(`status ${deal.status}`);
+  lines.push(deal.body.slice(0,6000));
+  const report=lines.join('\n');
+  console.log(report);
+  openModal(`<div class="modal-ov"><div class="modal-box" style="max-width:760px"><div class="modal-hd"><div><div class="modal-title">Diagnóstico da API do CRM</div><div class="modal-sub">Copie e mande pro suporte — é com isso que a origem é destravada</div></div><div class="x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div></div>
+    <div class="modal-bd"><textarea id="ag-diag-out" readonly style="width:100%;height:340px;font-family:ui-monospace,Menlo,monospace;font-size:.72rem;line-height:1.45;background:rgba(0,0,0,.25);color:var(--t1);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:10px">${esc(report)}</textarea>
+    <div style="display:flex;gap:8px;margin-top:10px"><button class="btn btn-primary btn-sm" id="ag-diag-copy">Copiar tudo</button><button class="btn btn-outline btn-sm" onclick="closeModal()">Fechar</button></div></div></div></div>`);
+  $('ag-diag-copy').onclick=async()=>{
+    const ta=$('ag-diag-out');
+    try{ await navigator.clipboard.writeText(report); toast('Copiado ✓','success'); }
+    catch(e){ ta.select(); toast('Selecionado — use Ctrl+C / Cmd+C','warn'); }
+  };
+  if(btn){ btn.disabled=false; btn.textContent='🔍 Diagnosticar origens'; }
+}
+
 async function loadAgendorOrigins(){
   const routes = S._originsRoute ? [S._originsRoute, ...AG_ORIGIN_ROUTES] : AG_ORIGIN_ROUTES;
   for(const route of routes){
@@ -2914,7 +2973,7 @@ function renderSettings(){
         <div style="height:1px;background:rgba(255,255,255,.06);margin:4px 0"></div>
         <div class="stg-ri-t">Roteamento por etapa e origem</div>
         <div class="stg-ri-s" style="margin-bottom:8px">Cada ETAPA de cada funil de lead aponta pra uma etapa do CRM — quando o lead muda de etapa aqui, o negócio move de etapa lá também (não fica sempre no mesmo destino fixo). Etapas sem mapeamento não são enviadas. A <b>Origem</b> é escolhida uma vez por funil (ex.: funil "Instagram" → origem "Instagram") e vai carimbada no negócio; sem ela, o CRM marca tudo como "IGProspect".</div>
-        <button class="btn btn-outline btn-sm" id="ag-load-funnels" style="align-self:flex-start">↻ Carregar funis e origens do CRM</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-outline btn-sm" id="ag-load-funnels">↻ Carregar funis e origens do CRM</button>${S._funnelStages.length&&!S._origins.length?`<button class="btn btn-outline btn-sm" id="ag-diag">🔍 Diagnosticar origens</button>`:''}</div>
         ${!S._funnelStages.length?`<div class="stg-ri-s">Carregue os funis do CRM acima pra mapear cada etapa.</div>`:S.pipelines.map(p=>{
           const stages=stagesOf(p);
           const flatMap = (p.agendor_map&&!p.agendor_map.stageId) ? p.agendor_map : null;
@@ -2982,6 +3041,7 @@ function renderSettings(){
   $('st-save')&&($('st-save').onclick=async()=>{ const settings={ ...(S.org.settings||{}), agendorAuto: $('st-auto')?$('st-auto').checked:true }; const patch={ agendor_token:$('st-token').value.trim(), settings }; const{error}=await sb.from('orgs').update(patch).eq('id',S.org.id); if(error){toast(error.message,'error');return;} S.org={...S.org,...patch}; toast('Integração salva','success'); });
   $('ag-test')&&($('ag-test').onclick=testAgendor);
   $('ag-load-funnels')&&($('ag-load-funnels').onclick=loadAgendorFunnels);
+  $('ag-diag')&&($('ag-diag').onclick=diagAgendorOrigins);
   $('ag-save-map')&&($('ag-save-map').onclick=async()=>{
     const parse=v=>{ if(!v) return null; const [fid,sid]=v.split(':'); const f=S._funnelStages.find(x=>String(x.funnelId)===fid&&String(x.stageId)===sid); return f?{funnelId:f.funnelId,stageId:f.stageId,stageOrder:f.stageOrder,funnelName:f.funnelName,stageName:f.stageName}:null; };
     const byPl={};
