@@ -175,7 +175,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               person.mutual   ? `Amigos em comum: ${person.mutual}`: '',
               person.notes    ? `Obs: ${person.notes}`             : '',
               person.profileUrl ? `Perfil: ${person.profileUrl}`  : '',
-              'Origem: Redes sociais',
+              `Origem: ${person.originName || 'Redes sociais'}`,
             ].filter(Boolean).join('\n'),
           }),
         });
@@ -194,18 +194,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             title: deal.title, description: deal.description || '',
             dealStageId: deal.dealStageId, funnelId: deal.funnel,
           };
+          // ORIGEM ("Origem" do negócio). Sem esse campo o Hub carimba tudo
+          // com a origem da integração ("IGProspect"). O nome do campo vem
+          // pronto do painel (deal.origin.field), que o descobre lendo um
+          // negócio real do CRM — ver app.js detectAgendorOriginField.
+          const origin = (deal.origin && deal.origin.id != null) ? deal.origin : null;
+          const originPatch = origin ? { [origin.field || 'dealSource']: origin.id } : {};
+          Object.assign(dealBody, originPatch);
           // Hub expõe POST /deals (personId no corpo); o Agendor usava a rota
           // aninhada, onde vale o dialeto antigo (posição da etapa).
           let dr = await fetch(`${CRM_BASE}/deals`, {
             method: 'POST', headers,
             body: JSON.stringify({ ...dealBody, personId }),
           });
+          // Se o CRM recusar o CAMPO da origem (nome diferente nessa
+          // instalação), refaz sem ela: perder a origem é chato, ficar sem
+          // negócio nenhum é grave. Mesma regra do painel (agendorCreateDeal).
+          if (origin && (dr.status === 400 || dr.status === 422)) {
+            const noOrigin = { ...dealBody };
+            Object.keys(originPatch).forEach(k => delete noOrigin[k]);
+            dr = await fetch(`${CRM_BASE}/deals`, {
+              method: 'POST', headers,
+              body: JSON.stringify({ ...noOrigin, personId }),
+            });
+          }
           if (dr.status === 404 || dr.status === 405) {
             dr = await fetch(`${CRM_BASE}/people/${personId}/deals`, {
               method: 'POST', headers,
               body: JSON.stringify({
                 title: deal.title, description: deal.description || '',
-                dealStage: deal.dealStage, funnel: deal.funnel,
+                dealStage: deal.dealStage, funnel: deal.funnel, ...originPatch,
               }),
             });
           }
@@ -218,7 +236,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             try {
               await fetch(`${CRM_BASE}/deals/${dealId}`, {
                 method: 'PUT', headers,
-                body: JSON.stringify({ dealStageId: deal.dealStageId, funnelId: deal.funnel }),
+                // originPatch junto: se o CRM tratar o PUT como substituição,
+                // mandar só etapa/funil zeraria a origem recém-definida.
+                body: JSON.stringify({ dealStageId: deal.dealStageId, funnelId: deal.funnel, ...originPatch }),
               });
             } catch (e) { /* pessoa+negócio já existem; falha aqui só deixa a etapa por conferir */ }
           }

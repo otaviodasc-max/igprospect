@@ -21,6 +21,7 @@ create table if not exists public.org_pipelines (
   stages                jsonb not null default '[]'::jsonb,
   -- stages: [ {key:'novo', label:'Novo Lead', short:'Novos', color:'#64748B', order:0}, ... ]
   agendor_map           jsonb, -- {funnelId, stageId, funnelName, stageName} | null
+  agendor_origin        jsonb, -- origem do negócio no CRM: {id, name, field} | null (ver supabase-agendor-origin.sql)
   created_at            timestamptz not null default now(),
   updated_at            timestamptz not null default now()
 );

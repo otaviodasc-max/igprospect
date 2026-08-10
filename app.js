@@ -23,6 +23,9 @@ const S = { session:null, profile:null, org:null, route:'dashboard', period:'all
   lf:{ q:'', note:'', status:'', niche:'', pipeline:'', sort:'newest', page:1, ag:'' },
   cf:{ q:'', outcome:'', sort:'newest', page:1 },
   crmPipelineId:'', crmQ:'', dealQ:'', dealPipelineId:'', _funnelStages:[], sel:{ mode:false, ids:new Set() },
+  // Origens ("Origem" do negócio) carregadas do CRM junto com os funis, e a
+  // rota/campo que funcionaram nessa instalação — ver loadAgendorOrigins.
+  _origins:[], _originsRoute:null, _originField:null,
   relView:'pay', relMemberId:'', relWeeksBack:12, relQ:'',
   relDashFrom:'', relDashTo:'', relDashPipelineId:'',
   relPayFrom:'', relPayTo:'',
@@ -2188,6 +2191,73 @@ function agendorStageFor(lead){
   return null;
 }
 
+// ---------------------------------------------------------------------
+// ORIGEM do negócio ("Origem: Redes sociais", "Indicação", etc.)
+// ---------------------------------------------------------------------
+// Sem mandar origem nenhuma, o Hub do Corretor carimba o negócio com a origem
+// da integração ("IGProspect") — o que não diz nada pro corretor. Agora cada
+// FUNIL do IGProspect aponta pra uma origem do CRM (org_pipelines.
+// agendor_origin = {id,name,field}): funil "Instagram" → origem "Instagram",
+// funil "Empresários" → a origem que a equipe quiser.
+//
+// A API do Hub não é documentada, e nem a rota que LISTA as origens nem o
+// campo que as GRAVA são iguais em toda instalação (o Agendor chamava de
+// dealSource). Em vez de chutar um nome só e o recurso morrer calado, a
+// listagem varre rotas candidatas e o campo de escrita é DESCOBERTO lendo um
+// negócio que já existe no CRM (ver detectAgendorOriginField). O que funcionou
+// fica salvo junto do mapeamento, então o envio não depende de redescobrir.
+const AG_ORIGIN_ROUTES=['/deal_sources','/deal-sources','/origins','/sources','/deal_origins','/lead_sources'];
+const AG_ORIGIN_DEFAULT_FIELD='dealSource';
+// Candidatos ordenados do mais provável (dialeto Agendor) ao menos.
+const AG_ORIGIN_FIELDS=['dealSource','dealSourceId','source','sourceId','origin','originId','dealOrigin','leadSource'];
+
+// Origem configurada pro funil do lead. Diferente do destino de etapa, é uma
+// só por funil — origem não muda conforme o lead avança.
+function agendorOriginFor(lead){
+  const p=leadPipeline(lead);
+  const o=p&&p.agendor_origin;
+  return (o && o.id!=null) ? o : null;
+}
+function agendorOriginName(origin){ return (origin&&origin.name) || 'Redes sociais'; }
+
+// Lê um negócio real do CRM só pra descobrir COMO ele chama o campo de origem.
+// É o único jeito honesto de acertar o nome sem documentação — e é barato
+// (uma chamada, só quando o dono carrega os funis nas Configurações).
+async function detectAgendorOriginField(){
+  for(const path of ['/deals?per_page=1','/deals?limit=1','/deals']){
+    try{
+      const res=await agendorRequest(path);
+      const data=(res&&res.data)||res||[];
+      const sample=Array.isArray(data)?data[0]:data;
+      if(!sample||typeof sample!=='object') continue;
+      for(const k of AG_ORIGIN_FIELDS){ if(sample[k]!=null) return k; }
+      return null; // veio negócio, mas nenhum campo candidato: não insiste
+    }catch(err){ if(err.status!==404 && err.status!==405) return null; }
+  }
+  return null;
+}
+
+async function loadAgendorOrigins(){
+  const routes = S._originsRoute ? [S._originsRoute, ...AG_ORIGIN_ROUTES] : AG_ORIGIN_ROUTES;
+  for(const route of routes){
+    let res;
+    try{ res=await agendorRequest(route); }
+    catch(err){
+      // 404/405 = essa instalação não tem essa rota; qualquer outro erro
+      // (401, 500, rede) é problema real e não adianta varrer o resto.
+      if(err.status===404||err.status===405) continue;
+      throw err;
+    }
+    const data=(res&&res.data)||res||[];
+    if(!Array.isArray(data)) continue;
+    S._origins=data.map(o=>({ id:o.id, name:o.name||o.title||o.description||('Origem '+o.id) })).filter(o=>o.id!=null);
+    S._originsRoute=route;
+    return S._origins;
+  }
+  S._origins=[]; S._originsRoute=null;
+  return S._origins;
+}
+
 // Cria o negócio no CRM. O Hub do Corretor expõe POST /deals (com personId no
 // corpo); o Agendor usava POST /people/{id}/deals. Tentamos a rota do Hub e,
 // se ela não existir nessa instalação (404/405), caímos na aninhada — assim o
@@ -2200,21 +2270,40 @@ function agendorStageFor(lead){
 // o lead caía numa etapa diferente da configurada, porque dealStage carrega a
 // POSIÇÃO (1,2,3…) e o Hub aparentemente lia essa chave tratando o número como
 // se fosse ID. Mandar as duas formas não era "compatibilidade", era ambiguidade.
-function agendorDealBody(map, title, description){
-  return { title, description, dealStageId: map.stageId, funnelId: map.funnelId };
+function agendorDealBody(map, title, description, origin){
+  const body={ title, description, dealStageId: map.stageId, funnelId: map.funnelId };
+  if(origin && origin.id!=null) body[origin.field||AG_ORIGIN_DEFAULT_FIELD]=origin.id;
+  return body;
 }
 // Corpo no dialeto antigo do Agendor, só pra rota aninhada de fallback, onde
 // a posição é que vale.
-function agendorDealBodyLegacy(map, title, description){
-  return { title, description, dealStage: map.stageOrder, funnel: map.funnelId };
+function agendorDealBodyLegacy(map, title, description, origin){
+  const body={ title, description, dealStage: map.stageOrder, funnel: map.funnelId };
+  if(origin && origin.id!=null) body[origin.field||AG_ORIGIN_DEFAULT_FIELD]=origin.id;
+  return body;
 }
-async function agendorCreateDeal(personId, map, title, description){
-  const body={ ...agendorDealBody(map,title,description), personId };
+// Cria o negócio tentando com a origem escolhida. Se o CRM recusar o CAMPO da
+// origem (400/422 — nome de campo diferente nessa instalação), refaz sem ela
+// em vez de deixar o lead sem negócio nenhum: perder a origem é chato, perder
+// o negócio é grave. Devolve { res, originError } pra quem chamou avisar.
+async function agendorCreateDeal(personId, map, title, description, origin){
+  const post = async o => {
+    const body={ ...agendorDealBody(map,title,description,o), personId };
+    try{
+      return await agendorRequest('/deals','POST',body);
+    }catch(err){
+      if(err.status===404||err.status===405){
+        return await agendorRequest(`/people/${personId}/deals`,'POST',agendorDealBodyLegacy(map,title,description,o));
+      }
+      throw err;
+    }
+  };
   try{
-    return await agendorRequest('/deals','POST',body);
+    return { res: await post(origin), originError: null };
   }catch(err){
-    if(err.status===404||err.status===405){
-      return await agendorRequest(`/people/${personId}/deals`,'POST',agendorDealBodyLegacy(map,title,description));
+    if(origin && (err.status===400 || err.status===422)){
+      console.warn('CRM: origem recusada, recriando sem ela —', err.message);
+      return { res: await post(null), originError: `O CRM recusou a origem "${origin.name}" (${err.message}). O negócio foi criado sem origem definida.` };
     }
     throw err;
   }
@@ -2226,15 +2315,29 @@ async function agendorCreateDeal(personId, map, title, description){
 // duas derem 404/405, o erro sobe com uma mensagem que diz o que houve, em vez
 // do "HTTP 404" cru — sem isso o negócio congelaria na etapa de criação e
 // ninguém saberia por quê.
-async function agendorSetDealStage(dealId, map){
-  const body=agendorDealBody(map, undefined, undefined);
-  delete body.title; delete body.description;
+// A origem vai junto de propósito: um PUT pode ser tratado como substituição
+// pelo CRM, e mandar só etapa/funil arriscaria zerar a origem que o negócio
+// já tinha a cada avanço no Kanban. Se o campo da origem for recusado
+// (400/422), repete sem ele — mover a etapa é o que não pode falhar aqui.
+async function agendorSetDealStage(dealId, map, origin){
+  const build=o=>{ const b=agendorDealBody(map, undefined, undefined, o); delete b.title; delete b.description; return b; };
+  const send=async (method,o)=>await agendorRequest(`/deals/${dealId}`,method,build(o));
+  const attempt=async method=>{
+    try{ return await send(method,origin); }
+    catch(err){
+      if(origin && (err.status===400||err.status===422)){
+        console.warn('CRM: origem recusada na mudança de etapa —',err.message);
+        return await send(method,null);
+      }
+      throw err;
+    }
+  };
   try{
-    return await agendorRequest(`/deals/${dealId}`,'PUT',body);
+    return await attempt('PUT');
   }catch(err){
     if(err.status!==404 && err.status!==405) throw err;
     try{
-      return await agendorRequest(`/deals/${dealId}`,'PATCH',body);
+      return await attempt('PATCH');
     }catch(err2){
       if(err2.status!==404 && err2.status!==405) throw err2;
       const e=new Error('O CRM não aceita mudar a etapa de um negócio já criado (sem PUT/PATCH em /deals). O negócio fica na etapa em que nasceu.');
@@ -2261,9 +2364,23 @@ async function loadAgendorFunnels(){
     S._funnelStages=flat;
     if(!flat.length) toast('Nenhum funil/etapa retornado pelo CRM','warn');
     else toast(`${flat.length} etapas carregadas de ${data.length} funil(is)`,'success');
-    renderSettings();
   }catch(err){ toast('Falha ao carregar funis: '+err.message,'error'); agendorCorsHint(err.message); }
-  finally{ if(btn) btn.disabled=false; }
+
+  // Origens vêm na mesma ação, mas em try próprio: se o CRM não expuser a
+  // lista de origens, o mapeamento de etapas (que é o principal) continua
+  // funcionando em vez de a tela inteira ficar vazia por causa disso.
+  try{
+    const origins=await loadAgendorOrigins();
+    if(origins.length){
+      S._originField = await detectAgendorOriginField() || AG_ORIGIN_DEFAULT_FIELD;
+      toast(`${origins.length} origem(ns) carregada(s) do CRM`,'success');
+    }else{
+      toast('O CRM não devolveu nenhuma lista de origens — só o mapeamento de etapas ficará disponível.','warn');
+    }
+  }catch(err){ toast('Falha ao carregar origens: '+err.message,'warn'); }
+
+  if(btn) btn.disabled=false;
+  renderSettings();
 }
 
 async function testAgendor(){
@@ -2299,32 +2416,39 @@ async function sendLeadToAgendor(id, silent=false){
     if(lead.email) contact.email=lead.email;
     const displayName=agendorDisplayName(lead);
     const dealTitle=agendorDealTitle(lead);
-    const personPayload={ name: displayName, description:[ lead.niche?`Nicho: ${lead.niche}`:'', lead.notes?`Obs: ${lead.notes}`:'', 'Origem: Redes sociais' ].filter(Boolean).join('\n') };
+    const origin=agendorOriginFor(lead);
+    const originName=agendorOriginName(origin);
+    const personPayload={ name: displayName, description:[ lead.niche?`Nicho: ${lead.niche}`:'', lead.notes?`Obs: ${lead.notes}`:'', `Origem: ${originName}` ].filter(Boolean).join('\n') };
     if(Object.keys(contact).length) personPayload.contact=contact;
     const person=await agendorRequest('/people','POST',personPayload);
     const personId=(person&&person.data&&person.data.id)||(person&&person.id);
-    let dealId=null, stageWarn=null;
+    // Lista, não string: etapa e origem podem falhar no mesmo envio, e a
+    // segunda mensagem apagava a primeira quando isso era um campo só.
+    let dealId=null; const warns=[];
     if(personId){
-      const deal=await agendorCreateDeal(personId, map, dealTitle, `Origem: Redes sociais\nEnviado pelo IGProspect (funil ${map.funnelName}).`);
+      const created=await agendorCreateDeal(personId, map, dealTitle, `Origem: ${originName}\nEnviado pelo IGProspect (funil ${map.funnelName}).`, origin);
+      const deal=created.res;
+      if(created.originError) warns.push(created.originError);
       dealId=(deal&&deal.data&&deal.data.id)||(deal&&deal.id)||null;
       // Reforço: um PUT logo depois garante a etapa certa mesmo se a API não
       // respeitar dealStage já no POST de criação. Se esse PUT falhar, não
       // derruba o envio (pessoa+negócio já existem), mas o erro precisa
       // aparecer — antes ficava engolido sem log nenhum.
       if(dealId){
-        try{ await agendorSetDealStage(dealId, map); }
+        try{ await agendorSetDealStage(dealId, map, origin); }
         catch(e){
           console.warn('CRM: PUT de reforço da etapa falhou —',e.message);
           // Se a rota de mudar etapa simplesmente não existe nesse CRM, o
           // reforço era só um "cinto e suspensório" — a etapa já foi no POST.
           // Marcar ⚠ aqui fazia todo envio bem-sucedido parecer erro.
-          if(!e.noStageRoute) stageWarn=`Negócio criado, mas não travou na etapa "${map.stageName}": ${e.message}`;
+          if(!e.noStageRoute) warns.push(`Negócio criado, mas não travou na etapa "${map.stageName}": ${e.message}`);
         }
       }
     }
+    const stageWarn = warns.length ? warns.join(' · ') : null;
     await sb.from('leads').update({ agendor_person_id:personId?String(personId):null, agendor_deal_id:dealId?String(dealId):null, agendor_funnel:map.funnelName, agendor_status:stageWarn?'failed':'ok', agendor_error:stageWarn }).eq('id',id);
     Object.assign(lead,{ agendorPersonId:personId, agendorDealId:dealId, agendorFunnel:map.funnelName, agendorStatus:stageWarn?'failed':'ok', agendorError:stageWarn });
-    toast(stageWarn?`Enviado ao CRM, mas com aviso: ${stageWarn}`:`Enviado ao CRM → funil ${map.funnelName} ✓`, stageWarn?'warn':'success');
+    toast(stageWarn?`Enviado ao CRM, mas com aviso: ${stageWarn}`:`Enviado ao CRM → funil ${map.funnelName}${origin?` · origem ${originName}`:''} ✓`, stageWarn?'warn':'success');
   }catch(err){
     lead.agendorStatus='failed'; lead.agendorError=err.message;
     try{ await sb.from('leads').update({ agendor_status:'failed', agendor_error:err.message }).eq('id',id); }catch(e){}
@@ -2340,7 +2464,7 @@ async function syncAgendorDealStage(lead){
   const map=agendorStageFor(lead);
   if(!map||!map.stageId) return;
   try{
-    await agendorSetDealStage(lead.agendorDealId, map);
+    await agendorSetDealStage(lead.agendorDealId, map, agendorOriginFor(lead));
     await sb.from('leads').update({ agendor_funnel:map.funnelName, agendor_status:'ok', agendor_error:null }).eq('id',lead.id);
     Object.assign(lead,{ agendorFunnel:map.funnelName, agendorStatus:'ok', agendorError:null });
   }catch(err){
@@ -2402,7 +2526,10 @@ async function sendCallToAgendor(id, silent=false){
     // negócio no funil conforme o tipo do lead vinculado (empresário→Empresários, comum→Negócios)
     const linked=call.leadId?S.leads.find(l=>l.id===call.leadId):null;
     const map=agendorStageFor(linked||{});
-    if(personId&&map&&map.stageId){ try{ await agendorCreateDeal(personId, map, (call.name||'Lead')+' — '+map.funnelName, `Ligação interessada (IGProspect) · funil ${map.funnelName}.`); }catch(e){} }
+    // A origem sai do funil do lead vinculado — ligação avulsa (sem lead) não
+    // tem funil, então vai sem origem, como antes.
+    const callOrigin=linked?agendorOriginFor(linked):null;
+    if(personId&&map&&map.stageId){ try{ await agendorCreateDeal(personId, map, (call.name||'Lead')+' — '+map.funnelName, `Ligação interessada (IGProspect) · funil ${map.funnelName}.`, callOrigin); }catch(e){} }
     if(personId){ const when=call.at||new Date().toISOString(); const txt=`Ligação (${COM()[call.outcome]||call.outcome})`+(call.duration?` · ${call.duration} min`:'')+(call.notes?` — ${call.notes}`:''); try{ await agendorRequest(`/people/${personId}/tasks`,'POST',{ text:txt, type:'Ligação', dueDate:when, done:true }); }catch(e){} }
     toast('Ligação enviada ao CRM ✓','success');
   }catch(err){ toast('Falha ao enviar ligação ao CRM: '+err.message,'error'); agendorCorsHint(err.message); }
@@ -2785,9 +2912,9 @@ function renderSettings(){
         <div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Envio automático</div><div class="stg-ri-s">Ao chegar na última etapa de um funil, envia sozinho ao CRM</div></div><label style="cursor:pointer"><input type="checkbox" id="st-auto" ${agendorAutoOn()?'checked':''} style="width:20px;height:20px;cursor:pointer;accent-color:#10B981"></label></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary" id="st-save">Salvar integração</button><button class="btn btn-outline" id="ag-test">Testar conexão</button></div>
         <div style="height:1px;background:rgba(255,255,255,.06);margin:4px 0"></div>
-        <div class="stg-ri-t">Roteamento por etapa</div>
-        <div class="stg-ri-s" style="margin-bottom:8px">Cada ETAPA de cada funil de lead aponta pra uma etapa do CRM — quando o lead muda de etapa aqui, o negócio move de etapa lá também (não fica sempre no mesmo destino fixo). Etapas sem mapeamento não são enviadas.</div>
-        <button class="btn btn-outline btn-sm" id="ag-load-funnels" style="align-self:flex-start">↻ Carregar funis do CRM</button>
+        <div class="stg-ri-t">Roteamento por etapa e origem</div>
+        <div class="stg-ri-s" style="margin-bottom:8px">Cada ETAPA de cada funil de lead aponta pra uma etapa do CRM — quando o lead muda de etapa aqui, o negócio move de etapa lá também (não fica sempre no mesmo destino fixo). Etapas sem mapeamento não são enviadas. A <b>Origem</b> é escolhida uma vez por funil (ex.: funil "Instagram" → origem "Instagram") e vai carimbada no negócio; sem ela, o CRM marca tudo como "IGProspect".</div>
+        <button class="btn btn-outline btn-sm" id="ag-load-funnels" style="align-self:flex-start">↻ Carregar funis e origens do CRM</button>
         ${!S._funnelStages.length?`<div class="stg-ri-s">Carregue os funis do CRM acima pra mapear cada etapa.</div>`:S.pipelines.map(p=>{
           const stages=stagesOf(p);
           const flatMap = (p.agendor_map&&!p.agendor_map.stageId) ? p.agendor_map : null;
@@ -2797,7 +2924,16 @@ function renderSettings(){
             const opts=`<option value="">— não enviar —</option>`+S._funnelStages.map(f=>{ const v=`${f.funnelId}:${f.stageId}`; return `<option value="${v}" ${v===cv?'selected':''}>${esc(f.funnelName)} · ${esc(f.stageName)}</option>`; }).join('');
             return `<div class="stg-field"><label class="stg-label">${esc(s.label)}</label><select class="stg-input ag-map-stage" data-pl="${p.id}" data-stage="${esc(s.key)}">${opts}</select></div>`;
           }).join('');
-          return `<div style="margin-bottom:12px;padding-bottom:2px"><div style="font-size:.74rem;font-weight:700;color:var(--t2);margin-bottom:6px">${esc(p.icon||'')} ${esc(p.name)}</div><div class="form-grid">${rows}</div></div>`;
+          // A origem salva continua listada mesmo se o CRM não devolver mais
+          // essa origem agora — assim recarregar os funis não apaga em
+          // silêncio uma escolha que já estava valendo nos envios.
+          const curOrigin=p.agendor_origin&&p.agendor_origin.id!=null?p.agendor_origin:null;
+          const originList=S._origins.slice();
+          if(curOrigin && !originList.some(o=>String(o.id)===String(curOrigin.id))) originList.unshift({id:curOrigin.id,name:curOrigin.name+' (não está mais no CRM)'});
+          const originRow = originList.length
+            ? `<div class="stg-field"><label class="stg-label">Origem no CRM</label><select class="stg-input ag-map-origin" data-pl="${p.id}"><option value="">— deixar o CRM decidir —</option>${originList.map(o=>`<option value="${esc(String(o.id))}" ${curOrigin&&String(curOrigin.id)===String(o.id)?'selected':''}>${esc(o.name)}</option>`).join('')}</select></div>`
+            : `<div class="stg-ri-s" style="margin-bottom:6px">Sem origens disponíveis — o CRM não devolveu nenhuma lista de origens.</div>`;
+          return `<div style="margin-bottom:12px;padding-bottom:2px"><div style="font-size:.74rem;font-weight:700;color:var(--t2);margin-bottom:6px">${esc(p.icon||'')} ${esc(p.name)}</div><div class="form-grid">${originRow}${rows}</div></div>`;
         }).join('')}
         ${S._funnelStages.length?`<button class="btn btn-primary btn-sm" id="ag-save-map" style="align-self:flex-start">Salvar mapeamento</button>`:''}
         <div style="font-size:.72rem;color:var(--t2);margin-top:6px;padding:9px 11px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:8px">⚠️ O navegador bloqueia chamadas diretas à API do CRM (CORS) — por isso o envio passa por um proxy (Cloudflare Worker) já configurado no sistema.</div>
@@ -2853,10 +2989,34 @@ function renderSettings(){
       const pl=sel.dataset.pl; if(!byPl[pl]) byPl[pl]={};
       const mapped=parse(sel.value); if(mapped) byPl[pl][sel.dataset.stage]=mapped;
     });
-    for(const plId in byPl){
-      const agendor_map=Object.keys(byPl[plId]).length?byPl[plId]:null;
-      const{error}=await sb.from('org_pipelines').update({agendor_map}).eq('id',plId);
-      if(error){toast(error.message,'error');return;}
+    // Origem por funil. Guarda junto o NOME do campo que essa instalação do
+    // CRM usa pra gravar origem (descoberto ao carregar) — sem isso, todo
+    // envio teria que redescobrir, e um envio automático (sem ninguém nas
+    // Configurações) não teria como.
+    const originByPl={};
+    document.querySelectorAll('.ag-map-origin').forEach(sel=>{
+      const pl=sel.dataset.pl;
+      const id=sel.value;
+      if(!id){ originByPl[pl]=null; return; }
+      const found=S._origins.find(o=>String(o.id)===String(id));
+      const prev=(S.pipelines.find(p=>String(p.id)===String(pl))||{}).agendor_origin;
+      const name=found?found.name:(prev&&prev.name)||('Origem '+id);
+      originByPl[pl]={ id: found?found.id:(prev&&prev.id!=null?prev.id:id), name, field: S._originField || (prev&&prev.field) || AG_ORIGIN_DEFAULT_FIELD };
+    });
+    const plIds=new Set([...Object.keys(byPl), ...Object.keys(originByPl)]);
+    for(const plId of plIds){
+      const patch={};
+      if(byPl[plId]) patch.agendor_map=Object.keys(byPl[plId]).length?byPl[plId]:null;
+      if(plId in originByPl) patch.agendor_origin=originByPl[plId];
+      const{error}=await sb.from('org_pipelines').update(patch).eq('id',plId);
+      if(error){
+        // Erro típico de banco que ainda não recebeu a coluna nova: sem essa
+        // dica o dono só vê 'column "agendor_origin" does not exist' e não
+        // tem como saber que falta rodar um SQL.
+        if(/agendor_origin/.test(error.message)) toast('Falta rodar o SQL supabase-agendor-origin.sql no Supabase pra salvar a origem.','error');
+        else toast(error.message,'error');
+        return;
+      }
     }
     await loadPipelines(); toast('Mapeamento salvo ✓','success'); renderSettings();
   });

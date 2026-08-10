@@ -184,13 +184,16 @@
     orgMembers: [],  // membros da equipe conectada, pra escolher "quem é você" (doPickProspector)
     pipelineStages: null, // etapas reais do funil da equipe (ver currentStatuses/mapPipelineStages)
     agendorMap: null, // mapeamento etapa→funil/etapa do CRM (Configurações → Integração CRM), ver agendorStageFor
+    // Origem do negócio no CRM configurada pro funil da equipe ({id,name,field}
+    // ou null). Sem ela o Hub carimba tudo como "IGProspect".
+    agendorOrigin: null,
   };
 
   // ═══════════════════════════════════════════════
   // STORAGE
   // ═══════════════════════════════════════════════
   const db = {
-    load: () => new Promise(r => chrome.storage.local.get(['igp_l','igp_tok','igp_org','igp_stages','igp_agendor_map','igp_leads_pulled_at','igp_sync_times','igp_sync_paused'], r)),
+    load: () => new Promise(r => chrome.storage.local.get(['igp_l','igp_tok','igp_org','igp_stages','igp_agendor_map','igp_agendor_origin','igp_leads_pulled_at','igp_sync_times','igp_sync_paused'], r)),
     save: d  => new Promise(r => chrome.storage.local.set(d, r)),
   };
 
@@ -688,6 +691,10 @@
     renderBody();
     const displayName=agendorName(lead);
     const dealTitle=agendorDealTitle(lead);
+    // Origem configurada no painel pro funil da equipe (Configurações →
+    // Integração CRM). Sem ela, o Hub carimba o negócio como "IGProspect".
+    const origin=(S.agendorOrigin&&S.agendorOrigin.id!=null)?S.agendorOrigin:null;
+    const originName=(origin&&origin.name)||'Redes sociais';
     chrome.runtime.sendMessage({
       type: 'agendor_create_person',
       token: S.agendorToken,
@@ -699,6 +706,7 @@
         mutual:     lead.mutualFriends||'',
         notes:      lead.notes||'',
         profileUrl: lead.profileUrl||'',
+        originName,
       },
       deal: {
         title: dealTitle,
@@ -707,7 +715,8 @@
         // id real da etapa — o Hub do Corretor usa dealStageId, o Agendor usava
         // a posição em dealStage. O background.js manda os dois.
         dealStageId: map.stageId,
-        description: `Origem: Redes sociais\nEnviado pelo IGProspect (funil ${map.funnelName}).`,
+        description: `Origem: ${originName}\nEnviado pelo IGProspect (funil ${map.funnelName}).`,
+        origin,
       }
     }, resp=>{
       if (chrome.runtime.lastError) { S.agendorStatus[lead.id]='error'; toast('Erro ao conectar com CRM','err'); renderBody(); return; }
@@ -1381,14 +1390,14 @@
       // é pior que usar o fallback genérico: as keys de uma equipe não têm
       // NENHUMA relação com as da outra. Cai no DEFAULT_STATUSES até o pull
       // da equipe nova confirmar as etapas de verdade dela.
-      S.pipelineStages=null; S.agendorMap=null;
+      S.pipelineStages=null; S.agendorMap=null; S.agendorOrigin=null;
       // SEMPRE substitui o token pelo da equipe nova, mesmo vazio — antes só
       // atualizava quando a equipe TINHA token, então conectar numa equipe
       // sem CRM mantinha o token cacheado de uma equipe anterior (ex.: de
       // teste), e a extensão mostrava "Token configurado" com o campo vazio
       // no sistema.
       S.agendorToken=res.org.agendor_token||'';
-      db.save({igp_org:S.org, igp_l:S.leads, igp_leads_pulled_at:0, igp_sync_times:[], igp_sync_paused:false, igp_stages:null, igp_agendor_map:null, igp_tok:S.agendorToken});
+      db.save({igp_org:S.org, igp_l:S.leads, igp_leads_pulled_at:0, igp_sync_times:[], igp_sync_paused:false, igp_stages:null, igp_agendor_map:null, igp_agendor_origin:null, igp_tok:S.agendorToken});
       renderBody();
       toast(`✓ Conectado à equipe "${res.org.name}" — falta dizer quem é você`,'ok');
       chrome.runtime.sendMessage({ type:'resolve_org_members', code }, res2=>{
@@ -1411,7 +1420,10 @@
       if(!res||!res.ok||!res.pipeline){ console.warn('IGProspect: falha ao puxar etapas do funil', res&&res.error); return; }
       S.pipelineStages=mapPipelineStages(res.pipeline.stages);
       S.agendorMap=res.pipeline.agendor_map||null;
-      db.save({igp_stages:S.pipelineStages, igp_agendor_map:S.agendorMap});
+      // agendor_origin só existe depois de rodar supabase-agendor-origin.sql —
+      // até lá vem undefined e a extensão segue enviando sem origem (como antes).
+      S.agendorOrigin=res.pipeline.agendor_origin||null;
+      db.save({igp_stages:S.pipelineStages, igp_agendor_map:S.agendorMap, igp_agendor_origin:S.agendorOrigin});
       if(S.open) renderBody();
     });
   }
@@ -1532,6 +1544,7 @@
     if(d.igp_org) S.org=d.igp_org;
     if(d.igp_stages) S.pipelineStages=d.igp_stages;
     if(d.igp_agendor_map) S.agendorMap=d.igp_agendor_map;
+    if(d.igp_agendor_origin) S.agendorOrigin=d.igp_agendor_origin;
     if(d.igp_sync_times) recentSyncTimes=d.igp_sync_times;
     if(d.igp_sync_paused) syncPaused=true;
     render();
