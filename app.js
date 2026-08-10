@@ -2207,9 +2207,12 @@ function agendorStageFor(lead){
 // negócio que já existe no CRM (ver detectAgendorOriginField). O que funcionou
 // fica salvo junto do mapeamento, então o envio não depende de redescobrir.
 const AG_ORIGIN_ROUTES=['/deal_sources','/deal-sources','/origins','/sources','/deal_origins','/lead_sources'];
-const AG_ORIGIN_DEFAULT_FIELD='dealSource';
-// Candidatos ordenados do mais provável (dialeto Agendor) ao menos.
-const AG_ORIGIN_FIELDS=['dealSource','dealSourceId','source','sourceId','origin','originId','dealOrigin','leadSource'];
+// CONFIRMADO no Hub do Corretor pelo negócio de teste (agendorOriginTest):
+// mandamos um valor diferente em cada campo candidato e o CRM exibiu
+// "SRC-origin" — ou seja, o campo que ele lê é "origin". Os outros seguem na
+// lista só pro teste continuar servindo em outra instalação.
+const AG_ORIGIN_DEFAULT_FIELD='origin';
+const AG_ORIGIN_FIELDS=['origin','dealSource','dealSourceId','source','sourceId','originId','dealOrigin','leadSource'];
 
 // Origem configurada pro funil do lead. Diferente do destino de etapa, é uma
 // só por funil — origem não muda conforme o lead avança.
@@ -2546,6 +2549,10 @@ async function sendLeadToAgendor(id, silent=false){
     const originName=agendorOriginName(origin);
     const personPayload={ name: displayName, description:[ lead.niche?`Nicho: ${lead.niche}`:'', lead.notes?`Obs: ${lead.notes}`:'', `Origem: ${originName}` ].filter(Boolean).join('\n') };
     if(Object.keys(contact).length) personPayload.contact=contact;
+    // O Hub mostra a Origem em "Dados do contato", na PESSOA — mandar só no
+    // negócio deixaria justamente o campo que o corretor olha em branco.
+    const originValue=agendorOriginValue(origin);
+    if(originValue!=null) personPayload[origin.field||agendorOriginField()]=originValue;
     const person=await agendorRequest('/people','POST',personPayload);
     const personId=(person&&person.data&&person.data.id)||(person&&person.id);
     // Lista, não string: etapa e origem podem falhar no mesmo envio, e a
@@ -2647,6 +2654,11 @@ async function sendCallToAgendor(id, silent=false){
   try{
     const personPayload={ name: call.name||call.phone||'Lead IGProspect', description:'Lead da prospecção IGProspect.' };
     if(call.phone) personPayload.contact={ mobile:call.phone };
+    // Mesma origem do funil do lead vinculado (ver mais abaixo) — precisa ser
+    // resolvida antes do POST da pessoa, que é onde o Hub mostra a Origem.
+    const callLead=call.leadId?S.leads.find(l=>l.id===call.leadId):null;
+    const callOriginValue=agendorOriginValue(callLead?agendorOriginFor(callLead):null);
+    if(callOriginValue!=null) personPayload[agendorOriginField()]=callOriginValue;
     const person=await agendorRequest('/people','POST',personPayload);
     const personId=(person&&person.data&&person.data.id)||(person&&person.id);
     // negócio no funil conforme o tipo do lead vinculado (empresário→Empresários, comum→Negócios)

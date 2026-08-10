@@ -170,6 +170,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           body: JSON.stringify({
             name: person.name,
             contact: { mobile: person.phone || '', instagram: person.instagram || '' },
+            // O Hub mostra a Origem em "Dados do contato", na PESSOA — campo
+            // "origin", confirmado pelo negócio de teste do painel. Mandar só
+            // no negócio deixaria em branco justamente o campo que aparece.
+            ...(person.originValue != null ? { [person.originField || 'origin']: person.originValue } : {}),
             description: [
               person.niche    ? `Nicho: ${person.niche}`          : '',
               person.mutual   ? `Amigos em comum: ${person.mutual}`: '',
@@ -200,7 +204,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // negócio real do CRM — ver app.js detectAgendorOriginField.
           const origin = deal.origin || null;
           const originValue = origin ? (origin.id != null ? origin.id : (origin.name || '').trim() || null) : null;
-          const originPatch = originValue != null ? { [origin.field || 'dealSource']: originValue } : {};
+          const originPatch = originValue != null ? { [origin.field || 'origin']: originValue } : {};
           Object.assign(dealBody, originPatch);
           // Hub expõe POST /deals (personId no corpo); o Agendor usava a rota
           // aninhada, onde vale o dialeto antigo (posição da etapa).

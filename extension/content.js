@@ -710,6 +710,8 @@
         notes:      lead.notes||'',
         profileUrl: lead.profileUrl||'',
         originName,
+        originValue: origin ? (origin.id!=null?origin.id:(origin.name||'').trim()||null) : null,
+        originField: (origin&&origin.field)||'origin',
       },
       deal: {
         title: dealTitle,
