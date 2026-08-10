@@ -2279,10 +2279,19 @@ async function diagAgendorOrigins(){
     lines.push(`${r.status} ${p} ${resumo}`);
   }
   lines.push('');
-  lines.push('=== UM NEGÓCIO REAL (procurar aqui o campo de origem) ===');
-  const deal=await agendorProbe('/deals?per_page=1');
-  lines.push(`status ${deal.status}`);
-  lines.push(deal.body.slice(0,6000));
+  // Controle: uma rota que com certeza não existe. Se ela responder igual às
+  // outras, o "200 {data:[]}" não significa "rota existe e está vazia" —
+  // significa que o Hub responde qualquer coisa com um 200 vazio, e nenhuma
+  // conclusão pode ser tirada das rotas acima.
+  lines.push('=== CONTROLE (rota inventada — tem que dar erro) ===');
+  const ctrl=await agendorProbe('/zzz_rota_que_nao_existe_'+Date.now());
+  lines.push(`${ctrl.status} ${ctrl.body.replace(/\s+/g,' ').slice(0,300)}`);
+  lines.push('');
+  lines.push('=== ROTAS QUE O SISTEMA JÁ USA (referência do que funciona) ===');
+  for(const p of ['/users/me','/funnels','/deals','/people']){
+    const r=await agendorProbe(p);
+    lines.push(`${r.status} ${p} ${r.body.replace(/\s+/g,' ').slice(0,500)}`);
+  }
   const report=lines.join('\n');
   console.log(report);
   openModal(`<div class="modal-ov"><div class="modal-box" style="max-width:760px"><div class="modal-hd"><div><div class="modal-title">Diagnóstico da API do CRM</div><div class="modal-sub">Copie e mande pro suporte — é com isso que a origem é destravada</div></div><div class="x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div></div>
