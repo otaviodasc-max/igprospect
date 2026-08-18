@@ -76,6 +76,36 @@ function leadWasCalled(l){ if(l&&l.calledAt) return true; const first=firstStage
 // aí o fallback é status_changed_at, o melhor histórico disponível.
 function leadCalledDate(l){ return (l&&l.calledAt)||(l&&(l.statusChangedAt||l.addedAt))||null; }
 function leadEffectiveDate(l){ return leadWasCalled(l) ? leadCalledDate(l) : l.addedAt; }
+// ---- Data de CADA etapa (stage_dates) ----------------------------------
+// Um lead não tem uma data só: tem a data em que entrou em cada etapa do
+// funil dele. Arrastar de "Chamado" pra "Respondeu 2ª Abordagem" registra a
+// data da 2ª abordagem SEM mexer na data do chamado — as etapas são
+// independentes, uma nunca desconta da outra. Sem isso, o lead migrava
+// inteiro pro dia da etapa nova e no fim do mês faltava lead chamado na
+// contagem de quem prospectou.
+// Leads antigos (antes da migração) não têm o mapa completo — aí o fallback
+// reconstrói o melhor palpite: 1ª etapa = cadastro, etapa atual = data da
+// última mudança, etapas intermediárias já percorridas = data do chamado.
+// Etapa que o lead ainda não alcançou devolve null (não conta em lugar nenhum).
+function leadReachedStage(l, key, pipeline){
+  if(!l) return false;
+  if(l.stageDates && l.stageDates[key]) return true;
+  const stages=STS(pipeline||leadPipeline(l));
+  const ki=stages.indexOf(key), ci=stages.indexOf(l.status||stages[0]);
+  return ki>=0 && ci>=0 && ki<=ci;
+}
+function leadStageDate(l, key, pipeline){
+  if(!l) return null;
+  const sd=l.stageDates||{};
+  if(sd[key]) return sd[key];
+  const stages=STS(pipeline||leadPipeline(l));
+  const first=stages[0]||'novo';
+  if(key===first) return l.addedAt||null;
+  const ki=stages.indexOf(key), ci=stages.indexOf(l.status||first);
+  if(ki<0||ci<0||ki>ci) return null;
+  if(ki===ci) return l.statusChangedAt||l.addedAt||null;
+  return leadCalledDate(l);
+}
 // Cada equipe cria a própria key ao editar etapas (ex.: "Enviou Contato" pode
 // ser 'contato' numa equipe e 'enviou_contato' noutra) — a key nunca é
 // confiável entre equipes, mas o LABEL visível é estável. Mesma lógica usada
@@ -475,7 +505,7 @@ async function doJoinOrg(){ const code=$('ob-code').value.trim(); if(!code) retu
 /* =====================================================================
    DATA LAYER (mapeia snake_case <-> camelCase)
 ===================================================================== */
-const leadFromRow = r => ({ id:r.id, name:r.name, username:r.username, phone:r.phone, email:r.email, niche:r.niche, status:r.status||'novo', tipo:r.tipo||'comum', pipeline_id:r.pipeline_id, funil:r.funil, cidade:r.cidade, estado:r.estado, cnpj:r.cnpj, notes:r.notes, followers:r.followers, following:r.following, source:r.source, addedAt:r.added_at, statusChangedAt:r.status_changed_at||r.added_at, calledAt:r.called_at||null, createdBy:r.created_by, extId:r.ext_id, agendorPersonId:r.agendor_person_id, agendorDealId:r.agendor_deal_id, agendorFunnel:r.agendor_funnel, agendorStatus:r.agendor_status, agendorError:r.agendor_error, customFields:r.custom_fields||{} });
+const leadFromRow = r => ({ id:r.id, name:r.name, username:r.username, phone:r.phone, email:r.email, niche:r.niche, status:r.status||'novo', tipo:r.tipo||'comum', pipeline_id:r.pipeline_id, funil:r.funil, cidade:r.cidade, estado:r.estado, cnpj:r.cnpj, notes:r.notes, followers:r.followers, following:r.following, source:r.source, addedAt:r.added_at, statusChangedAt:r.status_changed_at||r.added_at, calledAt:r.called_at||null, stageDates:r.stage_dates||{}, createdBy:r.created_by, extId:r.ext_id, agendorPersonId:r.agendor_person_id, agendorDealId:r.agendor_deal_id, agendorFunnel:r.agendor_funnel, agendorStatus:r.agendor_status, agendorError:r.agendor_error, customFields:r.custom_fields||{} });
 const leadToRow = l => { const o={ name:l.name, username:l.username, phone:l.phone, email:l.email, niche:l.niche, status:l.status, tipo:l.tipo, notes:l.notes, followers:l.followers, following:l.following }; if(l.pipeline_id!==undefined)o.pipeline_id=l.pipeline_id; if(l.source)o.source=l.source; if(l.customFields)o.custom_fields=l.customFields; return o; };
 const callFromRow = r => ({ id:r.id, leadId:r.lead_id, name:r.name, phone:r.phone, outcome:r.outcome||'nao_atendeu', duration:r.duration, at:r.at, notes:r.notes, createdBy:r.created_by });
 const callToRow = c => ({ lead_id:c.leadId||null, name:c.name, phone:c.phone, outcome:c.outcome, duration:c.duration, at:c.at, notes:c.notes });
@@ -1431,7 +1461,7 @@ function weeklyPay(){
   const dayRate=g.payDayRate||0, target=g.payTargetPerDay||0;
   const perLead = target>0 ? dayRate/target : 0;
   const chamados=g.payBasis==='chamados';
-  const wkLeads=S.leads.filter(l=>(l.tipo||'comum')!=='empresario' && inW(chamados?leadEffectiveDate(l):l.addedAt) && (!rid||l.createdBy===rid) && (!chamados||leadWasCalled(l)));
+  const wkLeads=S.leads.filter(l=>(l.tipo||'comum')!=='empresario' && inW(chamados?leadCalledDate(l):l.addedAt) && (!rid||l.createdBy===rid) && (!chamados||leadWasCalled(l)));
   const prospectLeads=wkLeads.length;
   const prospectPay=prospectLeads*perLead;
   const unpaid=(S.deals||[]).filter(d=>d.status===WON() && !d.commissionPaid && (!rid||d.createdBy===rid))
@@ -1730,7 +1760,7 @@ function weekReport(ws, we, memberId){
   const g=getGoals(); const dayRate=g.payDayRate||0, target=g.payTargetPerDay||0;
   const perLead = target>0 ? dayRate/target : 0;
   const chamados=g.payBasis==='chamados';
-  const wkLeads = S.leads.filter(l=>(l.tipo||'comum')!=='empresario' && inW(chamados?leadEffectiveDate(l):l.addedAt) && (!memberId||l.createdBy===memberId) && (!chamados||leadWasCalled(l)));
+  const wkLeads = S.leads.filter(l=>(l.tipo||'comum')!=='empresario' && inW(chamados?leadCalledDate(l):l.addedAt) && (!memberId||l.createdBy===memberId) && (!chamados||leadWasCalled(l)));
   const prospectLeads = wkLeads.length;
   const prospectPay = prospectLeads*perLead;
   const closedThisWeek = (S.deals||[]).filter(d=>d.status===WON() && inW(d.closedAt) && (!memberId||d.createdBy===memberId));
@@ -1912,33 +1942,42 @@ function renderRelDash(targetId){
   const pipeline=pipelineById(S.relDashPipelineId);
   const from=new Date(S.relDashFrom+'T00:00:00'), to=new Date(S.relDashTo+'T23:59:59.999');
   const inRange = iso => { if(!iso) return false; const d=new Date(iso); return d>=from && d<=to; };
-  // Cada lead entra no período pela sua data EFETIVA (ver leadEffectiveDate):
-  // cadastro enquanto está na 1ª etapa, ou a data em que mudou pra etapa
-  // atual, a partir daí — assim "Enviou Contato" conta no dia em que o
-  // status virou "Enviou Contato", não no dia do cadastro do lead.
-  const leads=S.leads.filter(l=>(!pipeline||l.pipeline_id===pipeline.id) && inRange(leadEffectiveDate(l)));
   const stages=stagesOf(pipeline);
-  // `counts` = onde cada lead está AGORA (exclusivo) — vale pra toda etapa,
-  // EXCETO a 1ª ("Novo Lead"). "Total no período" mistura duas datas
-  // diferentes por lead (leadEffectiveDate: cadastro OU data da última
-  // mudança de etapa, a que for mais recente) — por isso não serve pra
-  // "Novo Lead": um lead adicionado MÊS PASSADO mas chamado HOJE entra no
-  // total de hoje (pela mudança de etapa), sem ter sido seguido hoje; e um
-  // lead seguido HOJE que só mudou de etapa DEPOIS do período escolhido
-  // pode nem entrar no total. "Novo Lead" tem que ser só quem foi seguido/
-  // cadastrado DE VERDADE dentro do período (added_at puro) — um número
-  // à parte do "Total", não igual a ele. As outras etapas continuam
-  // exclusivas de propósito: cada equipe marca status lead a lead
-  // manualmente, então "quantos estão em Chamado agora" já é a resposta
-  // certa sem precisar de nada especial.
   const firstKey=(stages[0]&&stages[0].key)||'novo';
-  const counts=Object.fromEntries(stages.map(s=>[s.key,0]));
-  leads.forEach(l=>{ const st=l.status||firstKey; counts[st]=(counts[st]||0)+1; });
+  // Cada ETAPA conta com a data DELA (ver leadStageDate), não com uma data
+  // única por lead. Um lead chamado dia 3 e movido pra "Respondeu 2ª
+  // Abordagem" dia 20 conta em "Chamado" no dia 3 E em "Respondeu 2ª
+  // Abordagem" no dia 20 — mover o lead nunca desconta da etapa anterior,
+  // que é o que fazia faltar lead chamado no fechamento do mês e a pessoa
+  // receber a menos. Por isso a contagem é ACUMULADA (o lead conta em toda
+  // etapa por onde passou, cada uma no seu dia), e não exclusiva: a soma
+  // das etapas passa do total de propósito.
+  const plLeads=S.leads.filter(l=>(!pipeline||l.pipeline_id===pipeline.id));
+  const stageLeads=Object.fromEntries(stages.map(st=>[st.key,
+    plLeads.filter(l=>leadReachedStage(l,st.key,pipeline) && inRange(leadStageDate(l,st.key,pipeline)))]));
+  const counts=Object.fromEntries(stages.map(st=>[st.key,stageLeads[st.key].length]));
+  // "Total no período" = leads distintos que entraram em ALGUMA etapa dentro
+  // do período (contar cada lead uma vez só, mesmo que ele tenha andado por
+  // várias etapas nesse intervalo).
+  // periodDate = a PRIMEIRA movimentação do lead dentro do período — é ela
+  // que posiciona o lead no gráfico de linha e na lista de "recentes"
+  // (leadEffectiveDate não serve aqui: pode apontar pra fora do período).
+  const inPeriod=new Map();
+  stages.forEach(st=>stageLeads[st.key].forEach(l=>{
+    const d=leadStageDate(l,st.key,pipeline);
+    const cur=inPeriod.get(l.id);
+    if(!cur || new Date(d)<new Date(cur)) inPeriod.set(l.id,d);
+  }));
+  const leads=plLeads.filter(l=>inPeriod.has(l.id));
+  const periodDateOf = l => inPeriod.get(l.id)||leadEffectiveDate(l);
   const total=leads.length;
   const pctOf=n=>total?Math.round(n/total*100):0;
-  const addedInPeriod=S.leads.filter(l=>(!pipeline||l.pipeline_id===pipeline.id) && l.addedAt && new Date(l.addedAt)>=from && new Date(l.addedAt)<=to).length;
-  const displayCount = key => key===firstKey ? addedInPeriod : (counts[key]||0);
-  const maxC=Math.max(addedInPeriod, ...stages.map(s=>counts[s.key]||0), 1);
+  // Distribuição EXCLUSIVA (onde cada lead do período está agora) — é o que
+  // o donut precisa, já que ali as fatias têm que somar o total.
+  const nowCounts=Object.fromEntries(stages.map(st=>[st.key,0]));
+  leads.forEach(l=>{ const st=l.status||firstKey; if(nowCounts[st]!=null) nowCounts[st]++; });
+  const displayCount = key => counts[key]||0;
+  const maxC=Math.max(...stages.map(st=>counts[st.key]||0), 1);
   // Cada etapa/o total é clicável — abre a aba Leads já filtrada por ela
   // (e pelo funil escolhido aqui), pra ver a lista de verdade por trás do
   // número. Vale pra qualquer etapa que a equipe tenha cadastrado (não é
@@ -1970,11 +2009,11 @@ function renderRelDash(targetId){
   // mesmo desenho em canvas do Dashboard principal (drawTimeline/drawDonut),
   // só que alimentados com os dados deste período/funil escolhido.
   const days=Math.round((to-from)/86400000)+1;
-  const tlData=periodBuckets(leads, from, to, leadEffectiveDate);
-  const donutLgd=stages.map(s=>{ const n=counts[s.key]||0; return `<div class="donut-row rd-clickable" ${gostatusAttr(s.key)}><div class="donut-dot" style="background:${s.color}"></div><span class="donut-lbl">${esc(s.label)}</span><span class="donut-val">${n}</span><span class="donut-pct">${pctOf(n)}%</span></div>`; }).join('');
+  const tlData=periodBuckets(leads, from, to, periodDateOf);
+  const donutLgd=stages.map(s=>{ const n=nowCounts[s.key]||0; return `<div class="donut-row rd-clickable" ${gostatusAttr(s.key)}><div class="donut-dot" style="background:${s.color}"></div><span class="donut-lbl">${esc(s.label)}</span><span class="donut-val">${n}</span><span class="donut-pct">${pctOf(n)}%</span></div>`; }).join('');
 
-  const recent=[...leads].sort((a,b)=>new Date(leadEffectiveDate(b)||0)-new Date(leadEffectiveDate(a)||0)).slice(0,8);
-  const recentHtml=recent.length?recent.map(l=>`<div class="rl-item"><div class="avatar">${esc(ini(l.name||l.username))}</div><div class="rl-info"><div class="rl-name">${esc(l.name||l.username||'—')}</div><div class="rl-user">@${esc(l.username||'—')}</div></div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px"><span class="badge" style="background:${stColor(l)}22;color:${stColor(l)}">${stShort(l)}</span><span class="rl-time">${timeAgo(leadEffectiveDate(l))}</span></div></div>`).join(''):'<div style="font-size:.74rem;color:var(--t3);padding:12px 0">Nenhum lead no período.</div>';
+  const recent=[...leads].sort((a,b)=>new Date(periodDateOf(b)||0)-new Date(periodDateOf(a)||0)).slice(0,8);
+  const recentHtml=recent.length?recent.map(l=>`<div class="rl-item"><div class="avatar">${esc(ini(l.name||l.username))}</div><div class="rl-info"><div class="rl-name">${esc(l.name||l.username||'—')}</div><div class="rl-user">@${esc(l.username||'—')}</div></div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px"><span class="badge" style="background:${stColor(l)}22;color:${stColor(l)}">${stShort(l)}</span><span class="rl-time">${timeAgo(periodDateOf(l))}</span></div></div>`).join(''):'<div style="font-size:.74rem;color:var(--t3);padding:12px 0">Nenhum lead no período.</div>';
 
   // Na aba Dashboard (targetId='content'), De/Até/Funil vivem no topbar, do
   // lado do título "Dashboard" — o card no topo do conteúdo fica só com o
@@ -2070,7 +2109,7 @@ function renderRelDash(targetId){
   });
   requestAnimationFrame(()=>{
     bindTimelineHover($('rd-tl-chart'), drawTimeline(tlData, $('rd-tl-chart')));
-    bindDonutHover($('rd-donut-chart'), drawDonut(counts, total, $('rd-donut-chart'), stages));
+    bindDonutHover($('rd-donut-chart'), drawDonut(nowCounts, total, $('rd-donut-chart'), stages));
   });
   document.querySelectorAll('.rd-stat-val[data-cnt]').forEach(el=>animateCount(el,Number(el.dataset.cnt)));
   $('dash-pay-card')&&($('dash-pay-card').onclick=()=>{ S.route='relatorios'; S.relView='pay'; renderShell(); });
