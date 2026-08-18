@@ -54,12 +54,20 @@ function stColor(l){ const st=(l&&l.status)||'novo'; return SC(leadPipeline(l))[
 // Um lead "foi chamado" quando saiu da 1ª etapa do funil dele (ex.: "Novo Lead")
 // — usado pela opção de pagamento "leads chamados" (Metas), pra pagar só quem
 // o prospector efetivamente ligou/chamou, e não todo lead só cadastrado.
-function firstStageKey(p){ const sts=STS(p); return sts[0]||'novo'; }
-// Uma vez chamado, sempre chamado: se o lead já tem called_at, ele saiu da
-// etapa inicial em algum momento e conta como chamado pra sempre — mesmo que
-// depois alguém arraste ele de volta pra "Novo Lead". Quem prospectou não
-// pode perder o lead chamado por causa de um movimento posterior no funil.
-function leadWasCalled(l){ if(l&&l.calledAt) return true; const first=firstStageKey(leadPipeline(l)); return ((l&&l.status)||first)!==first; }
+// Uma vez chamado, sempre chamado: stage_dates guarda a entrada na etapa e
+// leadReachedStage olha pra ele antes do status atual, então o lead segue
+// contando como chamado mesmo que depois alguém arraste ele de volta pra
+// "Novo Lead" — quem prospectou não perde o lead por um movimento posterior.
+// "Chamado" é a 2ª etapa do funil do próprio lead — a mesma etapa que o
+// Dashboard conta. NÃO dá pra decidir por "status != primeira etapa": um
+// status que não pertence ao funil do lead (lead de outro funil, status
+// legado) passa nesse teste e era contado como chamado no pagamento, mesmo
+// ficando de fora do funil do Dashboard. Era isso que fazia o pagamento
+// mostrar o TOTAL do período (novos + chamados) no lugar dos chamados.
+// Agora as duas telas usam exatamente o mesmo teste (leadReachedStage), então
+// não têm como divergir.
+function calledStageKey(p){ return STS(p)[1]||null; }
+function leadWasCalled(l){ const p=leadPipeline(l); const k=calledStageKey(p); return !!k && leadReachedStage(l,k,p); }
 // Data "efetiva" de um lead pra fins de relatório: enquanto ele está na 1ª
 // etapa do funil (ex.: "Novo Lead"), a data que importa é o cadastro
 // (added_at, que já é automático). A partir do momento que a etapa muda —
@@ -74,7 +82,8 @@ function leadWasCalled(l){ if(l&&l.calledAt) return true; const first=firstStage
 // etapa o lead esteja hoje — ele conta sempre no dia em que foi chamado.
 // Leads antigos (ou inseridos já numa etapa avançada) não têm called_at:
 // aí o fallback é status_changed_at, o melhor histórico disponível.
-function leadCalledDate(l){ return (l&&l.calledAt)||(l&&(l.statusChangedAt||l.addedAt))||null; }
+// Data em que o lead foi chamado = data de entrada na 2ª etapa do funil dele.
+function leadCalledDate(l){ const p=leadPipeline(l); const k=calledStageKey(p); return (k&&leadReachedStage(l,k,p)) ? leadStageDate(l,k,p) : null; }
 function leadEffectiveDate(l){ return leadWasCalled(l) ? leadCalledDate(l) : l.addedAt; }
 // ---- Data de CADA etapa (stage_dates) ----------------------------------
 // Um lead não tem uma data só: tem a data em que entrou em cada etapa do
@@ -104,7 +113,11 @@ function leadStageDate(l, key, pipeline){
   const ki=stages.indexOf(key), ci=stages.indexOf(l.status||first);
   if(ki<0||ci<0||ki>ci) return null;
   if(ki===ci) return l.statusChangedAt||l.addedAt||null;
-  return leadCalledDate(l);
+  // Etapa intermediária já percorrida, sem histórico próprio (lead anterior à
+  // migração): o melhor palpite é a data do chamado. Aqui usamos os campos
+  // crus de propósito — chamar leadCalledDate() daria recursão, já que ele
+  // resolve a data dele justamente por esta função.
+  return l.calledAt||l.statusChangedAt||l.addedAt||null;
 }
 // Cada equipe cria a própria key ao editar etapas (ex.: "Enviou Contato" pode
 // ser 'contato' numa equipe e 'enviou_contato' noutra) — a key nunca é
