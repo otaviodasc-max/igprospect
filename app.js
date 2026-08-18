@@ -1482,8 +1482,11 @@ function leadPayUnits(l, chamados, withFollowUp){
 }
 // Soma o valor das unidades, dia a dia e pessoa a pessoa.
 // Bônus por meta diária (opcional, configurado por equipe em Metas): quando
-// alguém bate payBonusMinPerDay leads CHAMADOS num único dia, todas as
-// unidades daquele dia passam a valer payBonusRate em vez da tarifa normal.
+// alguém bate payBonusMinPerDay unidades num único dia, todas as unidades
+// daquele dia passam a valer payBonusRate em vez da tarifa normal.
+// Chamado e follow-up contam igual pro gatilho: na prática ninguém faz um
+// dia só de chamado ou só de follow-up — é tudo trabalho do mesmo dia, então
+// 90 follow-ups valem o bônus tanto quanto 90 chamados.
 // É por (dia + pessoa), então continua individual mesmo olhando a equipe
 // inteira — e como vem das settings da org, vale só pra equipe que
 // configurou, nunca vaza pras outras.
@@ -1493,8 +1496,7 @@ function prospectPayOf(units, g){
   units.forEach(u=>{ const k=(u.by||'-')+'|'+String(u.date).slice(0,10); if(!buckets.has(k)) buckets.set(k,[]); buckets.get(k).push(u); });
   let pay=0, bonusDays=0;
   buckets.forEach(list=>{
-    const baseCount=list.filter(u=>u.kind==='base').length;
-    const bonus = g.payBonusMinPerDay>0 && g.payBonusRate>0 && baseCount>=g.payBonusMinPerDay;
+    const bonus = g.payBonusMinPerDay>0 && g.payBonusRate>0 && list.length>=g.payBonusMinPerDay;
     if(bonus) bonusDays++;
     pay += list.length*(bonus?g.payBonusRate:base);
   });
@@ -1773,9 +1775,9 @@ function goalsForm(){
           <div class="fld"><label>Valor por dia (R$)</label><input id="gf-pay-rate" type="text" inputmode="decimal" value="${numberToMoney(g.payDayRate)}" placeholder="25,00"></div>
           <div class="fld"><label>Leads/dia p/ esse valor</label><input id="gf-pay-target" type="number" min="1" value="${g.payTargetPerDay}" placeholder="50"></div>
           <div class="fld full"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input id="gf-pay-followup" type="checkbox" ${g.payFollowUp?'checked':''} style="width:auto;margin:0"> Pagar também pelos follow-ups</label><div style="font-size:.68rem;color:var(--t3);margin-top:4px">Cada follow-up vale uma unidade no dia em que foi feito — inclusive num lead chamado meses atrás. Vale pras etapas do funil com "follow" no nome.</div></div>
-          <div class="fld"><label>Bônus: chamados/dia</label><input id="gf-pay-bonusmin" type="number" min="0" value="${g.payBonusMinPerDay||''}" placeholder="0 = sem bônus"></div>
+          <div class="fld"><label>Bônus: chamados+follow-ups/dia</label><input id="gf-pay-bonusmin" type="number" min="0" value="${g.payBonusMinPerDay||''}" placeholder="0 = sem bônus"></div>
           <div class="fld"><label>Bônus: valor por lead (R$)</label><input id="gf-pay-bonusrate" type="text" inputmode="decimal" value="${g.payBonusRate?numberToMoney(g.payBonusRate):''}" placeholder="0,65"></div>
-          <div class="fld full"><div style="font-size:.68rem;color:var(--t3);margin-top:-6px">Meta diária de impulso: quem bater esse tanto de leads chamados num único dia recebe o valor de bônus por lead naquele dia, em vez da tarifa normal. Deixe em 0 pra desligar. Vale só para esta equipe.</div></div>
+          <div class="fld full"><div style="font-size:.68rem;color:var(--t3);margin-top:-6px">Meta diária de impulso: quem bater esse tanto de trabalho num único dia — chamados e follow-ups somados — recebe o valor de bônus por unidade naquele dia, em vez da tarifa normal. Deixe em 0 pra desligar. Vale só para esta equipe.</div></div>
         </div>
         <div style="font-size:.68rem;color:var(--t3);margin-top:6px">Ex.: R$25/dia por 50 leads = R$0,50/lead. 120 leads num dia = R$60. O dashboard soma a semana e adiciona comissões de vendas ainda não pagas. Em "Leads chamados", só entra na conta quem já saiu da etapa "Novo Lead" no funil.</div>
       </div>
@@ -1905,7 +1907,7 @@ function renderRelPay(){
       ${saved
         ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:11px 13px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:10px"><span style="font-weight:700;font-size:.84rem;color:#10B981">✅ Pagamento confirmado</span><span style="font-size:.74rem;color:var(--t3)">${fmtCurrency(saved.total)} · confirmado em ${fmtDate(saved.createdAt)}</span></div>`
         : `<button class="btn btn-primary" id="rel-pay-confirm" ${rep.total<=0?'disabled':''}>Confirmar pagamento do período (${fmtCurrency(rep.total)})</button>`}
-      <div style="font-size:.68rem;color:var(--t3);margin-top:10px">Pagamento por ${g.payBasis==='chamados'?'leads chamados':'leads seguidos'}${g.payFollowUp?' + follow-ups':''}${g.payBonusMinPerDay>0&&g.payBonusRate>0?` · bônus de ${fmtCurrency(g.payBonusRate)}/lead a partir de ${g.payBonusMinPerDay} chamados no dia`:''}${g.payRecipientId?` · considera só leads de <b style="color:var(--t2)">${esc(payRecipientName())}</b>`:''} · ajuste em <b>Configurações</b>.</div>
+      <div style="font-size:.68rem;color:var(--t3);margin-top:10px">Pagamento por ${g.payBasis==='chamados'?'leads chamados':'leads seguidos'}${g.payFollowUp?' + follow-ups':''}${g.payBonusMinPerDay>0&&g.payBonusRate>0?` · bônus de ${fmtCurrency(g.payBonusRate)}/lead a partir de ${g.payBonusMinPerDay} no dia`:''}${g.payRecipientId?` · considera só leads de <b style="color:var(--t2)">${esc(payRecipientName())}</b>`:''} · ajuste em <b>Configurações</b>.</div>
     </div>
     <div class="card" style="padding:18px;margin-top:16px">
       <div class="card-title" style="margin-bottom:10px">Histórico de pagamentos confirmados</div>
