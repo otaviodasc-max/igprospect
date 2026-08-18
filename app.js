@@ -55,15 +55,27 @@ function stColor(l){ const st=(l&&l.status)||'novo'; return SC(leadPipeline(l))[
 // — usado pela opção de pagamento "leads chamados" (Metas), pra pagar só quem
 // o prospector efetivamente ligou/chamou, e não todo lead só cadastrado.
 function firstStageKey(p){ const sts=STS(p); return sts[0]||'novo'; }
-function leadWasCalled(l){ const first=firstStageKey(leadPipeline(l)); return ((l&&l.status)||first)!==first; }
+// Uma vez chamado, sempre chamado: se o lead já tem called_at, ele saiu da
+// etapa inicial em algum momento e conta como chamado pra sempre — mesmo que
+// depois alguém arraste ele de volta pra "Novo Lead". Quem prospectou não
+// pode perder o lead chamado por causa de um movimento posterior no funil.
+function leadWasCalled(l){ if(l&&l.calledAt) return true; const first=firstStageKey(leadPipeline(l)); return ((l&&l.status)||first)!==first; }
 // Data "efetiva" de um lead pra fins de relatório: enquanto ele está na 1ª
 // etapa do funil (ex.: "Novo Lead"), a data que importa é o cadastro
 // (added_at, que já é automático). A partir do momento que a etapa muda —
-// qualquer etapa, de qualquer funil — o que importa é QUANDO ela mudou
-// (status_changed_at, mantido por trigger no banco), não mais o cadastro.
-// Ex.: lead cadastrado 22/06, marcado "Enviou Contato" só em 23/07 → conta
-// em 23/07 pros relatórios/dashboards por etapa, não em 22/06.
-function leadEffectiveDate(l){ return leadWasCalled(l) ? (l.statusChangedAt||l.addedAt) : l.addedAt; }
+// qualquer etapa, de qualquer funil — o que importa é QUANDO ELE FOI CHAMADO,
+// isto é, a data da PRIMEIRA saída da etapa inicial (called_at, gravado uma
+// única vez por trigger no banco e nunca mais reescrito).
+// Ex.: lead cadastrado 22/06, chamado 23/07 → conta em 23/07.
+// Usar called_at (e não status_changed_at, que é reescrito a cada mudança) é
+// o que impede o lead de SUMIR da contagem do dia em que foi chamado quando
+// ele anda no funil depois: quem prospecta recebe por lead chamado, então a
+// data do "chamado" não pode andar junto com a etapa. Não importa em qual
+// etapa o lead esteja hoje — ele conta sempre no dia em que foi chamado.
+// Leads antigos (ou inseridos já numa etapa avançada) não têm called_at:
+// aí o fallback é status_changed_at, o melhor histórico disponível.
+function leadCalledDate(l){ return (l&&l.calledAt)||(l&&(l.statusChangedAt||l.addedAt))||null; }
+function leadEffectiveDate(l){ return leadWasCalled(l) ? leadCalledDate(l) : l.addedAt; }
 // Cada equipe cria a própria key ao editar etapas (ex.: "Enviou Contato" pode
 // ser 'contato' numa equipe e 'enviou_contato' noutra) — a key nunca é
 // confiável entre equipes, mas o LABEL visível é estável. Mesma lógica usada
@@ -463,7 +475,7 @@ async function doJoinOrg(){ const code=$('ob-code').value.trim(); if(!code) retu
 /* =====================================================================
    DATA LAYER (mapeia snake_case <-> camelCase)
 ===================================================================== */
-const leadFromRow = r => ({ id:r.id, name:r.name, username:r.username, phone:r.phone, email:r.email, niche:r.niche, status:r.status||'novo', tipo:r.tipo||'comum', pipeline_id:r.pipeline_id, funil:r.funil, cidade:r.cidade, estado:r.estado, cnpj:r.cnpj, notes:r.notes, followers:r.followers, following:r.following, source:r.source, addedAt:r.added_at, statusChangedAt:r.status_changed_at||r.added_at, createdBy:r.created_by, extId:r.ext_id, agendorPersonId:r.agendor_person_id, agendorDealId:r.agendor_deal_id, agendorFunnel:r.agendor_funnel, agendorStatus:r.agendor_status, agendorError:r.agendor_error, customFields:r.custom_fields||{} });
+const leadFromRow = r => ({ id:r.id, name:r.name, username:r.username, phone:r.phone, email:r.email, niche:r.niche, status:r.status||'novo', tipo:r.tipo||'comum', pipeline_id:r.pipeline_id, funil:r.funil, cidade:r.cidade, estado:r.estado, cnpj:r.cnpj, notes:r.notes, followers:r.followers, following:r.following, source:r.source, addedAt:r.added_at, statusChangedAt:r.status_changed_at||r.added_at, calledAt:r.called_at||null, createdBy:r.created_by, extId:r.ext_id, agendorPersonId:r.agendor_person_id, agendorDealId:r.agendor_deal_id, agendorFunnel:r.agendor_funnel, agendorStatus:r.agendor_status, agendorError:r.agendor_error, customFields:r.custom_fields||{} });
 const leadToRow = l => { const o={ name:l.name, username:l.username, phone:l.phone, email:l.email, niche:l.niche, status:l.status, tipo:l.tipo, notes:l.notes, followers:l.followers, following:l.following }; if(l.pipeline_id!==undefined)o.pipeline_id=l.pipeline_id; if(l.source)o.source=l.source; if(l.customFields)o.custom_fields=l.customFields; return o; };
 const callFromRow = r => ({ id:r.id, leadId:r.lead_id, name:r.name, phone:r.phone, outcome:r.outcome||'nao_atendeu', duration:r.duration, at:r.at, notes:r.notes, createdBy:r.created_by });
 const callToRow = c => ({ lead_id:c.leadId||null, name:c.name, phone:c.phone, outcome:c.outcome, duration:c.duration, at:c.at, notes:c.notes });
