@@ -307,12 +307,12 @@ async function bulkSetLeadsStage(idx){
   }
   for(const st in byStatus){
     const idsForSt=byStatus[st];
-    for(let i=0;i<idsForSt.length;i+=200){ const{error}=await sb.from('leads').update({status:st}).in('id',idsForSt.slice(i,i+200)); if(error){ toast(error.message,'error'); return; } }
+    for(let i=0;i<idsForSt.length;i+=200){ const{error}=await sb.from('leads').update({status:st}).eq('org_id',S.org.id).in('id',idsForSt.slice(i,i+200)); if(error){ toast(error.message,'error'); return; } }
     idsForSt.forEach(id=>{ const l=S.leads.find(x=>x.id===id); if(l) l.status=st; });
   }
   if(markAsAgendor){
     const missingIds=leads.filter(l=>!l.agendorPersonId).map(l=>l.id);
-    for(let i=0;i<missingIds.length;i+=200){ await sb.from('leads').update({agendor_person_id:'manual'}).in('id',missingIds.slice(i,i+200)); }
+    for(let i=0;i<missingIds.length;i+=200){ await sb.from('leads').update({agendor_person_id:'manual'}).eq('org_id',S.org.id).in('id',missingIds.slice(i,i+200)); }
     missingIds.forEach(id=>{ const l=S.leads.find(x=>x.id===id); if(l) l.agendorPersonId='manual'; });
   }
   // Um lead pode ganhar vários negócios ao longo do tempo (ver "+ Novo negócio"
@@ -321,7 +321,7 @@ async function bulkSetLeadsStage(idx){
   const dealTargets=leads.filter(l=>(isLastStage(l.status,leadPipeline(l))||l.tipo==='empresario') && !S.deals.some(d=>d.leadId===l.id));
   if(dealTargets.length){
     const prospector=(S.profile&&(S.profile.name||S.profile.email))||null;
-    const rows=dealTargets.map(l=>({ lead_id:l.id, prospector_name:prospector }));
+    const rows=dealTargets.map(l=>({ org_id:S.org.id, lead_id:l.id, prospector_name:prospector }));
     for(let i=0;i<rows.length;i+=200){ const{error}=await sb.from('deals').insert(rows.slice(i,i+200)); if(error){ console.warn('bulkSetLeadsStage deals:',error.message); } }
     await loadDeals();
   }
@@ -521,6 +521,12 @@ async function doJoinOrg(){ const code=$('ob-code').value.trim(); if(!code) retu
 const leadFromRow = r => ({ id:r.id, name:r.name, username:r.username, phone:r.phone, email:r.email, niche:r.niche, status:r.status||'novo', tipo:r.tipo||'comum', pipeline_id:r.pipeline_id, funil:r.funil, cidade:r.cidade, estado:r.estado, cnpj:r.cnpj, notes:r.notes, followers:r.followers, following:r.following, source:r.source, addedAt:r.added_at, statusChangedAt:r.status_changed_at||r.added_at, calledAt:r.called_at||null, stageDates:r.stage_dates||{}, createdBy:r.created_by, extId:r.ext_id, agendorPersonId:r.agendor_person_id, agendorDealId:r.agendor_deal_id, agendorFunnel:r.agendor_funnel, agendorStatus:r.agendor_status, agendorError:r.agendor_error, customFields:r.custom_fields||{} });
 const leadToRow = l => { const o={ name:l.name, username:l.username, phone:l.phone, email:l.email, niche:l.niche, status:l.status, tipo:l.tipo, notes:l.notes, followers:l.followers, following:l.following }; if(l.pipeline_id!==undefined)o.pipeline_id=l.pipeline_id; if(l.source)o.source=l.source; if(l.customFields)o.custom_fields=l.customFields; return o; };
 const callFromRow = r => ({ id:r.id, leadId:r.lead_id, name:r.name, phone:r.phone, outcome:r.outcome||'nao_atendeu', duration:r.duration, at:r.at, notes:r.notes, createdBy:r.created_by });
+// Toda escrita em tabela de equipe (leads/deals/calls/messages) leva a equipe
+// EXPLÍCITA. Com isso o banco (RLS: with check org_id = my_org()) recusa a
+// gravação se a equipe desta aba não for a equipe ativa — antes, o default
+// my_org() escolhia a equipe em silêncio (ex.: outra aba trocou de equipe).
+// Updates/deletes também filtram por org_id, além do id. Ver db/seguranca/.
+const withOrg = row => ({ ...row, org_id:S.org.id });
 const callToRow = c => ({ lead_id:c.leadId||null, name:c.name, phone:c.phone, outcome:c.outcome, duration:c.duration, at:c.at, notes:c.notes });
 const dealFromRow = r => ({ id:r.id, orgId:r.org_id, leadId:r.lead_id, createdBy:r.created_by, prospectorName:r.prospector_name, status:r.status||'contato', cardType:r.card_type, cardValue:r.card_value, commissionValue:r.commission_value, commissionPct:r.commission_pct, commissionPaid:!!r.commission_paid, paidAt:r.paid_at, report:r.report, notes:r.notes, closedAt:r.closed_at, createdAt:r.created_at, leadName:r.leads&&r.leads.name, leadUsername:r.leads&&r.leads.username, leadPhone:r.leads&&r.leads.phone, leadNiche:r.leads&&r.leads.niche });
 const dealToRow = d => { const o={updated_at:new Date().toISOString()}; if(d.status!==undefined)o.status=d.status; if(d.cardType!==undefined)o.card_type=d.cardType||null; if(d.cardValue!==undefined)o.card_value=d.cardValue!=null&&d.cardValue!==''?Number(d.cardValue):null; if(d.commissionValue!==undefined)o.commission_value=d.commissionValue!=null&&d.commissionValue!==''?Number(d.commissionValue):null; if(d.commissionPct!==undefined)o.commission_pct=d.commissionPct!=null&&d.commissionPct!==''?Number(d.commissionPct):null; if(d.commissionPaid!==undefined)o.commission_paid=!!d.commissionPaid; if(d.paidAt!==undefined)o.paid_at=d.paidAt||null; if(d.report!==undefined)o.report=d.report; if(d.notes!==undefined)o.notes=d.notes; if(d.closedAt!==undefined)o.closed_at=d.closedAt||null; return o; };
@@ -908,9 +914,9 @@ function leadForm(id){
     $('f-save').disabled=true;
     const prevStatus = id ? ((S.leads.find(x=>x.id===id)||{}).status) : null;
     let savedId=id;
-    if(id){ const{error}=await sb.from('leads').update(leadToRow(data)).eq('id',id); if(error){toast(error.message,'error');return;} toast('Lead atualizado','success'); }
-    else { data.source='manual'; const{data:ins,error}=await sb.from('leads').insert(leadToRow(data)).select('id').single(); if(error){toast(error.message,'error');return;} savedId=ins&&ins.id; toast('Lead cadastrado','success'); }
-    if(markAsInAgendor && savedId) await sb.from('leads').update({agendor_person_id:'manual'}).eq('id',savedId);
+    if(id){ const{error}=await sb.from('leads').update(leadToRow(data)).eq('org_id',S.org.id).eq('id',id); if(error){toast(error.message,'error');return;} toast('Lead atualizado','success'); }
+    else { data.source='manual'; const{data:ins,error}=await sb.from('leads').insert(withOrg(leadToRow(data))).select('id').single(); if(error){toast(error.message,'error');return;} savedId=ins&&ins.id; toast('Lead cadastrado','success'); }
+    if(markAsInAgendor && savedId) await sb.from('leads').update({agendor_person_id:'manual'}).eq('org_id',S.org.id).eq('id',savedId);
     const converted=isLastStage(data.status,pipeline);
     closeModal(); await loadLeads(); if(converted||data.tipo==='empresario'){ await loadDeals(); if(savedId) await ensureDealForLead(savedId); } renderShell();
     if(converted && prevStatus!==data.status) notifyLeadContato(S.leads.find(x=>x.id===savedId)||data);
@@ -923,7 +929,7 @@ function delLead(id){ const l=S.leads.find(x=>x.id===id);
   $('d-ok').onclick=async()=>{
     $('d-ok').disabled=true;
     if(hasAg && $('d-ag') && $('d-ag').checked) await deleteFromAgendor(l);
-    const{error}=await sb.from('leads').delete().eq('id',id);
+    const{error}=await sb.from('leads').delete().eq('org_id',S.org.id).eq('id',id);
     if(error){toast(error.message,'error');$('d-ok').disabled=false;return;}
     closeModal(); toast('Lead excluído','success'); await loadLeads(); await loadDeals(); renderShell();
   };
@@ -1108,7 +1114,7 @@ function importLeads(){
       const status = tipo==='empresario' ? (STS(pipeline)[0]||'a_contatar') : (matched||STS(pipeline)[1]||STS(pipeline)[0]);
       const notes=[l.notes||'',(rawStatus&&!matched)?`Situação original da planilha: ${rawStatus}`:''].filter(Boolean).join(' | ');
       const addedAt=parseBRDate(l.addedAt)||l.addedAt||new Date().toISOString();
-      rows.push({ name:l.name||'', username:uk||'', phone:l.phone||'', email:l.email||'', niche:l.niche||'', status, tipo, pipeline_id:pipeline&&pipeline.id, funil:l.funil||null, cidade:l.cidade||null, estado:l.estado||null, cnpj:l.cnpj||null, notes, source:l.source||'import', ext_id:extId||null, added_at:addedAt });
+      rows.push({ org_id:S.org.id, name:l.name||'', username:uk||'', phone:l.phone||'', email:l.email||'', niche:l.niche||'', status, tipo, pipeline_id:pipeline&&pipeline.id, funil:l.funil||null, cidade:l.cidade||null, estado:l.estado||null, cnpj:l.cnpj||null, notes, source:l.source||'import', ext_id:extId||null, added_at:addedAt });
     }
     if(!rows.length){ toast('Nada novo para importar (já estão no sistema)','warn'); return; }
     // Confirmação com o nome da equipe ATIVA agora — importar sem checar isso
@@ -1182,7 +1188,7 @@ function renderCRM(){
   board2.addEventListener('dragend',e=>{ const c=e.target.closest('.crm-card'); if(c)c.classList.remove('dragging'); document.querySelectorAll('.crm-col.dragover').forEach(x=>x.classList.remove('dragover')); });
   board2.addEventListener('dragover',e=>{ const col=e.target.closest('.crm-col'); if(col){ e.preventDefault(); col.classList.add('dragover'); } });
   board2.addEventListener('dragleave',e=>{ const col=e.target.closest('.crm-col'); if(col&&!col.contains(e.relatedTarget))col.classList.remove('dragover'); });
-  board2.addEventListener('drop',async e=>{ const col=e.target.closest('.crm-col'); if(!col||!dragId)return; e.preventDefault(); const id=dragId; dragId=null; const ns=col.dataset.status; const l=S.leads.find(x=>x.id===id); if(l&&l.status!==ns){ l.status=ns; const{error}=await sb.from('leads').update({status:ns}).eq('id',id); if(error){ toast(error.message,'error'); } else { const lp=leadPipeline(l); toast(`Movido para "${(SM(lp)[ns]||{}).label||ns}"`,'success'); if(isLastStage(ns,lp)||l.tipo==='empresario'){ await loadDeals(); await ensureDealForLead(id); if(isLastStage(ns,lp)){ toast('Negociação criada na aba Negociações ☑','success'); notifyLeadContato(l); } } await autoSyncAgendor(l); } } renderCRM(); });
+  board2.addEventListener('drop',async e=>{ const col=e.target.closest('.crm-col'); if(!col||!dragId)return; e.preventDefault(); const id=dragId; dragId=null; const ns=col.dataset.status; const l=S.leads.find(x=>x.id===id); if(l&&l.status!==ns){ l.status=ns; const{error}=await sb.from('leads').update({status:ns}).eq('org_id',S.org.id).eq('id',id); if(error){ toast(error.message,'error'); } else { const lp=leadPipeline(l); toast(`Movido para "${(SM(lp)[ns]||{}).label||ns}"`,'success'); if(isLastStage(ns,lp)||l.tipo==='empresario'){ await loadDeals(); await ensureDealForLead(id); if(isLastStage(ns,lp)){ toast('Negociação criada na aba Negociações ☑','success'); notifyLeadContato(l); } } await autoSyncAgendor(l); } } renderCRM(); });
   board2.addEventListener('click',e=>{ const c=e.target.closest('.crm-card[data-id]'); if(!c)return; if(S.sel.mode){ selToggle(c.dataset.id); renderCRM(); return; } leadForm(c.dataset.id); });
   bindSelBar(leads.map(l=>l.id), renderCRM, bulkDeleteLeads);
 }
@@ -1196,7 +1202,7 @@ function renderCRM(){
 async function ensureDealForLead(leadId){
   if(S.deals.some(d=>d.leadId===leadId)) return;
   const prospector=(S.profile&&(S.profile.name||S.profile.email))||null;
-  const { error }=await sb.from('deals').insert({ lead_id:leadId, prospector_name:prospector });
+  const { error }=await sb.from('deals').insert({ org_id:S.org.id, lead_id:leadId, prospector_name:prospector });
   if(error){ console.warn('ensureDealForLead:',error.message); return; }
   await loadDeals();
 }
@@ -1206,7 +1212,7 @@ async function ensureDealForLead(leadId){
 async function addDealForLead(leadId){
   const l=S.leads.find(x=>x.id===leadId); if(!l) return;
   const prospector=(S.profile&&(S.profile.name||S.profile.email))||null;
-  const { data, error }=await sb.from('deals').insert({ lead_id:leadId, prospector_name:prospector }).select('*, leads(name,username,phone,niche)').single();
+  const { data, error }=await sb.from('deals').insert({ org_id:S.org.id, lead_id:leadId, prospector_name:prospector }).select('*, leads(name,username,phone,niche)').single();
   if(error){ toast(error.message,'error'); return; }
   S.deals.unshift(dealFromRow(data));
   toast('Negócio criado — preencha os detalhes','success');
@@ -1266,8 +1272,8 @@ function callForm(id){
     const data={ leadId:$('cf-lead').value||null, name, phone, outcome:$('cf-out').value, duration:parseInt($('cf-dur').value)||null, at:atVal?new Date(atVal).toISOString():new Date().toISOString(), notes:$('cf-notes').value.trim() };
     $('cf-save').disabled=true;
     let savedId=id;
-    if(id){ const{error}=await sb.from('calls').update(callToRow(data)).eq('id',id); if(error){toast(error.message,'error');return;} toast('Ligação atualizada','success'); }
-    else { const{data:ins,error}=await sb.from('calls').insert(callToRow(data)).select('id').single(); if(error){toast(error.message,'error');return;} savedId=ins&&ins.id; toast('Ligação registrada','success'); }
+    if(id){ const{error}=await sb.from('calls').update(callToRow(data)).eq('org_id',S.org.id).eq('id',id); if(error){toast(error.message,'error');return;} toast('Ligação atualizada','success'); }
+    else { const{data:ins,error}=await sb.from('calls').insert(withOrg(callToRow(data))).select('id').single(); if(error){toast(error.message,'error');return;} savedId=ins&&ins.id; toast('Ligação registrada','success'); }
     closeModal(); await loadCalls(); renderShell();
     // Auto-envio ao CRM para ligações interessadas/fechadas (roteia funil pelo tipo do lead vinculado)
     if(savedId && (data.outcome==='interessado'||data.outcome==='fechado') && agendorOn() && agendorAutoOn()) sendCallToAgendor(savedId,true);
@@ -1275,7 +1281,7 @@ function callForm(id){
 }
 function delCall(id){ const c=S.calls.find(x=>x.id===id);
   openModal(`<div class="modal-ov"><div class="modal-box"><div class="modal-hd"><div class="modal-title">Excluir Ligação</div><div class="x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div></div><div class="modal-bd"><p class="confirm-txt">Excluir a ligação de <b>${esc(c&&(c.name||c.phone)||'contato')}</b>?</p></div><div class="modal-ft"><button class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-danger" id="cd-ok">Excluir</button></div></div></div>`);
-  $('cd-ok').onclick=async()=>{ const{error}=await sb.from('calls').delete().eq('id',id); if(error){toast(error.message,'error');return;} closeModal(); toast('Ligação excluída','success'); await loadCalls(); renderShell(); };
+  $('cd-ok').onclick=async()=>{ const{error}=await sb.from('calls').delete().eq('org_id',S.org.id).eq('id',id); if(error){toast(error.message,'error');return;} closeModal(); toast('Ligação excluída','success'); await loadCalls(); renderShell(); };
 }
 
 /* =====================================================================
@@ -1352,7 +1358,7 @@ function renderDeals(){
       const patch={status:ns,updated_at:new Date().toISOString()};
       if((ns===WON()||ns===LOST())&&!deal.closedAt) patch.closed_at=new Date().toISOString();
       if(ns!==WON()&&ns!==LOST()) patch.closed_at=null;
-      const{error}=await sb.from('deals').update(patch).eq('id',dragId);
+      const{error}=await sb.from('deals').update(patch).eq('org_id',S.org.id).eq('id',dragId);
       if(error){ toast(error.message,'error'); }
       else { deal.status=ns; deal.closedAt=patch.closed_at||null; toast(`→ ${DEAL_SM()[ns].label}`,'success'); }
     }
@@ -1441,7 +1447,7 @@ function dealForm(id){
     const paidAt = commissionPaid ? (d.paidAt||new Date().toISOString()) : null;
     const patch=dealToRow({status,cardType,cardValue,commissionValue,commissionPct,commissionPaid,paidAt,notes,closedAt});
     $('df-save').disabled=true;
-    const{error}=await sb.from('deals').update(patch).eq('id',id);
+    const{error}=await sb.from('deals').update(patch).eq('org_id',S.org.id).eq('id',id);
     if(error){ toast(error.message,'error'); $('df-save').disabled=false; return; }
     Object.assign(d,{status,cardType,cardValue,commissionValue,commissionPct:commissionPct?Number(commissionPct):null,commissionPaid,paidAt,notes,closedAt});
     closeModal(); toast('Negociação atualizada!','success'); renderDeals();
@@ -1451,7 +1457,7 @@ function dealForm(id){
 function delDeal(id){
   const d=S.deals.find(x=>x.id===id);
   openModal(`<div class="modal-ov"><div class="modal-box"><div class="modal-hd"><div class="modal-title">Excluir Negociação</div><div class="x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div></div><div class="modal-bd"><p class="confirm-txt">Excluir a negociação de <b>${esc(d&&(d.leadName||'este lead'))}</b>? O lead não será excluído.</p></div><div class="modal-ft"><button class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-danger" id="dd-ok">Excluir</button></div></div></div>`);
-  $('dd-ok').onclick=async()=>{ const{error}=await sb.from('deals').delete().eq('id',id); if(error){toast(error.message,'error');return;} S.deals=S.deals.filter(x=>x.id!==id); closeModal(); toast('Negociação excluída','success'); renderDeals(); };
+  $('dd-ok').onclick=async()=>{ const{error}=await sb.from('deals').delete().eq('org_id',S.org.id).eq('id',id); if(error){toast(error.message,'error');return;} S.deals=S.deals.filter(x=>x.id!==id); closeModal(); toast('Negociação excluída','success'); renderDeals(); };
 }
 
 /* =====================================================================
@@ -1945,7 +1951,7 @@ async function confirmWeeklyPayment(ws, we, memberId, rep, btnId='rel-pay-confir
   const btn=$(btnId); if(btn) btn.disabled=true;
   const now=new Date().toISOString();
   if(rep.dealIds.length){
-    const { error }=await sb.from('deals').update({ commission_paid:true, paid_at:now }).in('id',rep.dealIds);
+    const { error }=await sb.from('deals').update({ commission_paid:true, paid_at:now }).eq('org_id',S.org.id).in('id',rep.dealIds);
     if(error){ toast(error.message,'error'); if(btn)btn.disabled=false; return; }
     rep.dealIds.forEach(id=>{ const d=S.deals.find(x=>x.id===id); if(d){ d.commissionPaid=true; d.paidAt=now; } });
   }
@@ -2222,7 +2228,7 @@ function renderRelVendas(){
     const b=e.target.closest('[data-savereport]'); if(!b) return;
     const id=b.dataset.savereport; const ta=$('rel-body').querySelector(`[data-report="${id}"]`); if(!ta) return;
     b.disabled=true; b.textContent='Salvando…';
-    const { error }=await sb.from('deals').update({ report:ta.value }).eq('id',id);
+    const { error }=await sb.from('deals').update({ report:ta.value }).eq('org_id',S.org.id).eq('id',id);
     if(error){ toast(error.message,'error'); b.disabled=false; b.textContent='Salvar relatório'; return; }
     const d=S.deals.find(x=>x.id===id); if(d) d.report=ta.value;
     toast('Relatório salvo!','success'); b.disabled=false; b.textContent='Salvar relatório';
@@ -2663,7 +2669,7 @@ async function sendLeadToAgendor(id, silent=false){
   if(!map||!map.stageId){
     const msg=`Sem destino no CRM mapeado para a etapa "${stLabel(lead)}" do funil "${tipoLbl}"`;
     lead.agendorStatus='failed'; lead.agendorError=msg;
-    try{ await sb.from('leads').update({ agendor_status:'failed', agendor_error:msg }).eq('id',id); }catch(e){}
+    try{ await sb.from('leads').update({ agendor_status:'failed', agendor_error:msg }).eq('org_id',S.org.id).eq('id',id); }catch(e){}
     if(!silent){ toast(`Defina o destino no CRM da etapa "${stLabel(lead)}" nas Configurações`,'warn'); S.route='settings'; renderShell(); }
     else if(S.route==='leads'||S.route==='crm') renderShell();
     return;
@@ -2710,12 +2716,12 @@ async function sendLeadToAgendor(id, silent=false){
       }
     }
     const stageWarn = warns.length ? warns.join(' · ') : null;
-    await sb.from('leads').update({ agendor_person_id:personId?String(personId):null, agendor_deal_id:dealId?String(dealId):null, agendor_funnel:map.funnelName, agendor_status:stageWarn?'failed':'ok', agendor_error:stageWarn }).eq('id',id);
+    await sb.from('leads').update({ agendor_person_id:personId?String(personId):null, agendor_deal_id:dealId?String(dealId):null, agendor_funnel:map.funnelName, agendor_status:stageWarn?'failed':'ok', agendor_error:stageWarn }).eq('org_id',S.org.id).eq('id',id);
     Object.assign(lead,{ agendorPersonId:personId, agendorDealId:dealId, agendorFunnel:map.funnelName, agendorStatus:stageWarn?'failed':'ok', agendorError:stageWarn });
     toast(stageWarn?`Enviado ao CRM, mas com aviso: ${stageWarn}`:`Enviado ao CRM → funil ${map.funnelName}${origin?` · origem ${originName}`:''} ✓`, stageWarn?'warn':'success');
   }catch(err){
     lead.agendorStatus='failed'; lead.agendorError=err.message;
-    try{ await sb.from('leads').update({ agendor_status:'failed', agendor_error:err.message }).eq('id',id); }catch(e){}
+    try{ await sb.from('leads').update({ agendor_status:'failed', agendor_error:err.message }).eq('org_id',S.org.id).eq('id',id); }catch(e){}
     toast('Falha ao enviar ao CRM: '+err.message,'error'); agendorCorsHint(err.message);
   }
   if(S.route==='leads'||S.route==='crm') renderShell();
@@ -2729,12 +2735,12 @@ async function syncAgendorDealStage(lead){
   if(!map||!map.stageId) return;
   try{
     await agendorSetDealStage(lead.agendorDealId, map, agendorOriginFor(lead));
-    await sb.from('leads').update({ agendor_funnel:map.funnelName, agendor_status:'ok', agendor_error:null }).eq('id',lead.id);
+    await sb.from('leads').update({ agendor_funnel:map.funnelName, agendor_status:'ok', agendor_error:null }).eq('org_id',S.org.id).eq('id',lead.id);
     Object.assign(lead,{ agendorFunnel:map.funnelName, agendorStatus:'ok', agendorError:null });
   }catch(err){
     console.warn('CRM: PUT de mudança de etapa falhou —',err.message);
     lead.agendorStatus='failed'; lead.agendorError=err.message;
-    try{ await sb.from('leads').update({ agendor_status:'failed', agendor_error:err.message }).eq('id',lead.id); }catch(e){}
+    try{ await sb.from('leads').update({ agendor_status:'failed', agendor_error:err.message }).eq('org_id',S.org.id).eq('id',lead.id); }catch(e){}
   }
   // Sem isso, o ⚠ de falha (ou o ☁ de sucesso) só aparecia na próxima vez que
   // ALGUMA OUTRA coisa forçasse um re-render — essa função nunca desenhava
@@ -2771,7 +2777,7 @@ function removeLeadFromAgendor(id){
     $('agrm-ok').disabled=true;
     const ok=await deleteFromAgendor(l);
     if(ok){
-      await sb.from('leads').update({ agendor_person_id:null, agendor_deal_id:null, agendor_funnel:null, agendor_status:null }).eq('id',id);
+      await sb.from('leads').update({ agendor_person_id:null, agendor_deal_id:null, agendor_funnel:null, agendor_status:null }).eq('org_id',S.org.id).eq('id',id);
       Object.assign(l,{ agendorPersonId:null, agendorDealId:null, agendorFunnel:null, agendorStatus:null });
       toast('Removido do CRM — mantido no sistema','success');
     }
@@ -2841,7 +2847,7 @@ async function sendMessage(){
   const body=(mi.value||'').trim(); if(!body) return;
   mi.value=''; mi.disabled=true;
   const author=(S.profile&&(S.profile.name||S.profile.email))||'Usuário';
-  const { data, error }=await sb.from('messages').insert({ body, author_name:author }).select('*').single();
+  const { data, error }=await sb.from('messages').insert({ org_id:S.org.id, body, author_name:author }).select('*').single();
   mi.disabled=false; mi.focus();
   if(error){ toast(error.message,'error'); mi.value=body; return; }
   if(data && !S.messages.some(x=>x.id===data.id)) S.messages.push(msgFromRow(data));
@@ -2849,7 +2855,7 @@ async function sendMessage(){
   renderTeam();
 }
 async function delMessage(id){
-  const { error }=await sb.from('messages').delete().eq('id',id);
+  const { error }=await sb.from('messages').delete().eq('org_id',S.org.id).eq('id',id);
   if(error){ toast(error.message,'error'); return; }
   S.messages=S.messages.filter(m=>m.id!==id); renderTeam();
 }
@@ -3533,7 +3539,7 @@ async function importExtensionLeads(incoming){
         const nameIsHandle = !existing.name || exN===exU || exN==='@'+exU || exCorrupted || exGlued || GENERIC_NAMES.has(exN);
         if(raw.name && raw.name.toLowerCase()!==uk && nameIsHandle && raw.name.trim()!==(existing.name||'')) patch.name=raw.name.trim();
         if(Object.keys(patch).length){
-          const { error }=await sb.from('leads').update(patch).eq('id',existing.id);
+          const { error }=await sb.from('leads').update(patch).eq('org_id',S.org.id).eq('id',existing.id);
           if(!error){ Object.assign(existing,patch); updated++; if(patch.status && isLastStage(patch.status,leadPipeline(existing))) becameContato.push(existing.id); }
         }
         continue;
@@ -3632,7 +3638,7 @@ async function normalizeEmpresarios(){
   const bad=S.leads.filter(l=>l.tipo==='empresario' && STS().includes(l.status));
   if(!bad.length) return;
   const ids=bad.map(l=>l.id);
-  for(let i=0;i<ids.length;i+=200){ const { error }=await sb.from('leads').update({status:'a_contatar'}).in('id',ids.slice(i,i+200)); if(error){ console.warn('normalizeEmpresarios:',error.message); return; } }
+  for(let i=0;i<ids.length;i+=200){ const { error }=await sb.from('leads').update({status:'a_contatar'}).eq('org_id',S.org.id).in('id',ids.slice(i,i+200)); if(error){ console.warn('normalizeEmpresarios:',error.message); return; } }
   bad.forEach(l=>l.status='a_contatar');
 }
 // Garante que todo empresário tenha uma negociação na aba Negociações
@@ -3642,7 +3648,7 @@ async function backfillEmpresarioDeals(){
   const missing=S.leads.filter(l=>l.tipo==='empresario' && !have.has(l.id));
   if(!missing.length) return;
   const prospector=(S.profile&&(S.profile.name||S.profile.email))||null;
-  const rows=missing.map(l=>({ lead_id:l.id, prospector_name:prospector }));
+  const rows=missing.map(l=>({ org_id:S.org.id, lead_id:l.id, prospector_name:prospector }));
   for(let i=0;i<rows.length;i+=200){ const { error }=await sb.from('deals').insert(rows.slice(i,i+200)); if(error){ console.warn('backfillEmpresarioDeals:',error.message); return; } }
   await loadDeals();
 }

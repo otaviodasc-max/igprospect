@@ -1,0 +1,16 @@
+# GitHub Pages (Jekyll) — o site publicado é só o painel.
+# SQL, documentação interna, testes, scripts e fontes de servidor NÃO podem
+# ser servidos em otaviodasc-max.github.io/igprospect/. Sem este arquivo o
+# Pages publicava a pasta inteira (inclusive scripts SQL de produção e guias
+# com segredos).
+# Depois de publicar, conferir: as URLs desses arquivos devem dar 404.
+exclude:
+  - "*.sql"
+  - "*.txt"
+  - "*.md"
+  - "*.sh"
+  - db
+  - tests
+  - worker
+  - supabase
+  - crm-demo

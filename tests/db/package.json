@@ -1,0 +1,11 @@
+{
+  "name": "igprospect-testes-banco",
+  "private": true,
+  "description": "Testes de isolamento do banco rodando num Postgres local em memória (PGlite). Nunca conecta no Supabase.",
+  "scripts": {
+    "test": "node --test isolamento-banco.test.js"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.8"
+  }
+}
