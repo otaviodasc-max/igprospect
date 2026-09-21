@@ -197,6 +197,66 @@
     save: d  => new Promise(r => chrome.storage.local.set(d, r)),
   };
 
+  // ── Isolamento por equipe do cache local (igp_l) ──────────────────────
+  // Todo lead guardado aqui carrega a equipe dele (orgId). Lead sem orgId é
+  // legado inseguro (não dá pra saber de qual equipe veio) e lead de outra
+  // equipe não pertence à conectada: nenhum dos dois fica na lista ativa,
+  // nem é sincronizado. Os que nunca chegaram ao banco (synced===false) vão
+  // pra uma quarentena local que nada lê nem sincroniza; os demais já estão
+  // no banco da equipe deles e só saem daqui (o pull da equipe certa traz de
+  // volta, marcados). Leads sem equipe no cache foram o que vazou milhares de
+  // leads entre equipes pela ponte antiga do painel (ver bridge.js).
+  const QUARANTINE_KEY = 'igp_l_quarentena';
+  function splitLeadsByOrg(leads, orgId){
+    const own=[], stray=[];
+    for(const l of (Array.isArray(leads)?leads:[])){
+      if(!l) continue;
+      if(orgId && l.orgId && l.orgId===orgId) own.push(l); else stray.push(l);
+    }
+    return { own, stray };
+  }
+  function isolateLocalLeads(leads){
+    const { own, stray }=splitLeadsByOrg(leads, S.org&&S.org.id);
+    if(stray.length){
+      const pending=stray.filter(l=>l.synced===false);
+      if(pending.length){
+        chrome.storage.local.get(QUARANTINE_KEY, d=>{
+          const q=(d&&d[QUARANTINE_KEY])||[];
+          const seen=new Set(q.map(l=>String(l.id)));
+          const add=pending.filter(l=>!seen.has(String(l.id)));
+          if(add.length) chrome.storage.local.set({ [QUARANTINE_KEY]: q.concat(add).slice(-5000) });
+        });
+      }
+      // Só contagens — nenhum dado de lead vai pro console.
+      console.warn(`IGProspect: ${stray.length} lead(s) locais sem equipe ou de outra equipe tirados da lista (${pending.length} em quarentena, sem sincronizar).`);
+    }
+    return own;
+  }
+  // Mescla os leads que vieram do servidor com os locais DA MESMA equipe.
+  // Todo lead resultante sai marcado com orgId da equipe conectada.
+  function mergePulledLeads(server, local, orgId, fallbackStatus){
+    const mine=(Array.isArray(local)?local:[]).filter(l=>l&&l.orgId&&l.orgId===orgId);
+    const list=Array.isArray(server)?server:[];
+    const localById=new Map(mine.map(l=>[String(l.id),l]));
+    const merged=list.map(l=>{
+      const loc=localById.get(String(l.ext_id))||{};
+      return { ...loc,
+        id:l.ext_id, name:l.name||l.username||'Lead', username:l.username||'',
+        phone:l.phone||'', niche:l.niche||'', status:l.status||fallbackStatus,
+        notes:l.notes||'',
+        addedAt:l.added_at||loc.addedAt||new Date().toISOString(), synced:true,
+        orgId,
+      };
+    });
+    const serverIds=new Set(list.map(l=>String(l.ext_id)));
+    // Some do servidor mas synced!==false (já tinha sido confirmado antes,
+    // ou é um lead antigo de antes desse controle existir) = foi apagado
+    // no sistema — some daqui também. Só mantém o que ainda está pendente
+    // de sincronizar pela primeira vez (synced===false) E é desta equipe.
+    const localOnly=mine.filter(l=>!serverIds.has(String(l.id)) && l.synced===false);
+    return [...merged, ...localOnly];
+  }
+
   // ═══════════════════════════════════════════════
   // HELPERS
   // ═══════════════════════════════════════════════
@@ -1354,9 +1414,10 @@
   }
 
   function doDeleteLead(lid){
+    const lead=S.leads.find(l=>l.id===lid);
     S.leads=S.leads.filter(l=>l.id!==lid);
     db.save({igp_l:S.leads});
-    syncLeadDeleteDirect(lid);
+    syncLeadDeleteDirect(lid, lead);
     renderBody();
   }
 
@@ -1385,6 +1446,10 @@
       S.org={ id:res.org.id, name:res.org.name, code, locked:true, userId:null, userName:'' };
       S.orgMembers=[];
       S.orgCodeInput='';
+      // Estado de tela preso a leads/etapas da equipe anterior.
+      S.agendorStatus={}; S.filter='all'; S.openStatusId=null;
+      S.phoneLeadId=null; S.phoneInput=''; S.notesLeadId=null; S.notesInput='';
+      S.directDetect=null;
       // Reseta a trava de segurança também — é um contador por equipe conectada,
       // não faz sentido carregar o ritmo da equipe anterior pra essa nova.
       recentSyncTimes=[]; syncPaused=false;
@@ -1406,6 +1471,7 @@
       renderBody();
       toast(`✓ Conectado à equipe "${res.org.name}" — falta dizer quem é você`,'ok');
       chrome.runtime.sendMessage({ type:'resolve_org_members', code }, res2=>{
+        if(!S.org||S.org.code!==code) return; // já trocou de equipe de novo
         S.orgMembers=(res2&&res2.ok&&res2.members)||[];
         if(S.orgMembers.length===1){ // só uma pessoa na equipe? já resolve sozinho
           S.org.userId=S.orgMembers[0].user_id; S.org.userName=S.orgMembers[0].name;
@@ -1421,7 +1487,9 @@
   // Etapas de verdade do funil (Configurações → Personalização, no sistema) —
   // sem isso a extensão usa o fallback genérico (novo/chamado/respondeu/contato).
   function pullPipeline(code){
+    const orgId=S.org&&S.org.id;
     chrome.runtime.sendMessage({ type:'pull_org_pipeline', code }, res=>{
+      if(!S.org||S.org.id!==orgId||S.org.code!==code) return; // resposta da equipe anterior
       if(!res||!res.ok||!res.pipeline){ console.warn('IGProspect: falha ao puxar etapas do funil', res&&res.error); return; }
       S.pipelineStages=mapPipelineStages(res.pipeline.stages);
       S.agendorMap=res.pipeline.agendor_map||null;
@@ -1446,30 +1514,19 @@
   // ela não começa vazia toda vez que conecta uma equipe. showToast=true só
   // na conexão manual (evita popup toda vez que a extensão só reabre sozinha).
   function pullLeads(code, showToast){
+    const orgId=S.org&&S.org.id;
+    if(!orgId) return;
     chrome.runtime.sendMessage({ type:'pull_org_leads', code }, res=>{
+      // Resposta de um pull da equipe ANTERIOR chegando depois da troca: nunca
+      // mistura com a equipe atual.
+      if(!S.org||S.org.id!==orgId||S.org.code!==code) return;
       if(!res||!res.ok){ console.warn('IGProspect: falha ao puxar leads do sistema', res&&res.error); return; }
       const server=res.leads||[];
       // Mescla por cima do que já existe localmente — preserva campos que só
       // vivem na extensão (notas, marcação manual de CRM, etc.) em vez de
       // substituir o lead inteiro pela versão "enxuta" que vem do servidor.
-      const localById=new Map(S.leads.map(l=>[String(l.id),l]));
-      const merged=server.map(l=>{
-        const loc=localById.get(l.ext_id)||{};
-        return { ...loc,
-          id:l.ext_id, name:l.name||l.username||'Lead', username:l.username||'',
-          phone:l.phone||'', niche:l.niche||'', status:l.status||newLeadStatusKey(),
-          notes:l.notes||'',
-          addedAt:l.added_at||loc.addedAt||new Date().toISOString(), synced:true,
-        };
-      });
-      const serverIds=new Set(server.map(l=>l.ext_id));
-      // Some do servidor mas synced!==false (já tinha sido confirmado antes,
-      // ou é um lead antigo de antes desse controle existir) = foi apagado
-      // no sistema — some daqui também. Só mantém o que ainda está pendente
-      // de sincronizar pela primeira vez (synced===false), pra não perder
-      // captura recente antes dela sequer ter tido a chance de ir pro banco.
-      const localOnly=S.leads.filter(l=>!serverIds.has(String(l.id)) && l.synced===false);
-      S.leads=[...merged, ...localOnly];
+      // Todo lead baixado recebe orgId da equipe conectada (mergePulledLeads).
+      S.leads=mergePulledLeads(server, S.leads, orgId, newLeadStatusKey());
       db.save({igp_l:S.leads});
       if(showToast) toast(`${server.length} lead(s) trazido(s) do sistema`,'ok');
       if(S.open) renderBody();
@@ -1514,8 +1571,12 @@
     if(syncPaused){ syncPaused=false; db.save({igp_sync_paused:false}); }
     return true;
   }
+  // Só sincroniza lead que pertence à equipe conectada (orgId igual) —
+  // lead sem equipe ou de outra equipe nunca vai pro banco.
+  function leadIsFromConnectedOrg(lead){ return !!(lead && S.org && S.org.id && lead.orgId && lead.orgId===S.org.id); }
   function syncLeadAddDirect(lead){
     if(!S.org||!S.org.code) return;
+    if(!leadIsFromConnectedOrg(lead)){ console.warn('IGProspect: lead sem equipe correspondente não foi sincronizado'); return; }
     if(!registerSyncAndCheck()) return;
     chrome.runtime.sendMessage({ type:'add_lead_direct', code:S.org.code, lead, userId:S.org.userId||null }, res=>{
       if(!res||!res.ok){ console.warn('IGProspect: falha ao sincronizar lead direto', res&&res.error); return; }
@@ -1527,14 +1588,16 @@
   }
   function syncLeadUpdateDirect(extId, patch){
     if(!S.org||!S.org.code||!extId) return;
+    if(!leadIsFromConnectedOrg(S.leads.find(l=>String(l.id)===String(extId)))){ console.warn('IGProspect: atualização de lead sem equipe correspondente não foi sincronizada'); return; }
     chrome.runtime.sendMessage({ type:'update_lead_direct', code:S.org.code, extId, status:patch.status, phone:patch.phone, name:patch.name, notes:patch.notes, agendorPersonId:patch.agendorPersonId, agendorDealId:patch.agendorDealId, agendorFunnel:patch.agendorFunnel }, res=>{
       if(!res||!res.ok) console.warn('IGProspect: falha ao atualizar lead direto', res&&res.error);
     });
   }
   // Apagar aqui apaga no sistema também (mão dupla — a outra direção, apagar
   // no sistema e a extensão perceber, é resolvida no pullLeads).
-  function syncLeadDeleteDirect(extId){
+  function syncLeadDeleteDirect(extId, lead){
     if(!S.org||!S.org.code||!extId) return;
+    if(!leadIsFromConnectedOrg(lead)){ console.warn('IGProspect: exclusão de lead sem equipe correspondente não foi sincronizada'); return; }
     chrome.runtime.sendMessage({ type:'delete_lead_direct', code:S.org.code, extId }, res=>{
       if(!res||!res.ok) console.warn('IGProspect: falha ao apagar lead no sistema', res&&res.error);
     });
@@ -1544,9 +1607,16 @@
   // ═══════════════════════════════════════════════
   // ═══════════════════════════════════════════════
   db.load().then(d=>{
-    if(d.igp_l) S.leads=d.igp_l;
     if(d.igp_tok) S.agendorToken=d.igp_tok;
     if(d.igp_org) S.org=d.igp_org;
+    // Cache de versão antiga (leads sem orgId) é limpo aqui; se saiu algo,
+    // puxa a equipe de novo já, pra lista não ficar vazia até o próximo pull.
+    let cacheCleaned=false;
+    if(d.igp_l){
+      S.leads=isolateLocalLeads(d.igp_l);
+      cacheCleaned=S.leads.length!==d.igp_l.length;
+      if(cacheCleaned) db.save({igp_l:S.leads});
+    }
     if(d.igp_stages) S.pipelineStages=d.igp_stages;
     if(d.igp_agendor_map) S.agendorMap=d.igp_agendor_map;
     if(d.igp_agendor_origin) S.agendorOrigin=d.igp_agendor_origin;
@@ -1565,26 +1635,45 @@
       // Puxar TODOS os leads é mais pesado — só repete de tempos em tempos,
       // não em toda recarga da extensão (cada navegação no Instagram, etc.).
       const lastPull=d.igp_leads_pulled_at||0;
-      if(Date.now()-lastPull>10*60*1000){
+      if(cacheCleaned || Date.now()-lastPull>10*60*1000){
         pullLeads(S.org.code, false);
         db.save({igp_leads_pulled_at:Date.now()});
       }
     }
   });
-  // O painel (se aberto, na mesma equipe) ainda pode SUGERIR a equipe ativa —
-  // mas nunca sobrescreve uma equipe travada aqui via código (ver doLinkOrg).
-  // Já uma reconexão de verdade (outra aba do Instagram digitou um código novo
-  // em Configurações → Equipe) TEM que propagar pra esta aba também, mesmo já
-  // travada — senão esta aba fica presa pra sempre na equipe antiga e continua
-  // mandando leads pra ela. BUG que já causou vazamento de leads entre equipes:
-  // só doLinkOrg grava locked:true; a sugestão do painel (bridge.js) nunca
-  // grava esse campo, então dá pra distinguir as duas origens por ele.
+  // Outra aba trocou a equipe: nada da equipe anterior continua em memória
+  // nesta aba (leads, etapas, CRM). Recarrega do storage só o que é da nova.
+  // Sem isso, esta aba seguia com os leads da equipe antiga e mandava
+  // atualizações deles usando o código da equipe nova.
+  function applyOrgChange(nv){
+    const prevId=S.org&&S.org.id, nextId=nv&&nv.id;
+    S.org=nv;
+    if(prevId===nextId){ if(S.open) renderBody(); return; }
+    S.leads=[]; S.orgMembers=[]; S.agendorStatus={}; S.filter='all';
+    S.pipelineStages=null; S.agendorMap=null; S.agendorOrigin=null;
+    chrome.storage.local.get(['igp_l','igp_stages','igp_agendor_map','igp_agendor_origin','igp_tok'], d=>{
+      if((S.org&&S.org.id)!==nextId) return;
+      d=d||{};
+      S.leads=isolateLocalLeads(d.igp_l||[]);
+      S.pipelineStages=d.igp_stages||null;
+      S.agendorMap=d.igp_agendor_map||null;
+      S.agendorOrigin=d.igp_agendor_origin||null;
+      S.agendorToken=d.igp_tok||'';
+      if(S.open) renderBody();
+    });
+    if(S.open) renderBody();
+  }
+  // A equipe só muda dentro da extensão (doLinkOrg, que grava locked:true) —
+  // o painel não sugere mais equipe (bridge.js virou só presença). Uma
+  // reconexão feita em outra aba do Instagram TEM que propagar pra esta aba
+  // também, senão ela fica presa na equipe antiga e continua mandando leads
+  // pra ela (bug que já causou vazamento entre equipes).
   try{
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local' || !changes.igp_org) return;
       const nv = changes.igp_org.newValue;
-      if (nv && nv.locked) { S.org = nv; if(S.open) renderBody(); return; }
-      if (!(S.org && S.org.locked)) S.org = nv || null;
+      if (nv && nv.locked) { applyOrgChange(nv); return; }
+      if (!(S.org && S.org.locked)) applyOrgChange(nv || null);
     });
   } catch(e) { /* sem permissão de storage — ignora */ }
 

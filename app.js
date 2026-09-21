@@ -3460,22 +3460,26 @@ async function renderOrgFeatures(orgId, orgName){
 }
 
 /* =====================================================================
-   PONTE COM A EXTENSÃO (sincroniza leads do Instagram → Supabase)
+   PONTE COM A EXTENSÃO — SÓ PRESENÇA, NUNCA LEADS
+   A ponte antiga pedia a fila local inteira da extensão (igp_l) e gravava
+   no banco na equipe ABERTA no painel. Leads baixados pela extensão não
+   tinham equipe marcada, então caíam em qualquer equipe aberta ou recém-
+   criada — foi assim que milhares de leads vazaram entre equipes.
+   Hoje a extensão grava direto no Supabase (RPCs extension_*, resolvidas
+   pelo código da equipe dela) e o painel recebe as mudanças pelo Realtime
+   (subscribeLeads). A ponte só registra que a extensão está instalada.
 ===================================================================== */
 let bridgeBound=false, bridgeBusy=false, bridgePending=null;
 function bindBridge(){
-  if(!bridgeBound){
-    bridgeBound=true;
-    window.addEventListener('message', ev=>{
-      if(ev.source!==window) return;
-      const d=ev.data; if(!d||d.source!=='igp-extension') return;
-      if(d.type==='leads') importExtensionLeads(d.leads);
-    });
-  }
-  // Anuncia a equipe ativa pra extensão marcar os leads capturados a partir de agora
-  // com essa equipe — evita que um lead capturado numa equipe seja sincronizado,
-  // mais tarde, para outra equipe que esteja aberta no momento do sync.
-  window.postMessage({ source:'igp-dashboard', type:'request-leads', orgId:S.org&&S.org.id, orgName:S.org&&S.org.name }, '*');
+  if(bridgeBound) return;
+  bridgeBound=true;
+  window.addEventListener('message', ev=>{
+    if(ev.source!==window) return;
+    const d=ev.data; if(!d||d.source!=='igp-extension') return;
+    if(d.type==='hello'){ S.extensionPresent=true; return; }
+    // Extensão desatualizada ainda mandando a fila local: ignora, sem logar dados.
+    if(d.type==='leads') console.warn('IGProspect: leads recebidos pela ponte da extensão foram ignorados (a extensão grava direto no banco).');
+  });
 }
 // Títulos genéricos de seção/rótulo do Instagram que a extensão pode ter
 // capturado como "nome" por engano (ex.: cabeçalho da caixa de Mensagens, ou
@@ -3483,28 +3487,35 @@ function bindBridge(){
 // como nome ruim pra corrigir sozinho assim que um nome de verdade chegar.
 // Mantida em sincronia com a mesma lista em extension/content.js.
 const GENERIC_NAMES = new Set(['mensagens','messages','direct','solicitações','solicitacoes','requests','inbox','chats','conversas','não seguidores','nao seguidores','not following you back','seguidores','digital creator','personal blog','public figure','blogger','este perfil é privado','esta conta é privada','essa conta é privada','perfil privado','this account is private','conta privada']);
+// DESATIVADA: bindBridge() não chama mais esta função (ver cabeçalho da seção).
+// Continua endurecida caso alguém volte a ligá-la: só aceita lead com orgId
+// IGUAL à equipe aberta, só atualiza pelo id da extensão (nunca por @usuário)
+// e grava org_id explícito — nunca depende do default my_org() do banco.
 async function importExtensionLeads(incoming){
-  if(!Array.isArray(incoming) || !incoming.length || !S.org) return;
+  if(!Array.isArray(incoming) || !incoming.length || !S.org || !S.org.id) return;
   if(bridgeBusy){ bridgePending=incoming; return; }   // já sincronizando → guarda o último e processa depois
   bridgeBusy=true;
   try{
-    // Leads capturados pela extensão enquanto OUTRA equipe estava ativa no painel
-    // (raw.orgId marcado e diferente da equipe atual) não são importados aqui —
-    // ficam guardados na extensão até a equipe certa estar aberta. Leads sem
-    // orgId (capturados antes desta marcação existir) continuam entrando normal.
-    const foreign=incoming.filter(raw=>raw&&raw.orgId&&raw.orgId!==S.org.id);
-    incoming=incoming.filter(raw=>!raw||!raw.orgId||raw.orgId===S.org.id);
+    // Lead sem orgId é LEGADO INSEGURO (não dá pra saber de qual equipe veio)
+    // e lead com orgId de outra equipe não pertence a esta — os dois são
+    // rejeitados. Aceitar "!raw.orgId" foi o que vazou leads entre equipes.
+    const orgId=S.org.id;
+    const accepted=incoming.filter(raw=>raw&&raw.orgId&&raw.orgId===orgId);
+    const rejected=incoming.length-accepted.length;
+    incoming=accepted;
     // Mapas para localizar leads já existentes (por id da extensão ou @usuário)
     const byExt=new Map(), byUser=new Map();
     S.leads.forEach(l=>{ if(l.extId) byExt.set(String(l.extId),l); const u=(l.username||'').toLowerCase(); if(u) byUser.set(u,l); });
-    const rows=[]; let updated=0; const becameContato=[]; const handledIds=[];
+    const rows=[]; let updated=0; const becameContato=[];
     for(const raw of incoming){
       if(!raw||(!raw.name&&!raw.username)) continue;
       const extId=String(raw.id||'');
       const uk=String(raw.username||'').toLowerCase();
-      const existing=(extId&&byExt.get(extId)) || (uk&&byUser.get(uk)) || null;
+      // Só o id da extensão identifica o MESMO lead. @usuário igual não autoriza
+      // atualizar nada — só evita criar uma cópia.
+      const existing=(extId&&byExt.get(extId)) || null;
+      if(!existing && uk && byUser.has(uk)) continue;
       if(existing){
-        if(extId) handledIds.push(extId);
         // Lead já existe: atualiza status (se avançou) e telefone (se chegou um novo).
         // Resolve o caso de marcar "Enviou Contato" na extensão e não refletir aqui.
         const oldIdx=STS().indexOf(existing.status||'novo');
@@ -3536,9 +3547,9 @@ async function importExtensionLeads(incoming){
       // mandando "Mensagens"/"Perfil privado") — a extensão já filtra isso na
       // captura, mas um lead NOVO não passa pela correção de "existing" acima.
       const rawNameOk = raw.name && !GENERIC_NAMES.has(raw.name.trim().toLowerCase());
-      const row={ name:rawNameOk?raw.name:'', username:uk||'', phone:raw.phone||'', niche:raw.niche||'', status:extStatus, tipo:'comum', pipeline_id:extPipeline&&extPipeline.id, source:'extensao', ext_id:extId, added_at:raw.addedAt||new Date().toISOString(), notes };
+      const row={ org_id:orgId, name:rawNameOk?raw.name:'', username:uk||'', phone:raw.phone||'', niche:raw.niche||'', status:extStatus, tipo:'comum', pipeline_id:extPipeline&&extPipeline.id, source:'extensao', ext_id:extId, added_at:raw.addedAt||new Date().toISOString(), notes };
       rows.push(row);
-      if(extId) byExt.set(extId,row); if(uk) byUser.set(uk,row);
+      if(extId) byExt.set(extId,{ ...row, extId }); if(uk) byUser.set(uk,row);
     }
     let changed=updated>0;
     if(rows.length){
@@ -3547,12 +3558,8 @@ async function importExtensionLeads(incoming){
       // índice único org_id+ext_id no banco barra a duplicata — não é mais só
       // uma checagem no navegador, que pode perder a corrida entre dois syncs.
       const { error }=await sb.from('leads').upsert(rows,{onConflict:'org_id,ext_id',ignoreDuplicates:true});
-      if(error){ console.warn('sync ext:',error.message); } else { changed=true; rows.forEach(r=>{ if(r.ext_id) handledIds.push(r.ext_id); }); }
+      if(error){ console.warn('sync ext:',error.message); } else { changed=true; }
     }
-    // Avisa a extensão pra tirar da fila local o que já foi gravado/confirmado
-    // aqui — sem isso, o mesmo lead volta a ser oferecido pra próxima equipe
-    // que abrir o painel neste navegador, e duplica lá também.
-    if(handledIds.length) window.postMessage({ source:'igp-dashboard', type:'synced-ids', ids:handledIds }, '*');
     if(changed){
       await loadLeads(); await loadDeals();
       // garante negociação para todo lead que está em "contato" (novos ou atualizados)
@@ -3576,10 +3583,8 @@ async function importExtensionLeads(incoming){
       if(updated) parts.push(`${updated} atualizado(s)`);
       toast(`Extensão sincronizada: ${parts.join(' · ')}`,'success');
     }
-    // Não vira toast: a extensão já grava direto na equipe certa (ver
-    // extension_add_lead), então isso aqui é só um resíduo esperado da fila
-    // local antiga sendo filtrado — não é um aviso que o usuário precise ver.
-    if(foreign.length) console.warn(`IGProspect: ${foreign.length} lead(s) da extensão ignorados (equipe diferente da aberta agora)`);
+    // Só a contagem — nenhum dado do lead vai pro console.
+    if(rejected) console.warn(`IGProspect: ${rejected} lead(s) da extensão rejeitados (sem equipe ou de outra equipe)`);
   } finally {
     bridgeBusy=false;
     if(bridgePending){ const p=bridgePending; bridgePending=null; importExtensionLeads(p); }
