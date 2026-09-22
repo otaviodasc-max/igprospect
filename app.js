@@ -2923,11 +2923,42 @@ function pushSupported(){ return typeof navigator!=='undefined' && 'serviceWorke
 function pushPerm(){ return (typeof Notification!=='undefined') ? Notification.permission : 'unsupported'; }
 function urlB64ToUint8(b64){ const pad='='.repeat((4-b64.length%4)%4); const s=(b64+pad).replace(/-/g,'+').replace(/_/g,'/'); const raw=atob(s); return Uint8Array.from([...raw].map(c=>c.charCodeAt(0))); }
 async function registerSW(){ if(!pushSupported()) return null; if(swReg&&swReg.active) return swReg; try{ await navigator.serviceWorker.register('sw.js'); swReg=await navigator.serviceWorker.ready; return swReg; }catch(e){ console.warn('SW:',e); return null; } }
+// A chave pública pode chegar em três formas: string base64url (config.js),
+// ArrayBuffer ou Uint8Array (o que a inscrição do navegador devolve em
+// sub.options.applicationServerKey). Normaliza tudo para bytes antes de comparar.
+function pushKeyBytes(k){
+  if(k===null || k===undefined || k==='') return null;
+  if(typeof k==='string'){ try{ return urlB64ToUint8(k); }catch(e){ return null; } }
+  if(k instanceof Uint8Array) return k;
+  if(typeof ArrayBuffer!=='undefined' && k instanceof ArrayBuffer) return new Uint8Array(k);
+  if(k.buffer && typeof ArrayBuffer!=='undefined' && k.buffer instanceof ArrayBuffer) return new Uint8Array(k.buffer, k.byteOffset||0, k.byteLength);
+  return null;
+}
+function samePushKey(a,b){
+  const x=pushKeyBytes(a), y=pushKeyBytes(b);
+  if(!x || !y || x.length!==y.length) return false;
+  for(let i=0;i<x.length;i++) if(x[i]!==y[i]) return false;
+  return true;
+}
 async function ensurePushSubscription(){
   if(!pushSupported() || pushPerm()!=='granted' || !S.org) return;
   const reg=await registerSW(); if(!reg) return;
   try{
     let sub=await reg.pushManager.getSubscription();
+    // Chave VAPID do servidor trocada (rotação): a inscrição antiga foi criada
+    // com a chave anterior e o serviço de push passa a recusar os envios. Ela
+    // precisa ser refeita — sem isso o aparelho fica mudo até alguém desativar
+    // e reativar a notificação na mão. Cada passo falha em separado: perder o
+    // unsubscribe (ou a linha antiga no banco) não pode impedir a inscrição nova.
+    if(sub && !samePushKey(sub.options && sub.options.applicationServerKey, VAPID_PUB)){
+      const endpointAntigo=sub.endpoint;
+      try{
+        const { error }=await sb.from('push_subscriptions').delete().eq('endpoint',endpointAntigo);
+        if(error) console.warn('push: inscrição antiga não saiu do banco:',error.message);
+      }catch(e){ console.warn('push: inscrição antiga não saiu do banco:',e); }
+      try{ await sub.unsubscribe(); }catch(e){ console.warn('push: unsubscribe da inscrição antiga falhou:',e); }
+      sub=null;
+    }
     if(!sub) sub=await reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey:urlB64ToUint8(VAPID_PUB) });
     const j=sub.toJSON();
     await sb.from('push_subscriptions').upsert({ endpoint:sub.endpoint, p256dh:j.keys.p256dh, auth:j.keys.auth, user_agent:navigator.userAgent, org_id:S.org.id }, { onConflict:'endpoint' });

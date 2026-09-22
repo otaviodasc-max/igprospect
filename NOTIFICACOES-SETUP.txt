@@ -40,17 +40,35 @@ PASSO 3 — Secrets da função (chaves VAPID)
 Dashboard > Project Settings > Edge Functions > Secrets (ou via CLI).
 Adicione EXATAMENTE estes 3:
 
-  VAPID_PUBLIC_KEY  = BA1Oos8-GIpl3JxcOD5yRJt5uf9H_1LaOt7BekaTYvoIZUehfrUt5lEGZmUkxUG3KDCUB3LotlIWEg27KDQrIQQ
+  VAPID_PUBLIC_KEY  = <COLE_AQUI_A_CHAVE_PUBLICA>
 
-  VAPID_PRIVATE_KEY = ZjW3KBTXuXRiAd6hSKXQfHktZyE-rN0ZCLHJlUmtQik
+  VAPID_PRIVATE_KEY = <COLE_AQUI_A_CHAVE_PRIVADA>
 
-  VAPID_SUBJECT     = mailto:rep.jacksoncorrea@gmail.com
+  VAPID_SUBJECT     = mailto:<E-MAIL_DE_CONTATO>
 
 (Pelo CLI seria:
    supabase secrets set VAPID_PUBLIC_KEY=... VAPID_PRIVATE_KEY=... VAPID_SUBJECT=mailto:...)
 
-IMPORTANTE: a chave PÚBLICA já está no config.js (pode ficar exposta).
-A chave PRIVADA fica SÓ aqui no Supabase. Nunca coloque a privada no site.
+IMPORTANTE: a chave PÚBLICA vai no config.js (pode ficar exposta).
+A chave PRIVADA fica SÓ nos secrets do Supabase. Nunca coloque a privada
+no site, neste arquivo, no repositório ou em qualquer conversa.
+
+ATENÇÃO — os valores reais que estavam AQUI foram removidos: este arquivo é
+publicado junto com o site e o repositorio e' publico, entao a chave privada
+ficou exposta. Ela precisa ser ROTACIONADA. Ordem correta em
+db/seguranca/PLANO.md, secao "Rotacao da chave VAPID (ordem corrigida)":
+
+  1. publicar primeiro o painel que compara a chave da inscricao com a
+     configurada e se reinscreve sozinho quando elas diferem (ja esta no
+     codigo: ensurePushSubscription em app.js);
+  2. verificar que tudo segue funcionando com a chave ANTIGA;
+  3. so entao gerar o par novo (npx web-push generate-vapid-keys), fora do
+     repositorio, e guardar no gerenciador de senhas;
+  4. numa janela coordenada: trocar os secrets e publicar o config.js com a
+     chave publica nova e o ?v= novo;
+  5. pedir que todos abram o painel (no iPhone, pelo icone da tela inicial);
+  6. confirmar reinscricoes e entregas;
+  7. so depois considerar limpar inscricoes antigas.
 
 ----------------------------------------------------------
 PASSO 4 — Republicar o site na Netlify
