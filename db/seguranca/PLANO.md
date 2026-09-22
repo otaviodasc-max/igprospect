@@ -13,6 +13,7 @@
 
 | Fase | Onde | O que | Quebra algo? |
 |---|---|---|---|
+| **0** | Banco: `DIAGNOSTICO-00-somente-leitura.sql` | Extrai metadados (definições, grants, policies, triggers, colunas, índices, contagens anônimas). Só leitura | Não |
 | **A** | Banco: `A-01-aditiva-compativel.sql` | `is_org_member`; travas de integridade (org_id imutável, funil e lead da mesma equipe); RLS exige usuário ativo também para gravar; chat só para ativo; RPC anônima de membros sem e-mail; RPCs do painel sem `anon`; RPCs novas `ext2_*` com login | Não. A extensão 1.10.4 e o painel atual continuam funcionando (teste 12 e teste 13) |
 | **B** | Painel (este commit) | `org_id` explícito em todo insert e `.eq('org_id')` em todo update e delete; `_config.yml` tira SQL, docs e testes do site | Não. É compatível com o banco antes e depois da Fase A |
 | **B2** | Extensão 1.11 (**ainda não implementada**) | Login Supabase na extensão e uso exclusivo das `ext2_*` (ver abaixo) | Não, enquanto a Fase C não roda |
@@ -33,12 +34,23 @@
 
 **Sem interromper ninguém:** a 1.11 fala só com as `ext2_*`, que existem desde a Fase A, e a 1.10.4 continua funcionando pelas RPCs antigas até a Fase C. As duas convivem durante a transição.
 
+## Precondições e rollback exato (revisão 2)
+
+Cada fase roda numa transação só e **aborta antes de alterar qualquer coisa** se o banco não estiver no estado esperado. A Fase A confere: tabelas, colunas e tipos; índice único **não parcial** em `leads(org_id, ext_id)` (sem ele o `on conflict` não funciona); ausência de qualquer objeto com os nomes novos; assinatura, retorno e **hash da definição** de `org_members_by_join_code`; os grants atuais das RPCs do painel, olhando a **ACL explícita** (e não `has_function_privilege`, que daria "true" só por causa do `PUBLIC`); e a **lista completa de policies** das tabelas sensíveis, abortando tanto se faltar uma quanto se existir uma a mais, permissiva ou restritiva. Nenhuma policy desconhecida é removida automaticamente.
+
+Objetos novos são criados com `create function` (nunca `create or replace`), então um homônimo com definição desconhecida interrompe a fase.
+
+Antes de mudar qualquer coisa, a Fase A cria `public.seguranca_estado_anterior` (com RLS ligado e sem policy: nenhum papel da API a enxerga) e registra ali os grants, as policies e a definição de função que serão substituídos. **Os rollbacks restauram exatamente esse registro** e, na dúvida, se recusam a rodar. Eles nunca concedem privilégio "por garantia": um papel que não tinha `EXECUTE` continua sem.
+
+Se um hash ou uma policy divergir, isso não é um erro do plano: é o sinal de que a produção difere do repositório. Rode o diagnóstico, compare e só então ajuste a constante correspondente na migration.
+
 ## Ordem exata de publicação
 
-0. **Imediato, fora das fases:** gerar um par novo de chaves VAPID, trocar a pública no `config.js` e a privada nos secrets da Edge Function `notify`, e pedir a todos que reativem as notificações. A chave privada antiga está pública (repositório público, GitHub Pages e histórico do git). Decidir se o repositório continua público.
+0. **Incidente VAPID (fora destas fases, ordem própria — ver abaixo).**
 1. **Preparar a Fase A:**
-   - rodar os blocos 13 a 15 de `diagnostico-vazamento-somente-leitura.sql` e conferir se as funções em produção batem com o repositório (sobrecargas extras de `extension_*` estão previstas: as Fases A e C tratam todas pelo nome);
-   - rodar os diagnósticos do cabeçalho do A-01 e guardar os resultados.
+   - rodar `DIAGNOSTICO-00-somente-leitura.sql` inteiro e guardar os resultados. Ele é a fonte que confirma (ou desmente) cada precondição;
+   - conferir no BLOCO 4 o hash de `org_members_by_join_code` contra o valor esperado na Fase A; no BLOCO 5, que nenhum nome novo existe; no BLOCO 6, as policies; no BLOCO 11, o índice único;
+   - rodar também os diagnósticos do cabeçalho do A-01.
 2. **Aplicar a Fase A** (SQL Editor, arquivo inteiro). Ela confere a si mesma e aborta tudo se algo não bater. Não precisa pausar o sistema. Logo depois, fazer um teste rápido: um lead pela extensão 1.10.4 e um pelo painel.
 3. **Publicar a Fase B** (push do painel). Conferir:
    - `app.js?v=` novo no `index.html`;
@@ -75,3 +87,18 @@ Sempre na ordem inversa: **D → C → A**. Nenhum rollback mexe em dados.
 - Restringir o token do CRM só ao dono.
 - Endurecer a Edge Function `notify`.
 - `alter default privileges` para novas funções não nascerem executáveis por `anon`.
+
+
+## Rotação da chave VAPID (ordem corrigida)
+
+A chave privada está exposta (repositório público, GitHub Pages e histórico do git). A rotação tem ordem própria, porque trocar só a chave deixaria todos os aparelhos presos à inscrição antiga:
+
+1. **Publicar primeiro o código compatível com rotação, ainda com a chave ANTIGA.** O painel passa a comparar a chave da inscrição existente com a configurada e, se forem diferentes, apaga a linha, cancela a inscrição e cria outra. Com a chave igual, nada muda para ninguém.
+2. **Verificar o funcionamento** com a chave antiga: notificações continuam chegando e nenhuma inscrição é recriada à toa.
+3. **Só então gerar o par novo**, fora do repositório, e guardar no gerenciador de senhas.
+4. **Janela coordenada:** trocar os *secrets* da Edge Function e, em seguida, publicar o `config.js` com a chave pública nova e o `?v=` novo.
+5. **Pedir que todos abram o painel** (no iPhone, pelo ícone da Tela de Início). A reinscrição acontece sozinha, sem pedir permissão de novo.
+6. **Confirmar reinscrições e entregas** antes de qualquer outra coisa.
+7. **Só depois disso** considerar a limpeza das inscrições antigas.
+
+**Por que a `notify` NÃO apaga inscrição em 401/403 (ainda):** a ideia era limpar sozinha as inscrições presas à chave antiga. O risco é o inverso: 401/403 também aparece quando a configuração está temporariamente inconsistente — *secret* novo com `config.js` antigo, uma função publicada pela metade, relógio fora de hora ou erro de digitação na chave. Nesse cenário, a função apagaria **inscrições válidas** de toda a equipe, e cada pessoa teria de reativar na mão. Por isso a `notify` continua apagando só em **404/410** (inscrição que o próprio serviço de push declara inexistente), e a limpeza por 401/403 fica para uma revisão específica, depois da rotação, com os números da janela em mãos.

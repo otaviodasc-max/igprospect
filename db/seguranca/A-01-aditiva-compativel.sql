@@ -1,52 +1,260 @@
 -- =====================================================================
 -- IGProspect — Segunda camada de isolamento · FASE A (aditiva, compatível)
+-- Revisão 2 (2026-09-22): precondições que abortam antes de qualquer
+-- alteração, criação de objetos só quando inexistentes, e registro do
+-- estado anterior para o rollback restaurar EXATAMENTE o que havia.
 -- =====================================================================
--- NÃO RODAR sem autorização. Não é aplicado automaticamente (fica fora de
--- supabase/migrations/ de propósito). Ver db/seguranca/PLANO.md.
+-- NÃO RODAR sem autorização. Rode antes DIAGNOSTICO-00-somente-leitura.sql
+-- e compare o resultado com as precondições abaixo. Ver PLANO.md.
 --
--- O que esta fase faz (nada aqui apaga, move ou corrige dados existentes):
---   A1. is_org_member(org): "o usuário logado é membro ATIVO desta equipe?"
---   A2. Travas de integridade no banco (só valem para escritas NOVAS):
---       • org_id de lead/negociação/ligação não pode mudar num UPDATE;
---       • lead só pode usar funil (pipeline_id) da própria equipe;
---       • negociação/ligação só pode apontar para lead da própria equipe.
---   A3. RLS: usuário bloqueado/pendente não grava mais (antes o is_active()
---       só valia pra leitura) e não lê o chat da equipe.
---   A4. RPC anônima org_members_by_join_code para de devolver e-mail
---       (a extensão 1.10.4 só usa user_id e name).
---   A5. RPCs do painel (admin_*, create_org, join_org, switch_org, …) deixam
---       de ser executáveis por anon — só usuário logado.
---   A6. RPCs NOVAS e autenticadas para a extensão (ext2_*): exigem login
---       (auth.uid()), validam que o usuário é membro ativo da equipe pedida,
---       gravam created_by = auth.uid() (não confiam no cliente) e localizam
---       lead sempre por org_id + ext_id. Nenhum cliente usa ainda: são o
---       caminho da extensão futura (ver PLANO.md, Fase B).
+-- Tudo acontece numa transação só: qualquer precondição que falhe aborta
+-- o arquivo inteiro sem deixar nada pela metade.
 --
--- O que NÃO muda nesta fase (compatibilidade com a extensão 1.10.4):
---   • org_by_join_code, org_pipeline_by_join_code, org_leads_by_join_code,
---     extension_add_lead/update/delete continuam funcionando pra anon.
---   • defaults org_id = my_org() continuam (removidos só na Fase D).
+-- O que esta fase faz (nada apaga, move ou corrige dados):
+--   A1. is_org_member / assert_org_member — "é membro ATIVO desta equipe?"
+--   A2. Travas de integridade em leads/deals/calls (org_id imutável, funil
+--       e lead da mesma equipe).
+--   A3. RLS: usuário bloqueado ou pendente não grava mais e não lê o chat.
+--   A4. org_members_by_join_code para de devolver e-mail (mesma assinatura).
+--   A5. RPCs do painel deixam de ser executáveis por public/anon.
+--   A6. RPCs novas ext2_* (exigem login e associação ativa).
 --
--- ANTES DE RODAR — diagnóstico (somente leitura), rode e guarde o resultado:
---   -- a) leads com funil de outra equipe (só informativo; não bloqueia)
---   select count(*) from public.leads l join public.org_pipelines p on p.id = l.pipeline_id where p.org_id <> l.org_id;
---   -- b) negociações/ligações apontando para lead de outra equipe
---   select count(*) from public.deals d join public.leads l on l.id = d.lead_id where l.org_id <> d.org_id;
---   select count(*) from public.calls c join public.leads l on l.id = c.lead_id where l.org_id <> c.org_id;
---   -- c) usuários bloqueados/pendentes que ainda têm equipe ativa
---   select status, count(*) from public.profiles where org_id is not null and status <> 'active' group by 1;
---   Linhas antigas inconsistentes NÃO impedem esta fase (as travas só olham
---   escritas novas / campos alterados), mas devem ir pro relatório.
+-- Compatibilidade: a extensão 1.10.4 continua funcionando (as RPCs por
+-- código de equipe não são tocadas aqui — isso é a Fase C).
 --
--- ROLLBACK: db/seguranca/A-01-rollback.sql
+-- ROLLBACK: A-01-rollback.sql (usa a tabela public.seguranca_estado_anterior
+-- criada aqui; sem ela, o rollback se recusa a rodar).
 -- =====================================================================
 
 begin;
 
--- ---------------------------------------------------------------------
--- A1. Associação ativa à equipe
--- ---------------------------------------------------------------------
-create or replace function public.is_org_member(p_org_id uuid)
+-- =====================================================================
+-- 0) PRECONDIÇÕES — qualquer divergência aborta TUDO antes de mudar nada
+-- =====================================================================
+do $$
+declare
+  v_msg  text;
+  v_hash text;
+  -- hash do corpo de org_members_by_join_code esperado (versão do repositório,
+  -- supabase-extension-prospector.sql). Confirme com o BLOCO 4 do diagnóstico.
+  c_omjc_hash constant text := 'e0f0726f5cbcc0b33c6894ce2e5fa436';
+begin
+  ------------------------------------------------------------------ 0.1
+  -- tabelas, colunas e tipos usados pelas travas e pelas ext2_*
+  select string_agg(x.falta, ', ') into v_msg from (
+    select 'tabela ' || t as falta
+    from unnest(array['orgs','profiles','org_members','org_pipelines','leads','deals','calls',
+                      'messages','weekly_payments','push_subscriptions']) t
+    where to_regclass('public.' || t) is null
+  ) x;
+  if v_msg is not null then raise exception 'Fase A abortada: %', v_msg; end if;
+
+  select string_agg(e.tab || '.' || e.col || ' (esperado ' || e.tipo || ')', ', ') into v_msg
+  from (values
+    ('leads','org_id','uuid'), ('leads','pipeline_id','uuid'), ('leads','created_by','uuid'),
+    ('leads','ext_id','text'), ('leads','status','text'),
+    ('deals','org_id','uuid'), ('deals','lead_id','uuid'),
+    ('calls','org_id','uuid'), ('calls','lead_id','uuid'),
+    ('org_pipelines','org_id','uuid'), ('org_pipelines','is_default','boolean'), ('org_pipelines','stages','jsonb'),
+    ('org_members','org_id','uuid'), ('org_members','user_id','uuid'),
+    ('profiles','org_id','uuid'), ('profiles','status','text')
+  ) as e(tab, col, tipo)
+  where not exists (
+    select 1 from information_schema.columns c
+    where c.table_schema = 'public' and c.table_name = e.tab and c.column_name = e.col
+      and c.data_type = case e.tipo when 'uuid' then 'uuid' when 'jsonb' then 'jsonb'
+                                    when 'boolean' then 'boolean' else 'text' end);
+  if v_msg is not null then raise exception 'Fase A abortada: coluna ausente ou com tipo diferente: %', v_msg; end if;
+
+  ------------------------------------------------------------------ 0.2
+  -- unicidade compatível com "on conflict (org_id, ext_id)": índice único,
+  -- NÃO parcial, sem expressão, exatamente nessas duas colunas
+  if not exists (
+    select 1 from pg_index i
+    where i.indrelid = 'public.leads'::regclass
+      and i.indisunique and i.indpred is null and i.indexprs is null
+      and array(select a.attname::text from unnest(i.indkey) k
+                 join pg_attribute a on a.attrelid = i.indrelid and a.attnum = k) = array['org_id','ext_id']::text[]
+  ) then
+    raise exception 'Fase A abortada: não há índice único NÃO PARCIAL em leads(org_id, ext_id) — ext2_add_lead depende dele (ver BLOCO 11 do diagnóstico)';
+  end if;
+
+  ------------------------------------------------------------------ 0.3
+  -- funções auxiliares usadas nas policies precisam existir
+  select string_agg(f, ', ') into v_msg
+  from unnest(array['public.my_org()','public.is_active()','public.is_org_owner()','public.is_platform_admin()']) f
+  where to_regprocedure(f) is null;
+  if v_msg is not null then raise exception 'Fase A abortada: função auxiliar ausente: %', v_msg; end if;
+
+  ------------------------------------------------------------------ 0.4
+  -- nenhum objeto com os nomes NOVOS pode existir (nem com definição
+  -- desconhecida): a fase cria, nunca substitui
+  select string_agg(o.obj, ', ') into v_msg from (
+    select p.oid::regprocedure::text as obj
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'public'
+       and (p.proname like 'ext2\_%' or p.proname in ('is_org_member','assert_org_member','guard_leads_org','guard_child_org'))
+    union all
+    select t.tgname || ' em ' || t.tgrelid::regclass::text
+      from pg_trigger t
+     where not t.tgisinternal and t.tgname in ('leads_guard_org','deals_guard_org','calls_guard_org')
+    union all
+    select 'tabela public.seguranca_estado_anterior'
+     where to_regclass('public.seguranca_estado_anterior') is not null
+  ) o;
+  if v_msg is not null then
+    raise exception 'Fase A abortada: já existe objeto com nome novo (definição desconhecida): %. Revise à mão antes.', v_msg;
+  end if;
+
+  ------------------------------------------------------------------ 0.5
+  -- org_members_by_join_code: assinatura, retorno e DEFINIÇÃO esperados
+  if to_regprocedure('public.org_members_by_join_code(text)') is null then
+    raise exception 'Fase A abortada: org_members_by_join_code(text) não existe com a assinatura esperada';
+  end if;
+  select count(*) into v_msg from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = 'public' and p.proname = 'org_members_by_join_code';
+  if v_msg::int <> 1 then
+    raise exception 'Fase A abortada: org_members_by_join_code tem % sobrecargas (esperado 1)', v_msg;
+  end if;
+  select md5(regexp_replace(btrim(p.prosrc), '\s+', ' ', 'g')), pg_get_function_result(p.oid)
+    into v_hash, v_msg
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = 'public' and p.proname = 'org_members_by_join_code';
+  if v_msg is distinct from 'TABLE(user_id uuid, name text, email text)' then
+    raise exception 'Fase A abortada: retorno de org_members_by_join_code diferente do esperado (%). A extensão 1.10.4 depende dessas colunas.', v_msg;
+  end if;
+  if v_hash is distinct from c_omjc_hash then
+    raise exception 'Fase A abortada: definição de org_members_by_join_code divergente (hash % ≠ esperado %). Rode o BLOCO 4 do diagnóstico, revise e só então atualize c_omjc_hash.', v_hash, c_omjc_hash;
+  end if;
+
+  ------------------------------------------------------------------ 0.6
+  -- grants atuais das RPCs do painel: precisam estar no estado que o
+  -- rollback vai restaurar (anon E authenticated com EXECUTE)
+  select string_agg(x.obj, ', ') into v_msg from (
+    select p.oid::regprocedure::text as obj
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+      and p.proname in ('admin_delete_org','admin_delete_user','admin_org_features','admin_orgs',
+                        'admin_set_org_feature','admin_users','create_org','join_org','switch_org',
+                        'my_orgs','my_features','promote_team_member','remove_team_member')
+      -- ACL EXPLÍCITA: has_function_privilege() daria "true" só por causa do
+      -- PUBLIC e esconderia um grant específico que já tivesse sido tirado
+      and not (select coalesce(bool_and(papel = any(g.roles)), false)
+                 from (select array(select distinct coalesce(nullif(a.grantee::regrole::text, '-'), 'public')
+                                      from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                                     where a.privilege_type = 'EXECUTE') as roles) g,
+                      unnest(array['anon','authenticated']) papel)
+  ) x;
+  if v_msg is not null then
+    raise exception 'Fase A abortada: grants diferentes do esperado (anon+authenticated) em: %', v_msg;
+  end if;
+
+  ------------------------------------------------------------------ 0.7
+  -- policies: todas as das tabelas sensíveis precisam bater EXATAMENTE com
+  -- o esperado, e não pode existir nenhuma policy a mais (permissiva ou
+  -- restritiva). Nada é removido automaticamente: só aborta e relata.
+  with esperado(t, p, cmd, perm, q, w) as (values
+    ('leads','leads_org','ALL','PERMISSIVE','org_id=my_organdis_active','org_id=my_org'),
+    ('calls','calls_org','ALL','PERMISSIVE','org_id=my_organdis_active','org_id=my_org'),
+    ('deals','deals_org','ALL','PERMISSIVE','org_id=my_organdis_active','org_id=my_org'),
+    ('weekly_payments','weekly_payments_org','ALL','PERMISSIVE','org_id=my_organdis_active','org_id=my_org'),
+    ('messages','messages_select','SELECT','PERMISSIVE','org_id=my_org',''),
+    ('messages','messages_insert','INSERT','PERMISSIVE','','org_id=my_organdis_active'),
+    ('messages','messages_delete','DELETE','PERMISSIVE','user_id=auth.uidoris_platform_admin',''),
+    ('org_members','org_members_select','SELECT','PERMISSIVE','user_id=auth.uidoris_platform_admin',''),
+    ('org_pipelines','org_pipelines_select','SELECT','PERMISSIVE','org_id=my_organdis_active',''),
+    ('org_pipelines','org_pipelines_write','ALL','PERMISSIVE','org_id=my_organdis_org_owner','org_id=my_organdis_org_owner'),
+    ('orgs','orgs_select','SELECT','PERMISSIVE','id=my_orgoris_platform_admin',''),
+    ('orgs','orgs_update','UPDATE','PERMISSIVE','id=my_organdis_org_owneroris_platform_admin',''),
+    ('profiles','profiles_select','SELECT','PERMISSIVE','id=auth.uidororg_id=my_orgoris_platform_admin',''),
+    ('profiles','profiles_update','UPDATE','PERMISSIVE','id=auth.uidoris_platform_admin',''),
+    ('push_subscriptions','push_subs_select','SELECT','PERMISSIVE','user_id=auth.uidoris_platform_admin',''),
+    ('push_subscriptions','push_subs_insert','INSERT','PERMISSIVE','','user_id=auth.uidandorg_id=my_organdis_active'),
+    ('push_subscriptions','push_subs_update','UPDATE','PERMISSIVE','user_id=auth.uid','user_id=auth.uid'),
+    ('push_subscriptions','push_subs_delete','DELETE','PERMISSIVE','user_id=auth.uidoris_platform_admin','')
+  ),
+  atual as (
+    select tablename t, policyname p, cmd, permissive perm, array(select r::text from unnest(roles) r) roles,
+           lower(regexp_replace(coalesce(qual, ''),       '[()"''[:space:]]', '', 'g')) q,
+           lower(regexp_replace(coalesce(with_check, ''), '[()"''[:space:]]', '', 'g')) w
+    from pg_policies
+    where schemaname = 'public'
+      and tablename in ('leads','calls','deals','messages','weekly_payments',
+                        'orgs','profiles','org_members','org_pipelines','push_subscriptions')
+  )
+  select string_agg(d.obj || ' (' || d.motivo || ')', '; ') into v_msg
+  from (
+    select coalesce(a.t, e.t) || '.' || coalesce(a.p, e.p) as obj,
+           case when a.p is null then 'policy esperada ausente'
+                when e.p is null then 'policy inesperada'
+                when a.roles is distinct from array['public']::text[] then 'papéis diferentes de public'
+                else 'definição diferente do esperado' end as motivo
+    from esperado e
+    full outer join atual a on a.t = e.t and a.p = e.p
+    where a.p is null or e.p is null
+       or a.cmd is distinct from e.cmd or a.perm is distinct from e.perm
+       or a.q is distinct from e.q or a.w is distinct from e.w
+       or a.roles is distinct from array['public']::text[]
+  ) d;
+  if v_msg is not null then
+    raise exception 'Fase A abortada: policies divergentes nas tabelas sensíveis: %. Nenhuma policy foi removida. Revise com o BLOCO 6 do diagnóstico.', v_msg;
+  end if;
+end $$;
+
+-- =====================================================================
+-- 1) ESTADO ANTERIOR — base do rollback exato (sem dados pessoais)
+-- =====================================================================
+create table public.seguranca_estado_anterior (
+  id            bigserial primary key,
+  fase          text        not null check (fase in ('A','C','D')),
+  tipo          text        not null check (tipo in ('grant_execute','policy','function_def','column_default','objeto_criado')),
+  objeto        text        not null,
+  detalhe       jsonb       not null default '{}'::jsonb,
+  registrado_em timestamptz not null default now()
+);
+comment on table public.seguranca_estado_anterior is
+  'Estado anterior às migrations de db/seguranca (grants, policies, definições e defaults). Só o rollback lê. Sem dados de clientes.';
+alter table public.seguranca_estado_anterior enable row level security;
+-- sem policy: nenhum papel da API (anon/authenticated) enxerga esta tabela
+
+-- 1.1 grants atuais das RPCs do painel (só os papéis que serão mexidos)
+insert into public.seguranca_estado_anterior (fase, tipo, objeto, detalhe)
+select 'A', 'grant_execute', p.oid::regprocedure::text,
+       jsonb_build_object('roles', coalesce((
+         select jsonb_agg(distinct g.role order by g.role)
+         from (select coalesce(nullif(a.grantee::regrole::text, '-'), 'public') as role
+               from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+               where a.privilege_type = 'EXECUTE') g
+         where g.role in ('public','anon','authenticated')), '[]'::jsonb))
+from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+where n.nspname = 'public'
+  and p.proname in ('admin_delete_org','admin_delete_user','admin_org_features','admin_orgs',
+                    'admin_set_org_feature','admin_users','create_org','join_org','switch_org',
+                    'my_orgs','my_features','promote_team_member','remove_team_member');
+
+-- 1.2 policies que serão substituídas
+insert into public.seguranca_estado_anterior (fase, tipo, objeto, detalhe)
+select 'A', 'policy', tablename || '.' || policyname,
+       jsonb_build_object('tabela', tablename, 'policy', policyname, 'cmd', cmd,
+                          'permissive', permissive, 'roles', array(select r::text from unnest(roles) r),
+                          'qual', qual, 'with_check', with_check)
+from pg_policies
+where schemaname = 'public'
+  and (tablename, policyname) in (('leads','leads_org'), ('calls','calls_org'), ('deals','deals_org'),
+                                  ('weekly_payments','weekly_payments_org'), ('messages','messages_select'));
+
+-- 1.3 definição completa da função que será substituída
+insert into public.seguranca_estado_anterior (fase, tipo, objeto, detalhe)
+select 'A', 'function_def', p.oid::regprocedure::text,
+       jsonb_build_object('definicao', pg_get_functiondef(p.oid),
+                          'hash', md5(regexp_replace(btrim(p.prosrc), '\s+', ' ', 'g')))
+from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+where n.nspname = 'public' and p.proname = 'org_members_by_join_code';
+
+-- =====================================================================
+-- 2) A1 — associação ativa à equipe (objetos NOVOS: create, não replace)
+-- =====================================================================
+create function public.is_org_member(p_org_id uuid)
 returns boolean
 language sql stable security definer
 set search_path = public, pg_temp
@@ -63,8 +271,7 @@ $$;
 revoke execute on function public.is_org_member(uuid) from public, anon;
 grant  execute on function public.is_org_member(uuid) to authenticated;
 
--- Usado pelas ext2_*: erro padrão (42501 = insufficient_privilege).
-create or replace function public.assert_org_member(p_org_id uuid)
+create function public.assert_org_member(p_org_id uuid)
 returns void
 language plpgsql stable security definer
 set search_path = public, pg_temp
@@ -80,12 +287,10 @@ end; $$;
 revoke execute on function public.assert_org_member(uuid) from public, anon;
 grant  execute on function public.assert_org_member(uuid) to authenticated;
 
--- ---------------------------------------------------------------------
--- A2. Travas de integridade (valem para qualquer origem: painel, RPC,
---     trigger ou SQL direto). SECURITY DEFINER só pra enxergar o dono real
---     do funil/lead referenciado, sem depender do RLS de quem grava.
--- ---------------------------------------------------------------------
-create or replace function public.guard_leads_org()
+-- =====================================================================
+-- 3) A2 — travas de integridade entre equipe e referências
+-- =====================================================================
+create function public.guard_leads_org()
 returns trigger
 language plpgsql security definer
 set search_path = public, pg_temp
@@ -103,7 +308,7 @@ begin
   return new;
 end; $$;
 
-create or replace function public.guard_child_org()
+create function public.guard_child_org()
 returns trigger
 language plpgsql security definer
 set search_path = public, pg_temp
@@ -121,53 +326,52 @@ begin
   return new;
 end; $$;
 
-revoke execute on function public.guard_leads_org()  from public, anon, authenticated;
-revoke execute on function public.guard_child_org()  from public, anon, authenticated;
+revoke execute on function public.guard_leads_org() from public, anon, authenticated;
+revoke execute on function public.guard_child_org() from public, anon, authenticated;
 
-drop trigger if exists leads_guard_org on public.leads;
 create trigger leads_guard_org before insert or update on public.leads
   for each row execute function public.guard_leads_org();
-
-drop trigger if exists deals_guard_org on public.deals;
 create trigger deals_guard_org before insert or update on public.deals
   for each row execute function public.guard_child_org();
-
-drop trigger if exists calls_guard_org on public.calls;
 create trigger calls_guard_org before insert or update on public.calls
   for each row execute function public.guard_child_org();
 
--- ---------------------------------------------------------------------
--- A3. RLS: gravação também exige usuário ativo; chat só pra ativo.
---     Mesma regra de equipe de antes (org_id = my_org()).
--- ---------------------------------------------------------------------
-drop policy if exists leads_org on public.leads;
+-- =====================================================================
+-- 4) A3 — RLS: gravar também exige usuário ativo; chat só pra ativo
+-- =====================================================================
+drop policy leads_org on public.leads;
 create policy leads_org on public.leads for all
   using      (org_id = public.my_org() and public.is_active())
   with check (org_id = public.my_org() and public.is_active());
 
-drop policy if exists calls_org on public.calls;
+drop policy calls_org on public.calls;
 create policy calls_org on public.calls for all
   using      (org_id = public.my_org() and public.is_active())
   with check (org_id = public.my_org() and public.is_active());
 
-drop policy if exists deals_org on public.deals;
+drop policy deals_org on public.deals;
 create policy deals_org on public.deals for all
   using      (org_id = public.my_org() and public.is_active())
   with check (org_id = public.my_org() and public.is_active());
 
-drop policy if exists weekly_payments_org on public.weekly_payments;
+drop policy weekly_payments_org on public.weekly_payments;
 create policy weekly_payments_org on public.weekly_payments for all
   using      (org_id = public.my_org() and public.is_active())
   with check (org_id = public.my_org() and public.is_active());
 
-drop policy if exists messages_select on public.messages;
+drop policy messages_select on public.messages;
 create policy messages_select on public.messages for select
   using (org_id = public.my_org() and public.is_active());
 
--- ---------------------------------------------------------------------
--- A4. RPC anônima da extensão para de expor e-mail dos membros.
---     Mesma assinatura e mesmas colunas (email vem sempre nulo).
--- ---------------------------------------------------------------------
+-- =====================================================================
+-- 5) A4 — RPC anônima de membros para de expor e-mail
+--     Mesma assinatura e mesmas colunas (email sai sempre nulo).
+--     A listagem continua por profiles.org_id (equipe ATIVA), igual a hoje:
+--     mudar para org_members alteraria o comportamento da extensão 1.10.4
+--     (passaria a listar quem está com outra equipe aberta). O caminho novo
+--     (ext2_org_members) usa org_members, que é o correto para quem
+--     participa de várias equipes.
+-- =====================================================================
 create or replace function public.org_members_by_join_code(p_code text)
 returns table(user_id uuid, name text, email text)
 language sql stable security definer
@@ -180,10 +384,9 @@ as $$
   order by 2;
 $$;
 
--- ---------------------------------------------------------------------
--- A5. RPCs usadas só pelo painel (sempre logado): tira de anon/PUBLIC.
---     Todas as sobrecargas existentes, seja qual for a assinatura.
--- ---------------------------------------------------------------------
+-- =====================================================================
+-- 6) A5 — RPCs do painel saem de public/anon (continuam para logado)
+-- =====================================================================
 do $$
 declare r record;
 begin
@@ -200,10 +403,10 @@ begin
   end loop;
 end $$;
 
--- ---------------------------------------------------------------------
--- A6. RPCs autenticadas para a extensão (substitutas das *_by_join_code).
--- ---------------------------------------------------------------------
-create or replace function public.ext2_my_orgs()
+-- =====================================================================
+-- 7) A6 — RPCs autenticadas para a extensão (substitutas das por código)
+-- =====================================================================
+create function public.ext2_my_orgs()
 returns table(org_id uuid, org_name text, role text)
 language sql stable security definer
 set search_path = public, pg_temp
@@ -216,7 +419,7 @@ as $$
   order by o.name;
 $$;
 
-create or replace function public.ext2_org_context(p_org_id uuid)
+create function public.ext2_org_context(p_org_id uuid)
 returns table(org_id uuid, org_name text, pipeline_id uuid, stages jsonb,
               agendor_map jsonb, agendor_origin jsonb, agendor_token text)
 language plpgsql stable security definer
@@ -224,8 +427,8 @@ set search_path = public, pg_temp
 as $$
 begin
   perform public.assert_org_member(p_org_id);
-  -- agendor_token: mesmo nível de acesso que o membro já tem hoje (orgs_select);
-  -- a extensão precisa dele pra enviar ao CRM. Restringir ao dono é outra tarefa.
+  -- agendor_token: mesmo acesso que o membro já tem hoje (orgs_select); a
+  -- extensão precisa dele pra enviar ao CRM. Restringir ao dono é outra tarefa.
   return query
   select o.id, o.name, pl.id, pl.stages, pl.agendor_map, pl.agendor_origin, o.agendor_token
   from public.orgs o
@@ -234,7 +437,10 @@ begin
   limit 1;
 end; $$;
 
-create or replace function public.ext2_org_members(p_org_id uuid)
+-- Lista TODOS os membros ativos da equipe (org_members), não só quem está
+-- com ela aberta — é o que "quem é você" precisa quando a pessoa participa
+-- de várias equipes.
+create function public.ext2_org_members(p_org_id uuid)
 returns table(user_id uuid, name text)
 language plpgsql stable security definer
 set search_path = public, pg_temp
@@ -249,9 +455,8 @@ begin
   order by 2;
 end; $$;
 
--- Somente leitura (diferente de org_leads_by_join_code, que grava ext_id):
--- lead sem ext_id sai com o próprio id como identificador.
-create or replace function public.ext2_list_leads(p_org_id uuid, p_limit int default 500, p_offset int default 0)
+-- Somente leitura (diferente de org_leads_by_join_code, que grava ext_id).
+create function public.ext2_list_leads(p_org_id uuid, p_limit int default 500, p_offset int default 0)
 returns table(ext_id text, name text, username text, phone text, niche text,
               status text, tipo text, notes text, added_at timestamptz)
 language plpgsql stable security definer
@@ -269,7 +474,7 @@ begin
   offset greatest(coalesce(p_offset, 0), 0);
 end; $$;
 
-create or replace function public.ext2_add_lead(
+create function public.ext2_add_lead(
   p_org_id uuid, p_ext_id text, p_name text, p_username text default '',
   p_phone text default '', p_niche text default '', p_notes text default '',
   p_status text default null, p_added_at timestamptz default null
@@ -297,7 +502,7 @@ begin
   return v_id;  -- nulo = já existia (mesmo org_id + ext_id)
 end; $$;
 
-create or replace function public.ext2_update_lead(
+create function public.ext2_update_lead(
   p_org_id uuid, p_ext_id text, p_status text default null, p_phone text default null,
   p_name text default null, p_notes text default null, p_agendor_person_id text default null,
   p_agendor_deal_id text default null, p_agendor_funnel text default null
@@ -324,7 +529,7 @@ begin
   return v_n;
 end; $$;
 
-create or replace function public.ext2_delete_lead(p_org_id uuid, p_ext_id text)
+create function public.ext2_delete_lead(p_org_id uuid, p_ext_id text)
 returns integer
 language plpgsql security definer
 set search_path = public, pg_temp
@@ -352,26 +557,50 @@ begin
   end loop;
 end $$;
 
--- ---------------------------------------------------------------------
--- VERIFICAÇÃO POSTERIOR (aborta a transação inteira se algo não bater)
--- ---------------------------------------------------------------------
+-- =====================================================================
+-- 8) Registro do que foi CRIADO (o rollback só remove o que está aqui)
+-- =====================================================================
+insert into public.seguranca_estado_anterior (fase, tipo, objeto, detalhe)
+select 'A', 'objeto_criado', x.obj, jsonb_build_object('classe', x.classe)
+from (
+  select p.oid::regprocedure::text as obj, 'function' as classe
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = 'public'
+     and (p.proname like 'ext2\_%' or p.proname in ('is_org_member','assert_org_member','guard_leads_org','guard_child_org'))
+  union all
+  select t.tgname || '|' || t.tgrelid::regclass::text, 'trigger'
+    from pg_trigger t
+   where not t.tgisinternal and t.tgname in ('leads_guard_org','deals_guard_org','calls_guard_org')
+) x;
+
+-- =====================================================================
+-- 9) VERIFICAÇÃO POSTERIOR — aborta tudo se algo não bater
+-- =====================================================================
 do $$
-declare v_bad text;
+declare v_bad text; v_n int;
 begin
   select string_agg(p.oid::regprocedure::text, ', ') into v_bad
   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
   where n.nspname = 'public'
     and (p.proname like 'ext2\_%' or p.proname in ('is_org_member','assert_org_member','admin_delete_org',
-         'admin_delete_user','admin_orgs','admin_users','create_org','join_org','switch_org'))
+         'admin_delete_user','admin_orgs','admin_users','create_org','join_org','switch_org',
+         'my_orgs','my_features','promote_team_member','remove_team_member','admin_org_features','admin_set_org_feature'))
     and has_function_privilege('anon', p.oid, 'EXECUTE');
   if v_bad is not null then raise exception 'Fase A: anon ainda executa %', v_bad; end if;
 
   if (select count(*) from pg_trigger where tgname in ('leads_guard_org','deals_guard_org','calls_guard_org')) <> 3 then
     raise exception 'Fase A: triggers de integridade ausentes';
   end if;
-  -- compatibilidade 1.10.4: as RPCs antigas continuam com anon
-  if not has_function_privilege('anon', 'public.org_by_join_code(text)', 'EXECUTE') then
-    raise exception 'Fase A quebraria a extensão 1.10.4 (org_by_join_code sem anon)';
+
+  select count(*) into v_n from public.seguranca_estado_anterior where fase = 'A';
+  if v_n < 25 then
+    raise exception 'Fase A: estado anterior incompleto (% registros) — rollback exato ficaria impossível', v_n;
+  end if;
+
+  -- compatibilidade com a extensão 1.10.4
+  if not has_function_privilege('anon', 'public.org_by_join_code(text)', 'EXECUTE')
+     or not has_function_privilege('anon', 'public.org_leads_by_join_code(text,int,int)', 'EXECUTE') then
+    raise exception 'Fase A quebraria a extensão 1.10.4 (RPCs por código sem anon)';
   end if;
 end $$;
 

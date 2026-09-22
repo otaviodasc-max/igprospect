@@ -1,23 +1,41 @@
 -- =====================================================================
--- ROLLBACK da FASE C — devolve às RPCs por código de equipe o acesso
--- anônimo que a extensão 1.10.4 usa. Não mexe em dados.
--- Use se, depois da Fase C, alguém ainda depender da extensão antiga.
+-- ROLLBACK da FASE C — revisão 2 (2026-09-22)
 -- =====================================================================
+-- Devolve às RPCs por código de equipe EXATAMENTE os papéis registrados
+-- por C-01 em public.seguranca_estado_anterior. Não concede nada além
+-- disso (se um papel não tinha EXECUTE antes, continua sem).
+-- Sem o registro, este arquivo se recusa a rodar.
+-- Não mexe em dados.
+-- =====================================================================
+
 begin;
 
 do $$
-declare r record;
+declare r record; v_roles text[]; v_role text;
 begin
-  for r in
-    select p.oid::regprocedure as fn
-    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-    where n.nspname = 'public'
-      and p.proname in ('org_by_join_code','org_members_by_join_code','org_pipeline_by_join_code',
-                        'org_leads_by_join_code','extension_add_lead','extension_update_lead',
-                        'extension_delete_lead')
+  if to_regclass('public.seguranca_estado_anterior') is null
+     or not exists (select 1 from public.seguranca_estado_anterior where fase = 'C') then
+    raise exception 'Rollback C abortado: não há estado registrado da Fase C';
+  end if;
+  if exists (select 1 from public.seguranca_estado_anterior where fase = 'D') then
+    raise exception 'Rollback C abortado: desfaça antes a Fase D (D-01-rollback.sql)';
+  end if;
+
+  for r in select objeto, detalhe from public.seguranca_estado_anterior where fase = 'C' and tipo = 'grant_execute'
   loop
-    execute format('grant execute on function %s to anon, authenticated', r.fn);
+    v_roles := array(select jsonb_array_elements_text(r.detalhe->'roles'));
+    foreach v_role in array array['public','anon','authenticated'] loop
+      if v_role = any(v_roles) then
+        execute format('grant execute on function %s to %s', r.objeto,
+                       case when v_role = 'public' then 'public' else quote_ident(v_role) end);
+      else
+        execute format('revoke execute on function %s from %s', r.objeto,
+                       case when v_role = 'public' then 'public' else quote_ident(v_role) end);
+      end if;
+    end loop;
   end loop;
+
+  delete from public.seguranca_estado_anterior where fase = 'C';
 end $$;
 
 commit;

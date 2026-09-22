@@ -37,6 +37,8 @@ async function as(db, uid, fn) {
     await db.query("select set_config('request.jwt.claim.sub', '', false)");
   }
 }
+// Objetos vindos do banco: compara por valor (JSON), não por referência.
+const same = (a, b, msg) => assert.equal(JSON.stringify(a), JSON.stringify(b), msg);
 const one = async (db, sql, params) => (await db.query(sql, params)).rows[0];
 const rows = async (db, sql, params) => (await db.query(sql, params)).rows;
 
@@ -155,7 +157,8 @@ for (const [state, phases] of Object.entries(PHASES)) {
 
     test('usuário bloqueado não grava; membro removido perde acesso', async () => {
       const ins = as(db, f.u.bloq, () => db.query("insert into public.leads(org_id, name) values ($1, 'do bloqueado')", [f.orgA]));
-      if (hasPhase(state, 'A')) await assert.rejects(ins, /row-level security/);
+      // na Fase D a trava de autor recusa antes do RLS — as duas recusas valem
+      if (hasPhase(state, 'A')) await assert.rejects(ins, /row-level security|não é membro/);
       else await ins; // VULNERABILIDADE ATUAL: is_active() só valia na leitura
       await as(db, f.u.a, () => db.query('select public.remove_team_member($1)', [f.u.removido]));
       const n = await as(db, f.u.removido, () => one(db, 'select count(*)::int n from public.leads'));
@@ -258,7 +261,11 @@ test('14. migrations não apagam, movem nem corrigem dados', () => {
     // tira comentários e corpos de função ($$ ... $$): o que sobra é o que a
     // migration EXECUTA diretamente.
     const top = src.replace(/--.*$/gm, '').replace(/\$\$[\s\S]*?\$\$/g, '$$');
-    const bad = top.match(/\b(delete\s+from|truncate|update\s+public\.|insert\s+into|drop\s+(table|schema|column|database)|alter\s+table\s+\S+\s+drop\s+column)\b/gi);
+    // escrita na própria tabela de controle da migration é permitida:
+    // ela só guarda grants/policies/definições anteriores, para o rollback exato
+    const semControle = top.replace(/(insert\s+into|delete\s+from)\s+public\.seguranca_estado_anterior/gi, '')
+                           .replace(/drop\s+table\s+public\.seguranca_estado_anterior/gi, '');
+    const bad = semControle.match(/\b(delete\s+from|truncate|update\s+public\.|insert\s+into|drop\s+(table|schema|column|database)|alter\s+table\s+\S+\s+drop\s+column)\b/gi);
     assert.equal(bad, null, `${f}: ${bad}`);
     // funções criadas pelas migrations: SECURITY DEFINER sempre com search_path fixo
     for (const m of src.matchAll(/create\s+or\s+replace\s+function[\s\S]*?as\s+\$\$/gi)) {
@@ -283,4 +290,140 @@ test('rollbacks aplicam limpos na ordem D → C → A e devolvem o estado anteri
   // e o isolamento básico continua
   const n = await as(db, f.u.a, () => one(db, 'select count(*)::int n from public.leads where org_id = $1', [f.orgB]));
   assert.equal(n.n, 0);
+});
+
+/* ------------------------------------------------------------------ */
+/* PRECONDIÇÕES: a migration tem que ABORTAR sem mudar nada            */
+/* ------------------------------------------------------------------ */
+const A_FILE = 'A-01-aditiva-compativel.sql';
+const applyFile = async (db, f) => {
+  try { await db.exec(fs.readFileSync(path.join(SECURITY_DIR, f), 'utf8')); }
+  finally { try { await db.exec('rollback'); } catch { /* sem transação aberta */ } }
+};
+// Estado observável antes/depois: nada da Fase A pode existir, e as policies
+// e a função legada têm que continuar como estavam.
+async function estadoIntacto(db) {
+  const novos = await rows(db, `select p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname='public' and (p.proname like 'ext2\\_%' or p.proname in ('is_org_member','assert_org_member','guard_leads_org','guard_child_org'))`);
+  const trig = await rows(db, `select tgname from pg_trigger where not tgisinternal
+    and tgname in ('leads_guard_org','deals_guard_org','calls_guard_org')`);
+  const tab = await one(db, "select to_regclass('public.seguranca_estado_anterior') is null as sem_tabela");
+  const pol = await one(db, `select with_check from pg_policies where schemaname='public' and tablename='leads' and policyname='leads_org'`);
+  const email = await one(db, `select (prosrc like '%p.email%') as devolve_email from pg_proc p
+    join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and proname='org_members_by_join_code'`);
+  const anon = await one(db, "select has_function_privilege('anon','public.create_org(text,text)','EXECUTE') as tem");
+  return { novos: novos.length, trig: trig.length, semTabela: tab.sem_tabela, check: pol.with_check,
+           devolveEmail: email.devolve_email, anonCreateOrg: anon.tem };
+}
+
+describe('precondições da Fase A abortam antes de qualquer alteração', () => {
+  const cenarios = [
+    ['objeto novo homônimo já existe',
+      "create function public.is_org_member(p uuid) returns boolean language sql as $f$ select true $f$;",
+      /já existe objeto com nome novo/],
+    ['policy adicional permissiva numa tabela afetada',
+      "create policy leads_extra on public.leads for select using (true);",
+      /policies divergentes/],
+    ['grant diferente do esperado numa RPC do painel',
+      "revoke execute on function public.create_org(text,text) from anon;",
+      /grants diferentes do esperado/],
+    ['definição de org_members_by_join_code divergente',
+      `create or replace function public.org_members_by_join_code(p_code text)
+         returns table(user_id uuid, name text, email text) language sql stable security definer
+         set search_path = public as $f$ select p.id, p.name, p.email from public.profiles p limit 0 $f$;`,
+      /definição de org_members_by_join_code divergente/],
+    ['índice único (org_id, ext_id) ausente',
+      "drop index public.leads_org_extid_uniq;",
+      /não há índice único/],
+    ['policy esperada ausente',
+      "drop policy messages_select on public.messages;",
+      /policies divergentes/],
+  ];
+  for (const [nome, sabotagem, mensagem] of cenarios) {
+    test(nome, async () => {
+      const db = await createDb();
+      await seed(db);
+      await db.exec(sabotagem);
+      const antes = await estadoIntacto(db);
+      await assert.rejects(applyFile(db, A_FILE), mensagem);
+      const depois = await estadoIntacto(db);
+      same(depois, antes);                                   // nada mudou
+      assert.equal(depois.semTabela, true, 'não criou a tabela de estado');
+      assert.equal(depois.trig, 0, 'não criou trigger');
+    });
+  }
+});
+
+test('Fase D aborta se org_id aceitar nulo, sem alterar dados nem defaults', async () => {
+  const db = await createDb({ phases: PHASES['A+C'] });
+  await seed(db);
+  await db.exec('alter table public.calls alter column org_id drop not null');
+  await assert.rejects(applyFile(db, 'D-01-restricoes-finais.sql'), /aceita nulo em: calls/);
+  const d = await one(db, `select column_default from information_schema.columns
+    where table_schema='public' and table_name='leads' and column_name='org_id'`);
+  assert.match(d.column_default, /my_org\(\)/, 'default preservado');
+  assert.equal((await one(db, "select to_regprocedure('public.guard_leads_author()') is null as sem")).sem, true);
+});
+
+test('Fase D aborta se o default de org_id for diferente do esperado', async () => {
+  const db = await createDb({ phases: PHASES['A+C'] });
+  await seed(db);
+  await db.exec("alter table public.messages alter column org_id set default '00000000-0000-0000-0000-000000000000'::uuid");
+  await assert.rejects(applyFile(db, 'D-01-restricoes-finais.sql'), /default de org_id diferente do esperado/);
+});
+
+test('rollback A não amplia privilégio nenhum (ACL idêntica à de antes)', async () => {
+  const acl = db => rows(db, `select p.oid::regprocedure::text f,
+      coalesce((select string_agg(distinct coalesce(nullif(a.grantee::regrole::text,'-'),'public'), ',' order by coalesce(nullif(a.grantee::regrole::text,'-'),'public'))
+        from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a where a.privilege_type='EXECUTE'), '') papeis
+    from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' order by 1`);
+  const pols = db => rows(db, `select tablename||'.'||policyname||'|'||cmd||'|'||permissive||'|'||coalesce(qual,'')||'|'||coalesce(with_check,'') s
+    from pg_policies where schemaname='public' order by 1`);
+  const db = await createDb();
+  await seed(db);
+  const aclAntes = await acl(db), polAntes = await pols(db);
+  await db.exec(fs.readFileSync(path.join(SECURITY_DIR, A_FILE), 'utf8'));
+  await db.exec(fs.readFileSync(path.join(SECURITY_DIR, 'A-01-rollback.sql'), 'utf8'));
+  same(await acl(db), aclAntes);
+  same(await pols(db), polAntes);
+  assert.equal((await one(db, "select to_regclass('public.seguranca_estado_anterior') is null as sem")).sem, true);
+});
+
+test('rollback A se recusa a rodar sem o estado registrado', async () => {
+  const db = await createDb({ phases: [A_FILE] });
+  await db.exec('drop table public.seguranca_estado_anterior');
+  await assert.rejects(applyFile(db, 'A-01-rollback.sql'), /não existe|não foi aplicada/);
+});
+
+test('usuário em várias equipes: listagem legada x nova, e isolamento mantido', async () => {
+  const db = await createDb({ phases: [A_FILE] });
+  const f = await seed(db);
+  // o usuário de A também entra na equipe B (fica com B como equipe ATIVA)
+  await as(db, f.u.a, () => db.query('select public.join_org($1)', [f.codeB]));
+  const orgs = await as(db, f.u.a, () => rows(db, 'select org_id from public.ext2_my_orgs()'));
+  same(orgs.map(o => o.org_id).sort(), [f.orgA, f.orgB].sort());
+  // legado (profiles.org_id = equipe ativa): ele some da lista de A
+  const legado = await as(db, null, () => rows(db, 'select user_id from public.org_members_by_join_code($1)', [f.codeA]));
+  assert.ok(!legado.some(m => m.user_id === f.u.a), 'legado lista só quem está com a equipe aberta');
+  // novo (org_members): ele aparece nas duas equipes
+  for (const org of [f.orgA, f.orgB]) {
+    const novo = await as(db, f.u.a, () => rows(db, 'select user_id from public.ext2_org_members($1)', [org]));
+    assert.ok(novo.some(m => m.user_id === f.u.a), 'ext2 lista todos os membros');
+  }
+  // e o isolamento continua: com B ativa, ele não lê os leads de A pelo RLS
+  const n = await as(db, f.u.a, () => one(db, 'select count(*)::int n from public.leads where org_id = $1', [f.orgA]));
+  assert.equal(n.n, 0);
+  // mas pelas ext2_* ele opera nas duas equipes de que é membro
+  assert.equal((await as(db, f.u.a, () => one(db, "select public.ext2_add_lead($1,'multi-1','Multi') id", [f.orgA]))).id != null, true);
+  assert.equal((await as(db, f.u.a, () => one(db, "select public.ext2_delete_lead($1,'multi-1') n", [f.orgA]))).n, 1);
+});
+
+test('Fase D: autor bloqueado ou pendente é recusado', async () => {
+  const db = await createDb({ phases: PHASES['A+C+D'] });
+  const f = await seed(db);
+  // bloqueado é membro da equipe A, mas não está ativo
+  await assert.rejects(db.query("insert into public.leads(org_id, name, created_by) values ($1,'x',$2)", [f.orgA, f.u.bloq]),
+    /Autor do lead não é membro ativo/);
+  // e o autor ativo continua passando
+  await db.query("insert into public.leads(org_id, name, created_by) values ($1,'ok',$2)", [f.orgA, f.u.a]);
 });
