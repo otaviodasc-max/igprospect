@@ -70,3 +70,43 @@ test('Pages: _config.yml exclui SQL, docs, testes e fontes de servidor do site',
     assert.match(cfg, new RegExp(`^\\s*-\\s*${e.replace(/[.*"]/g, c => '\\' + c)}\\s*$`, 'm'), e);
   }
 });
+
+test('painel: metas e destinatário do pagamento usam a RPC org_set_goals, com retorno ao caminho antigo', () => {
+  // A Fase A fecha o UPDATE amplo em public.orgs (hoje qualquer membro ativo
+  // pode alterar nome, token do CRM e código de convite). O que membro comum
+  // realmente faz — salvar metas e escolher quem recebe — passa pela RPC.
+  const fn = APP.slice(APP.indexOf('async function saveOrgGoals'), APP.indexOf('async function saveOrgGoals') + 1200);
+  assert.match(fn, /sb\.rpc\('org_set_goals'/, 'a RPC é o caminho principal');
+  assert.match(fn, /PGRST202|42883/, 'fallback só quando a RPC ainda não existe no banco');
+  assert.match(fn, /sb\.from\('orgs'\)\.update/, 'fallback mantém o painel funcionando antes da Fase A');
+
+  // nenhum outro ponto do painel grava metas direto na tabela
+  const forasteiros = [];
+  const re = /sb\.from\('orgs'\)\.update\(([^)]*)\)/g;
+  let m;
+  while ((m = re.exec(APP))) {
+    const linha = APP.slice(0, m.index).split('\n').length;
+    const dentroDoFallback = Math.abs(linha - APP.slice(0, APP.indexOf('async function saveOrgGoals')).split('\n').length) < 15;
+    if (/goals/.test(m[1]) && !dentroDoFallback) forasteiros.push(linha);
+  }
+  assert.deepEqual(forasteiros, [], 'sobrou gravação de metas fora da RPC');
+});
+
+test('painel: as escritas diretas em public.orgs são só as quatro conhecidas', () => {
+  // Inventário fechado: qualquer ponto NOVO de UPDATE em orgs reprova aqui e
+  // precisa ser avaliado contra a policy da Fase A (dono/admin).
+  //   1. doCreateOrg  — quem acabou de criar a equipe já é dono dela;
+  //   2. fallback de saveOrgGoals — só enquanto a RPC não existir no banco;
+  //   3. st-save (token do CRM) — card exclusivo do dono;
+  //   4. st-auto/agendorAuto (ajuste do envio ao CRM) — mesmo card do dono;
+  //   5. st-module (módulo de profissão) — seletor exclusivo do dono.
+  // Quem prova o fechamento de verdade é o teste de banco "orgs_update":
+  // depois da Fase A, membro comum, bloqueado e forasteiro recebem 0 linhas.
+  const pontos = [...APP.matchAll(/sb\.from\('orgs'\)\.update\(([^)]*)\)/g)]
+    .map(m => ({ linha: APP.slice(0, m.index).split('\n').length, campos: m[1].replace(/\s+/g, ' ').slice(0, 40) }));
+  assert.equal(pontos.length, 5, `esperava 5 escritas diretas em orgs, achei ${pontos.length}: ${JSON.stringify(pontos)}`);
+  const campos = pontos.map(p => p.campos).join(' | ');
+  assert.match(campos, /module_answers/);   // doCreateOrg
+  assert.match(campos, /settings/);          // fallback e st-save
+  assert.match(campos, /module_id/);         // st-module
+});

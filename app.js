@@ -527,6 +527,22 @@ const callFromRow = r => ({ id:r.id, leadId:r.lead_id, name:r.name, phone:r.phon
 // my_org() escolhia a equipe em silêncio (ex.: outra aba trocou de equipe).
 // Updates/deletes também filtram por org_id, além do id. Ver db/seguranca/.
 const withOrg = row => ({ ...row, org_id:S.org.id });
+// METAS: até a Fase A do banco, qualquer membro ativo pode dar UPDATE na linha
+// da organização (nome, token do CRM, código de convite…). A Fase A fecha isso
+// para dono/admin e deixa só esta RPC para o que membro comum faz de verdade:
+// salvar metas e escolher quem recebe o pagamento. Enquanto a RPC não existir
+// no banco, cai no caminho antigo — assim o painel funciona antes e depois da
+// migração, sem depender da ordem de publicação.
+async function saveOrgGoals(goals){
+  const { data, error }=await sb.rpc('org_set_goals',{ p_org_id:S.org.id, p_goals:goals });
+  if(!error){ S.org={ ...S.org, settings:{ ...(S.org.settings||{}), goals:data||goals } }; return { error:null }; }
+  const faltaRpc = error.code==='PGRST202' || error.code==='42883' || /(function|rota).*(não existe|does not exist|not found)/i.test(error.message||'');
+  if(!faltaRpc) return { error };
+  const settings={ ...(S.org.settings||{}), goals };
+  const r=await sb.from('orgs').update({ settings }).eq('id',S.org.id);
+  if(!r.error) S.org={ ...S.org, settings };
+  return { error:r.error };
+}
 const callToRow = c => ({ lead_id:c.leadId||null, name:c.name, phone:c.phone, outcome:c.outcome, duration:c.duration, at:c.at, notes:c.notes });
 const dealFromRow = r => ({ id:r.id, orgId:r.org_id, leadId:r.lead_id, createdBy:r.created_by, prospectorName:r.prospector_name, status:r.status||'contato', cardType:r.card_type, cardValue:r.card_value, commissionValue:r.commission_value, commissionPct:r.commission_pct, commissionPaid:!!r.commission_paid, paidAt:r.paid_at, report:r.report, notes:r.notes, closedAt:r.closed_at, createdAt:r.created_at, leadName:r.leads&&r.leads.name, leadUsername:r.leads&&r.leads.username, leadPhone:r.leads&&r.leads.phone, leadNiche:r.leads&&r.leads.niche });
 const dealToRow = d => { const o={updated_at:new Date().toISOString()}; if(d.status!==undefined)o.status=d.status; if(d.cardType!==undefined)o.card_type=d.cardType||null; if(d.cardValue!==undefined)o.card_value=d.cardValue!=null&&d.cardValue!==''?Number(d.cardValue):null; if(d.commissionValue!==undefined)o.commission_value=d.commissionValue!=null&&d.commissionValue!==''?Number(d.commissionValue):null; if(d.commissionPct!==undefined)o.commission_pct=d.commissionPct!=null&&d.commissionPct!==''?Number(d.commissionPct):null; if(d.commissionPaid!==undefined)o.commission_paid=!!d.commissionPaid; if(d.paidAt!==undefined)o.paid_at=d.paidAt||null; if(d.report!==undefined)o.report=d.report; if(d.notes!==undefined)o.notes=d.notes; if(d.closedAt!==undefined)o.closed_at=d.closedAt||null; return o; };
@@ -1820,9 +1836,8 @@ function goalsForm(){
   maskMoneyInput($('gf-pay-rate')); maskMoneyInput($('gf-pay-bonusrate')); maskMoneyInput($('gf-revenue')); maskMoneyInput($('gf-commission'));
   $('gf-save').onclick=async()=>{
     const newGoals={ contacts:parseInt($('gf-contacts').value)||0, sales:parseInt($('gf-sales').value)||0, revenue:moneyToNumber($('gf-revenue').value)||0, commission:moneyToNumber($('gf-commission').value)||0, leadDailyMin:parseInt($('gf-leadmin').value)||0, leadDailyMax:parseInt($('gf-leadmax').value)||0, callsWeekly:parseInt($('gf-callsweek').value)||0, payDayRate:moneyToNumber($('gf-pay-rate').value)||0, payTargetPerDay:parseInt($('gf-pay-target').value)||50, commissionPct:parseFloat($('gf-commpct').value)||0.1, payBasis:$('gf-pay-basis').value==='chamados'?'chamados':'seguidos', payFollowUp:$('gf-pay-followup').checked, payBonusMinPerDay:parseInt($('gf-pay-bonusmin').value)||0, payBonusRate:moneyToNumber($('gf-pay-bonusrate').value)||0 };
-    const settings={ ...(S.org.settings||{}), goals:newGoals };
     $('gf-save').disabled=true;
-    const{error}=await sb.from('orgs').update({ settings }).eq('id',S.org.id);
+    const{error}=await saveOrgGoals(newGoals);
     if(error){ toast(error.message,'error'); $('gf-save').disabled=false; return; }
     S.org.settings=settings; closeModal(); toast('Metas atualizadas!','success'); renderGoals();
   };
@@ -3447,8 +3462,7 @@ function renderSettings(){
   document.querySelectorAll('[data-theme-set]').forEach(b=>b.onclick=()=>setTheme(b.dataset.themeSet));
   $('st-pay-recipient')&&($('st-pay-recipient').onchange=async e=>{
     const payRecipientId=e.target.value;
-    const settings={ ...(S.org.settings||{}), goals:{ ...getGoals(), payRecipientId } };
-    const{error}=await sb.from('orgs').update({ settings }).eq('id',S.org.id);
+    const{error}=await saveOrgGoals({ ...getGoals(), payRecipientId });
     if(error){ toast(error.message,'error'); return; }
     S.org.settings=settings; toast(payRecipientId?'Destinatário do pagamento definido':'Voltou a somar a equipe inteira','success');
   });
