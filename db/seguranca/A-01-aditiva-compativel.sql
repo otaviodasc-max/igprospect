@@ -3,6 +3,17 @@
 -- Revisão 2 (2026-09-22): precondições que abortam antes de qualquer
 -- alteração, criação de objetos só quando inexistentes, e registro do
 -- estado anterior para o rollback restaurar EXATAMENTE o que havia.
+-- Revisão 4 (2026-09-23): alinhada ao DIAGNÓSTICO REAL da produção
+-- (PostgreSQL 17.6). Mudanças desta revisão:
+--   • a precondição de `orgs_update` passa a esperar a policy que existe DE
+--     VERDADE lá (qualquer membro ativo atualiza a organização). A REV3
+--     esperava a versão de supabase-lock-orgs-owner.sql, que nunca foi
+--     executada em produção — a Fase A abortaria logo na primeira tentativa;
+--   • `orgs_update` é substituída de propósito por uma policy de DONO ou
+--     ADMIN, com USING e WITH CHECK explícitos (A7);
+--   • entra a RPC mínima `org_set_goals` para o que membro comum faz hoje
+--     (metas e destinatário do pagamento), sem devolver UPDATE amplo (A8);
+--   • precondições agregadas de integridade (A0.8), sem exibir dado nenhum.
 -- =====================================================================
 -- NÃO RODAR sem autorização. Rode antes DIAGNOSTICO-00-somente-leitura.sql
 -- e compare o resultado com as precondições abaixo. Ver PLANO.md.
@@ -18,6 +29,10 @@
 --   A4. org_members_by_join_code para de devolver e-mail (mesma assinatura).
 --   A5. RPCs do painel deixam de ser executáveis por public/anon.
 --   A6. RPCs novas ext2_* (exigem login e associação ativa).
+--   A7. orgs_update passa a ser só do DONO da equipe ativa ou do admin da
+--       plataforma, com USING e WITH CHECK explícitos.
+--   A8. org_set_goals: RPC mínima para a única escrita em orgs que membro
+--       comum faz hoje no painel (metas e destinatário do pagamento).
 --
 -- Compatibilidade: a extensão 1.10.4 continua funcionando (as RPCs por
 -- código de equipe não são tocadas aqui — isso é a Fase C).
@@ -93,7 +108,7 @@ begin
     select p.oid::regprocedure::text as obj
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
      where n.nspname = 'public'
-       and (p.proname like 'ext2\_%' or p.proname in ('is_org_member','assert_org_member','guard_leads_org','guard_child_org'))
+       and (p.proname like 'ext2\_%' or p.proname in ('is_org_member','assert_org_member','guard_leads_org','guard_child_org','org_set_goals'))
     union all
     select t.tgname || ' em ' || t.tgrelid::regclass::text
       from pg_trigger t
@@ -165,7 +180,11 @@ begin
     ('org_pipelines','org_pipelines_select','SELECT','PERMISSIVE','org_id=my_organdis_active',''),
     ('org_pipelines','org_pipelines_write','ALL','PERMISSIVE','org_id=my_organdis_org_owner','org_id=my_organdis_org_owner'),
     ('orgs','orgs_select','SELECT','PERMISSIVE','id=my_orgoris_platform_admin',''),
-    ('orgs','orgs_update','UPDATE','PERMISSIVE','id=my_organdis_org_owneroris_platform_admin',''),
+    -- ESTADO REAL DA PRODUÇÃO (diagnóstico, bloco 6): qualquer MEMBRO ATIVO
+    -- atualiza a organização, e não há WITH CHECK. O repositório tem
+    -- supabase-lock-orgs-owner.sql (dono), mas ele nunca foi rodado lá.
+    -- É esta policy que a fase substitui, na seção A7.
+    ('orgs','orgs_update','UPDATE','PERMISSIVE','id=my_organdis_activeoris_platform_admin',''),
     ('profiles','profiles_select','SELECT','PERMISSIVE','id=auth.uidororg_id=my_orgoris_platform_admin',''),
     ('profiles','profiles_update','UPDATE','PERMISSIVE','id=auth.uidoris_platform_admin',''),
     ('push_subscriptions','push_subs_select','SELECT','PERMISSIVE','user_id=auth.uidoris_platform_admin',''),
@@ -199,6 +218,36 @@ begin
   if v_msg is not null then
     raise exception 'Fase A abortada: policies divergentes nas tabelas sensíveis: %. Nenhuma policy foi removida. Revise com o BLOCO 6 do diagnóstico.', v_msg;
   end if;
+  ------------------------------------------------------------------ 0.8
+  -- INTEGRIDADE ATUAL: as travas desta fase valem para escrita nova, mas
+  -- instalar guard num banco que já tem cruzamento esconde o problema. Só
+  -- contagens agregadas — nenhum id, nome ou conteúdo é exibido, e NADA é
+  -- corrigido automaticamente.
+  declare
+    v_deals_cruzados  bigint;
+    v_calls_cruzadas  bigint;
+    v_leads_funil     bigint;
+    v_deals_sem_lead  bigint;
+    v_leads_autor     bigint;
+  begin
+    select count(*) into v_deals_cruzados
+      from public.deals d join public.leads l on l.id = d.lead_id where l.org_id <> d.org_id;
+    select count(*) into v_calls_cruzadas
+      from public.calls c join public.leads l on l.id = c.lead_id where l.org_id <> c.org_id;
+    select count(*) into v_leads_funil
+      from public.leads l join public.org_pipelines p on p.id = l.pipeline_id where p.org_id <> l.org_id;
+    select count(*) into v_deals_sem_lead
+      from public.deals d where d.lead_id is null or not exists (select 1 from public.leads l where l.id = d.lead_id);
+    select count(*) into v_leads_autor
+      from public.leads l where l.created_by is not null
+        and not exists (select 1 from public.org_members m where m.org_id = l.org_id and m.user_id = l.created_by);
+
+    if v_deals_cruzados > 0 or v_calls_cruzadas > 0 or v_leads_funil > 0
+       or v_deals_sem_lead > 0 or v_leads_autor > 0 then
+      raise exception 'Fase A abortada por inconsistência histórica (nada foi criado ou alterado). Negociações com lead de outra equipe: %; ligações com lead de outra equipe: %; leads com funil de outra equipe: %; negociações sem lead: %; leads cujo autor não é membro: %. Trate cada caso à mão, com backup, antes de repetir.',
+        v_deals_cruzados, v_calls_cruzadas, v_leads_funil, v_deals_sem_lead, v_leads_autor;
+    end if;
+  end;
 end $$;
 
 -- =====================================================================
@@ -241,7 +290,8 @@ select 'A', 'policy', tablename || '.' || policyname,
 from pg_policies
 where schemaname = 'public'
   and (tablename, policyname) in (('leads','leads_org'), ('calls','calls_org'), ('deals','deals_org'),
-                                  ('weekly_payments','weekly_payments_org'), ('messages','messages_select'));
+                                  ('weekly_payments','weekly_payments_org'), ('messages','messages_select'),
+                                  ('orgs','orgs_update'));
 
 -- 1.3 definição completa da função que será substituída
 insert into public.seguranca_estado_anterior (fase, tipo, objeto, detalhe)
@@ -558,6 +608,66 @@ begin
 end $$;
 
 -- =====================================================================
+-- 7.1) A7 — orgs_update: só dono da equipe ativa ou admin da plataforma
+-- ---------------------------------------------------------------------
+-- Hoje (produção) QUALQUER MEMBRO ATIVO pode alterar a linha da organização:
+-- nome, settings, module_id, agendor_token e até o join_code. No painel, as
+-- telas que mexem nisso são do dono, MENOS duas — metas e destinatário do
+-- pagamento —, resolvidas pela RPC da seção 7.2. Por isso o UPDATE amplo sai.
+-- WITH CHECK explícito impede também mudar a linha para um estado que a
+-- própria policy não permitiria.
+-- =====================================================================
+drop policy orgs_update on public.orgs;
+create policy orgs_update on public.orgs for update
+  using      ((id = public.my_org() and public.is_org_owner()) or public.is_platform_admin())
+  with check ((id = public.my_org() and public.is_org_owner()) or public.is_platform_admin());
+
+-- =====================================================================
+-- 7.2) A8 — org_set_goals: o mínimo que o membro comum precisa
+-- ---------------------------------------------------------------------
+-- Substitui o UPDATE amplo em orgs para o caso legítimo que existe hoje:
+-- salvar METAS (aba Metas) e o DESTINATÁRIO DO PAGAMENTO. Mexe só na chave
+-- `goals` de orgs.settings, preserva todo o resto, exige login e associação
+-- ATIVA à equipe e aceita apenas chaves conhecidas, com valores numéricos ou
+-- texto curto (o id de quem recebe). Não dá acesso a token, join_code,
+-- module_id nem nome da equipe.
+-- =====================================================================
+create function public.org_set_goals(p_org_id uuid, p_goals jsonb)
+returns jsonb
+language plpgsql security definer
+set search_path = public, pg_temp
+as $$
+declare v_goals jsonb; v_chaves text[]; v_ruim text;
+begin
+  perform public.assert_org_member(p_org_id);
+  if p_goals is null or jsonb_typeof(p_goals) <> 'object' then
+    raise exception 'Metas inválidas' using errcode = '22023';
+  end if;
+  v_chaves := array['contacts','sales','revenue','commission','payRate','payBonusRate',
+                    'payBonusMinPerDay','payBasis','payRecipientId','dailyTarget','weeklyTarget'];
+  select string_agg(k, ', ') into v_ruim
+    from jsonb_object_keys(p_goals) k where k <> all(v_chaves);
+  if v_ruim is not null then
+    raise exception 'Metas com chave desconhecida: %', v_ruim using errcode = '22023';
+  end if;
+  select string_agg(k, ', ') into v_ruim
+    from jsonb_each(p_goals) e(k, v)
+   where jsonb_typeof(v) not in ('number','null')
+     and not (jsonb_typeof(v) = 'string' and length(v #>> '{}') <= 64);
+  if v_ruim is not null then
+    raise exception 'Metas com valor inválido em: %', v_ruim using errcode = '22023';
+  end if;
+
+  update public.orgs o
+     set settings = coalesce(o.settings, '{}'::jsonb) || jsonb_build_object('goals', p_goals)
+   where o.id = p_org_id
+  returning settings -> 'goals' into v_goals;
+  return v_goals;
+end; $$;
+revoke execute on function public.org_set_goals(uuid, jsonb) from public, anon;
+grant  execute on function public.org_set_goals(uuid, jsonb) to authenticated;
+
+-- =====================================================================
 -- 8) Registro do que foi CRIADO (o rollback só remove o que está aqui)
 -- =====================================================================
 insert into public.seguranca_estado_anterior (fase, tipo, objeto, detalhe)
@@ -566,7 +676,7 @@ from (
   select p.oid::regprocedure::text as obj, 'function' as classe
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
    where n.nspname = 'public'
-     and (p.proname like 'ext2\_%' or p.proname in ('is_org_member','assert_org_member','guard_leads_org','guard_child_org'))
+     and (p.proname like 'ext2\_%' or p.proname in ('is_org_member','assert_org_member','guard_leads_org','guard_child_org','org_set_goals'))
   union all
   select t.tgname || '|' || t.tgrelid::regclass::text, 'trigger'
     from pg_trigger t
@@ -595,6 +705,15 @@ begin
   select count(*) into v_n from public.seguranca_estado_anterior where fase = 'A';
   if v_n < 25 then
     raise exception 'Fase A: estado anterior incompleto (% registros) — rollback exato ficaria impossível', v_n;
+  end if;
+
+  if exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'orgs'
+              and policyname = 'orgs_update'
+              and lower(regexp_replace(coalesce(qual, ''), '[()"''[:space:]]', '', 'g')) <> 'id=my_organdis_org_owneroris_platform_admin') then
+    raise exception 'Fase A: orgs_update não ficou restrita a dono/admin';
+  end if;
+  if has_function_privilege('anon', 'public.org_set_goals(uuid,jsonb)', 'EXECUTE') then
+    raise exception 'Fase A: org_set_goals acessível por anon';
   end if;
 
   -- compatibilidade com a extensão 1.10.4

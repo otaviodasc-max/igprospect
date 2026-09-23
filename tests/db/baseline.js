@@ -60,12 +60,17 @@ async function runFile(db, file) {
   catch (e) { throw new Error(`${path.relative(ROOT, file)}: ${e.message}`); }
 }
 
-// phases: lista de migrations de db/seguranca a aplicar depois da baseline,
-// ex.: ['A-01-aditiva-compativel.sql'].
-async function createDb({ phases = [] } = {}) {
+// phases: migrations de db/seguranca a aplicar depois da baseline,
+//   ex.: ['A-01-aditiva-compativel.sql'].
+// producao: aplica estado-producao.sql, que corrige as divergências medidas
+//   no diagnóstico real (ver o arquivo). Ligado por padrão — é o estado que
+//   as fases vão encontrar de verdade. Use producao:false para simular um
+//   banco diferente do esperado (teste de divergência).
+async function createDb({ phases = [], producao = true } = {}) {
   const db = new PGlite();
   await db.exec(read(path.join(__dirname, 'supabase-stub.sql')));
   for (const f of BASELINE_ORDER) await runFile(db, path.join(ROOT, f));
+  if (producao) await runFile(db, path.join(__dirname, 'estado-producao.sql'));
   for (const f of phases) await runFile(db, path.join(SECURITY_DIR, f));
   return db;
 }

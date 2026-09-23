@@ -427,3 +427,175 @@ test('Fase D: autor bloqueado ou pendente é recusado', async () => {
   // e o autor ativo continua passando
   await db.query("insert into public.leads(org_id, name, created_by) values ($1,'ok',$2)", [f.orgA, f.u.a]);
 });
+
+/* ------------------------------------------------------------------ */
+/* orgs_update: estado real da produção x estado pretendido (REV4)      */
+/* ------------------------------------------------------------------ */
+const nomeOrg = (db, org) => one(db, 'select name from public.orgs where id = $1', [org]);
+
+describe('orgs_update', () => {
+  test('produção (antes da Fase A): QUALQUER membro ativo altera a organização', async () => {
+    const db = await createDb();           // espelho da produção
+    const f = await seed(db);
+    // membro comum (entrou por código, não é dono)
+    const r = await as(db, f.u.removido, () => db.query("update public.orgs set name = 'mexido por membro' where id = $1", [f.orgA]));
+    assert.equal(r.affectedRows, 1, 'é exatamente a superfície que a Fase A fecha');
+    assert.equal((await nomeOrg(db, f.orgA)).name, 'mexido por membro');
+  });
+
+  test('depois da Fase A: só dono e admin da plataforma; membro, bloqueado e forasteiro não', async () => {
+    const db = await createDb({ phases: [A_FILE] });
+    const f = await seed(db);
+    const tenta = (uid, nome) => as(db, uid, () => db.query('update public.orgs set name = $1 where id = $2', [nome, f.orgA]));
+
+    assert.equal((await tenta(f.u.removido, 'x')).affectedRows, 0, 'membro comum não altera');
+    assert.equal((await tenta(f.u.bloq, 'x')).affectedRows, 0, 'bloqueado não altera');
+    assert.equal((await tenta(f.u.b, 'x')).affectedRows, 0, 'usuário de outra equipe não altera');
+    assert.equal((await nomeOrg(db, f.orgA)).name, 'Equipe A (teste)');
+
+    assert.equal((await tenta(f.u.a, 'renomeada pelo dono')).affectedRows, 1, 'dono altera');
+    assert.equal((await nomeOrg(db, f.orgA)).name, 'renomeada pelo dono');
+
+    // admin da plataforma continua com acesso
+    await db.exec(`set session_replication_role = replica; update public.profiles set platform_role='admin' where id='${f.u.b}'; set session_replication_role = origin;`);
+    assert.equal((await tenta(f.u.b, 'ajustada pelo admin')).affectedRows, 1, 'admin da plataforma altera');
+  });
+
+  test('depois da Fase A: WITH CHECK impede o dono de jogar a linha para fora da própria policy', async () => {
+    const db = await createDb({ phases: [A_FILE] });
+    const f = await seed(db);
+    await assert.rejects(
+      as(db, f.u.a, () => db.query('update public.orgs set id = $1 where id = $2', [f.orgB, f.orgA])),
+      /row-level security|duplicate key/);
+  });
+
+  test('org_set_goals: o mínimo que o membro comum precisa continua funcionando', async () => {
+    const db = await createDb({ phases: [A_FILE] });
+    const f = await seed(db);
+    // preserva o resto de settings
+    await db.query(`update public.orgs set settings = '{"agendorAuto":true}'::jsonb where id = $1`, [f.orgA]);
+
+    const metas = { contacts: 40, sales: 5, payRate: 0.5, payRecipientId: f.u.removido };
+    const r = await as(db, f.u.removido, () => one(db, 'select public.org_set_goals($1, $2::jsonb) g', [f.orgA, JSON.stringify(metas)]));
+    assert.equal(r.g.contacts, 40);
+    const s = await one(db, 'select settings from public.orgs where id = $1', [f.orgA]);
+    assert.equal(s.settings.agendorAuto, true, 'outras chaves de settings preservadas');
+    assert.equal(s.settings.goals.sales, 5);
+
+    // e não vira uma porta para o resto da linha
+    await assert.rejects(as(db, f.u.removido, () => db.query("select public.org_set_goals($1, '{\"nome\":\"hack\"}'::jsonb)", [f.orgA])), /chave desconhecida/);
+    await assert.rejects(as(db, f.u.removido, () => db.query(`select public.org_set_goals($1, '{"contacts":{"a":1}}'::jsonb)`, [f.orgA])), /valor inválido/);
+    await assert.rejects(as(db, f.u.removido, () => db.query("select public.org_set_goals($1, '{}'::jsonb)", [f.orgB])), /Sem acesso a esta equipe/);
+    await assert.rejects(as(db, f.u.bloq, () => db.query("select public.org_set_goals($1, '{}'::jsonb)", [f.orgA])), /Sem acesso a esta equipe/);
+    await assert.rejects(as(db, null, () => db.query("select public.org_set_goals($1, '{}'::jsonb)", [f.orgA])), /permission denied/);
+  });
+
+  test('divergência futura da policy faz a Fase A abortar antes de qualquer alteração', async () => {
+    // producao:false = banco com a policy do repositório (dono), diferente da
+    // que a fase espera encontrar. É o caso "alguém rodou outro SQL antes".
+    const db = await createDb({ producao: false });
+    await seed(db);
+    const antes = await estadoIntacto(db);
+    await assert.rejects(applyFile(db, A_FILE), /policies divergentes/);
+    same(await estadoIntacto(db), antes);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Padrão histórico: negociação de uma equipe apontando lead de outra   */
+/* ------------------------------------------------------------------ */
+describe('negociações e ligações cruzadas (o padrão das 50 linhas de 16/09)', () => {
+  test('antes da Fase A o cruzamento era possível (é o histórico já limpo)', async () => {
+    const db = await createDb();
+    const f = await seed(db);
+    const d = await as(db, f.u.a, () => one(db,
+      'insert into public.deals(org_id, lead_id) values ($1, $2) returning org_id', [f.orgA, f.leadB]));
+    assert.equal(d.org_id, f.orgA, 'negociação na equipe A apontando lead da equipe B');
+  });
+
+  test('depois da Fase A o mesmo padrão é impossível, por qualquer caminho', async () => {
+    const db = await createDb({ phases: [A_FILE] });
+    const f = await seed(db);
+
+    // 1) INSERT de negociação com lead de outra equipe
+    await assert.rejects(as(db, f.u.a, () => db.query('insert into public.deals(org_id, lead_id) values ($1, $2)', [f.orgA, f.leadB])),
+      /Lead de outra equipe/);
+    // 2) INSERT de ligação com lead de outra equipe
+    await assert.rejects(as(db, f.u.a, () => db.query("insert into public.calls(org_id, lead_id, outcome) values ($1, $2, 'nao_atendeu')", [f.orgA, f.leadB])),
+      /Lead de outra equipe/);
+    // 3) UPDATE apontando para lead de outra equipe
+    const own = await as(db, f.u.a, () => one(db, 'insert into public.deals(org_id, lead_id) values ($1, $2) returning id', [f.orgA, f.leadA]));
+    await assert.rejects(db.query('update public.deals set lead_id = $1 where id = $2', [f.leadB, own.id]), /Lead de outra equipe/);
+    // 4) UPDATE de org_id (mover a negociação de equipe)
+    await assert.rejects(db.query('update public.deals set org_id = $1 where id = $2', [f.orgB, own.id]), /não pode ser alterado/);
+    // 5) caminho SECURITY DEFINER (dono do banco, ignora RLS) também é barrado
+    await assert.rejects(db.query('insert into public.deals(org_id, lead_id) values ($1, $2)', [f.orgA, f.leadB]), /Lead de outra equipe/);
+    // 6) ligação sem lead continua permitida
+    const semLead = await as(db, f.u.a, () => one(db, "insert into public.calls(org_id, outcome) values ($1, 'nao_atendeu') returning id", [f.orgA]));
+    assert.ok(semLead.id);
+    // 7) operação legítima na mesma equipe segue funcionando
+    await as(db, f.u.a, () => db.query("insert into public.calls(org_id, lead_id, outcome) values ($1, $2, 'interessado')", [f.orgA, f.leadA]));
+  });
+
+  test('ensure_deal_for_lead cria a negociação com o org_id do próprio lead', async () => {
+    const db = await createDb({ phases: [A_FILE] });
+    const f = await seed(db);
+    await as(db, f.u.b, () => db.query("update public.leads set status = 'contato' where id = $1 and org_id = $2", [f.leadB, f.orgB]));
+    const d = await one(db, 'select org_id from public.deals where lead_id = $1', [f.leadB]);
+    assert.equal(d.org_id, f.orgB, 'a negociação nasce na equipe do lead, nunca na equipe ativa de quem mexeu');
+  });
+
+  test('ext2_add_lead + trigger automático não produzem cruzamento', async () => {
+    const db = await createDb({ phases: [A_FILE] });
+    const f = await seed(db);
+    await as(db, f.u.a, () => db.query("select public.ext2_add_lead($1, 'x-1', 'Novo', 'novo.user', '', '', '', 'contato')", [f.orgA]));
+    const linhas = await rows(db, `select d.org_id d_org, l.org_id l_org from public.deals d join public.leads l on l.id = d.lead_id`);
+    assert.ok(linhas.every(x => x.d_org === x.l_org), 'nenhuma negociação ficou em equipe diferente do lead');
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Precondições agregadas de integridade (sem exibir dado)              */
+/* ------------------------------------------------------------------ */
+describe('precondições de integridade da Fase A', () => {
+  const casos = [
+    ['negociação com lead de outra equipe',
+      f => `insert into public.deals(org_id, lead_id) values ('${f.orgA}', '${f.leadB}')`,
+      /Negociações com lead de outra equipe: 1/],
+    ['ligação com lead de outra equipe',
+      f => `insert into public.calls(org_id, lead_id, outcome) values ('${f.orgA}', '${f.leadB}', 'nao_atendeu')`,
+      /ligações com lead de outra equipe: 1/],
+    ['lead com funil de outra equipe',
+      f => `update public.leads set pipeline_id = '${f.plB}' where id = '${f.leadA}'`,
+      /leads com funil de outra equipe: 1/],
+  ];
+  for (const [nome, sabotar, mensagem] of casos) {
+    test(`${nome}: aborta, informa só a contagem e não cria nada`, async () => {
+      const db = await createDb();
+      const f = await seed(db);
+      await db.exec(sabotar(f));
+      const antes = await estadoIntacto(db);
+      await assert.rejects(applyFile(db, A_FILE), mensagem);
+      await assert.rejects(applyFile(db, A_FILE), /nada foi criado ou alterado/);
+      same(await estadoIntacto(db), antes);
+    });
+  }
+
+  test('a mensagem de aborto não expõe id, nome nem conteúdo de lead', async () => {
+    const db = await createDb();
+    const f = await seed(db);
+    await db.exec(`insert into public.deals(org_id, lead_id) values ('${f.orgA}', '${f.leadB}')`);
+    let msg = '';
+    try { await applyFile(db, A_FILE); } catch (e) { msg = e.message; }
+    assert.match(msg, /inconsistência histórica/);
+    assert.doesNotMatch(msg, /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/, 'sem UUID');
+    assert.doesNotMatch(msg, /Lead A|Lead B|mesmo\.perfil/, 'sem nome/@usuário');
+  });
+
+  test('banco íntegro (o estado real da produção depois da limpeza): a fase aplica', async () => {
+    const db = await createDb();
+    await seed(db);
+    await db.exec(fs.readFileSync(path.join(SECURITY_DIR, A_FILE), 'utf8'));
+    assert.equal((await one(db, "select to_regprocedure('public.is_org_member(uuid)') is not null as ok")).ok, true);
+  });
+});
