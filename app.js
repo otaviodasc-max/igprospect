@@ -2946,23 +2946,36 @@ async function ensurePushSubscription(){
   try{
     let sub=await reg.pushManager.getSubscription();
     // Chave VAPID do servidor trocada (rotação): a inscrição antiga foi criada
-    // com a chave anterior e o serviço de push passa a recusar os envios. Ela
-    // precisa ser refeita — sem isso o aparelho fica mudo até alguém desativar
-    // e reativar a notificação na mão. Cada passo falha em separado: perder o
-    // unsubscribe (ou a linha antiga no banco) não pode impedir a inscrição nova.
+    // com a chave anterior e o serviço de push passa a recusar os envios.
+    // A ORDEM IMPORTA: cancela PRIMEIRO. Num navegador de verdade, se a
+    // inscrição antiga continuar ativa, subscribe() com outra chave falha —
+    // e se a linha do banco já tivesse sido apagada, o aparelho ficaria sem
+    // registro nenhum. Por isso só apagamos depois do cancelamento confirmado
+    // (unsubscribe() === true); qualquer outro desfecho encerra em silêncio e
+    // tenta de novo no próximo carregamento do painel.
     if(sub && !samePushKey(sub.options && sub.options.applicationServerKey, VAPID_PUB)){
       const endpointAntigo=sub.endpoint;
+      let cancelada=false;
+      try{ cancelada = (await sub.unsubscribe())===true; }
+      catch(e){ console.warn('push: unsubscribe da inscrição antiga falhou:',e); }
+      if(!cancelada){
+        console.warn('push: inscrição antiga (chave anterior) não foi cancelada — linha do banco mantida; nova tentativa no próximo carregamento');
+        return;
+      }
+      // Cancelada de verdade: a linha antiga não vale mais nada. Se a remoção
+      // falhar, segue mesmo assim — o endpoint morto será recusado pelo
+      // serviço de push (404/410) e a Edge Function o remove.
       try{
-        const { error }=await sb.from('push_subscriptions').delete().eq('endpoint',endpointAntigo);
+        const { error }=await sb.from('push_subscriptions').delete().eq('org_id',S.org.id).eq('endpoint',endpointAntigo);
         if(error) console.warn('push: inscrição antiga não saiu do banco:',error.message);
       }catch(e){ console.warn('push: inscrição antiga não saiu do banco:',e); }
-      try{ await sub.unsubscribe(); }catch(e){ console.warn('push: unsubscribe da inscrição antiga falhou:',e); }
       sub=null;
     }
     if(!sub) sub=await reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey:urlB64ToUint8(VAPID_PUB) });
     const j=sub.toJSON();
-    await sb.from('push_subscriptions').upsert({ endpoint:sub.endpoint, p256dh:j.keys.p256dh, auth:j.keys.auth, user_agent:navigator.userAgent, org_id:S.org.id }, { onConflict:'endpoint' });
-  }catch(e){ console.warn('push sub:',e); }
+    const { error }=await sb.from('push_subscriptions').upsert({ endpoint:sub.endpoint, p256dh:j.keys.p256dh, auth:j.keys.auth, user_agent:navigator.userAgent, org_id:S.org.id }, { onConflict:'endpoint' });
+    if(error) console.warn('push: inscrição nova não foi gravada:',error.message,'— nova tentativa no próximo carregamento');
+  }catch(e){ console.warn('push sub:',e,'— nova tentativa no próximo carregamento'); }
 }
 async function enablePush(){
   if(!pushSupported()){ toast('Este navegador não suporta notificações push. No iPhone, adicione o site à Tela de Início primeiro.','warn'); return; }
