@@ -159,6 +159,11 @@ order by 1, 2;
 
 -- ---------------------------------------------------------------------
 -- BLOCO 8 — Triggers existentes e suas definições
+-- CORRIGIDO (REV4): a versão anterior comparava t.tgrelid::regclass::text com
+-- 'public.leads' etc. Dependendo do search_path, regclass::text devolve o nome
+-- SEM o schema ('leads'), e o bloco vinha VAZIO na produção — escondendo todos
+-- os triggers. Agora a comparação é por OID (regclass direto), que independe
+-- de como o nome é impresso.
 -- ---------------------------------------------------------------------
 set session characteristics as transaction read only;
 select t.tgrelid::regclass::text as tabela, t.tgname as trigger, t.tgenabled as habilitado,
@@ -166,9 +171,10 @@ select t.tgrelid::regclass::text as tabela, t.tgname as trigger, t.tgenabled as 
 from pg_trigger t
 join pg_proc p on p.oid = t.tgfoid
 where not t.tgisinternal
-  and t.tgrelid::regclass::text in ('public.leads','public.calls','public.deals','public.messages',
-                                    'public.profiles','public.orgs','public.org_members','public.weekly_payments',
-                                    'public.push_subscriptions')
+  and t.tgrelid = any (array['public.leads'::regclass, 'public.calls'::regclass, 'public.deals'::regclass,
+                             'public.messages'::regclass, 'public.profiles'::regclass, 'public.orgs'::regclass,
+                             'public.org_members'::regclass, 'public.weekly_payments'::regclass,
+                             'public.push_subscriptions'::regclass, 'public.org_pipelines'::regclass])
 order by 1, 2;
 
 -- trigger de criação de perfil (fica no schema auth)
@@ -203,14 +209,17 @@ order by 1, 2;
 -- ---------------------------------------------------------------------
 -- BLOCO 10 — Constraints e índices relevantes
 -- ---------------------------------------------------------------------
+-- CORRIGIDO (REV4): "constraint" é palavra reservada e dava erro de sintaxe
+-- no PostgreSQL 17.6 — virou nome_constraint. A comparação também passou a ser
+-- por OID (regclass), como no bloco 8.
 set session characteristics as transaction read only;
-select conrelid::regclass::text as tabela, conname as constraint, contype as tipo,
+select conrelid::regclass::text as tabela, conname as nome_constraint, contype as tipo,
        pg_get_constraintdef(oid) as definicao
 from pg_constraint
-where connamespace = 'public'::regnamespace
-  and conrelid::regclass::text in ('public.leads','public.deals','public.calls','public.orgs',
-                                   'public.profiles','public.org_members','public.org_pipelines',
-                                   'public.messages','public.weekly_payments','public.push_subscriptions')
+where conrelid = any (array['public.leads'::regclass, 'public.deals'::regclass, 'public.calls'::regclass,
+                            'public.orgs'::regclass, 'public.profiles'::regclass, 'public.org_members'::regclass,
+                            'public.org_pipelines'::regclass, 'public.messages'::regclass,
+                            'public.weekly_payments'::regclass, 'public.push_subscriptions'::regclass])
 order by 1, 2;
 
 set session characteristics as transaction read only;
