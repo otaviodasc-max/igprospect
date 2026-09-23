@@ -34,6 +34,16 @@
 
 **Sem interromper ninguém:** a 1.11 fala só com as `ext2_*`, que existem desde a Fase A, e a 1.10.4 continua funcionando pelas RPCs antigas até a Fase C. As duas convivem durante a transição.
 
+## O que o diagnóstico da produção mudou (revisão 4)
+
+O diagnóstico foi rodado na produção (PostgreSQL 17.6) e mostrou que o banco **não** é o que o repositório sugere. O resumo anonimizado está em `RESUMO-DIAGNOSTICO-PRODUCAO.md`. Três consequências diretas:
+
+1. **`orgs_update` era a policy do `supabase-schema.sql`, não a do `supabase-lock-orgs-owner.sql`** (esse arquivo nunca foi executado lá). Ou seja, **qualquer membro ativo** pode alterar a linha da organização: nome, `settings`, `module_id`, `agendor_token` e até o `join_code`. A Fase A da revisão 3 esperava a versão restrita e **abortaria na primeira tentativa**, sem mudar nada — a precondição funcionou como devia, mas contra o banco errado.
+   - A revisão 4 passa a **esperar a policy real**, registra-a para o rollback e a **substitui de propósito** por dono da equipe ativa ou admin da plataforma, com `USING` e `WITH CHECK` explícitos.
+   - No painel, as telas que gravam em `orgs` são do dono, **menos duas**: metas e destinatário do pagamento. Para elas entra a RPC mínima `org_set_goals` (membro ativo, só a chave `goals` de `settings`, chaves e tipos validados). O painel já usa a RPC e cai no caminho antigo enquanto ela não existir.
+2. **Os blocos 8 e 10 do diagnóstico tinham defeito** (comparação por texto de `regclass` e alias reservado). Corrigidos e cobertos por teste.
+3. **A inconsistência histórica foi limpa pelo proprietário** (50 negociações de uma equipe apontando lead de outra, criadas em lote em 16/09/2026, antes do hotfix). Nenhuma migration daqui mexe nessas linhas. O que entra é a **prevenção**: as travas da Fase A tornam esse padrão impossível, e as precondições agregadas abortam a fase se algum cruzamento reaparecer.
+
 ## Precondições e rollback exato (revisão 2)
 
 Cada fase roda numa transação só e **aborta antes de alterar qualquer coisa** se o banco não estiver no estado esperado. A Fase A confere: tabelas, colunas e tipos; índice único **não parcial** em `leads(org_id, ext_id)` (sem ele o `on conflict` não funciona); ausência de qualquer objeto com os nomes novos; assinatura, retorno e **hash da definição** de `org_members_by_join_code`; os grants atuais das RPCs do painel, olhando a **ACL explícita** (e não `has_function_privilege`, que daria "true" só por causa do `PUBLIC`); e a **lista completa de policies** das tabelas sensíveis, abortando tanto se faltar uma quanto se existir uma a mais, permissiva ou restritiva. Nenhuma policy desconhecida é removida automaticamente.
@@ -51,6 +61,7 @@ Se um hash ou uma policy divergir, isso não é um erro do plano: é o sinal de 
    - rodar `DIAGNOSTICO-00-somente-leitura.sql` inteiro e guardar os resultados. Ele é a fonte que confirma (ou desmente) cada precondição;
    - conferir no BLOCO 4 o hash de `org_members_by_join_code` contra o valor esperado na Fase A; no BLOCO 5, que nenhum nome novo existe; no BLOCO 6, as policies; no BLOCO 11, o índice único;
    - rodar também os diagnósticos do cabeçalho do A-01.
+1b. **Publicar o painel (Fase B) ANTES da Fase A.** Ordem obrigatória desde a revisão 4: a Fase A fecha o `UPDATE` amplo em `orgs`, e o painel antigo salvaria metas com um update que passa a não afetar nenhuma linha — sem erro visível para quem clicou. O painel novo usa `org_set_goals` e só recorre ao caminho antigo enquanto a RPC não existir.
 2. **Aplicar a Fase A** (SQL Editor, arquivo inteiro). Ela confere a si mesma e aborta tudo se algo não bater. Não precisa pausar o sistema. Logo depois, fazer um teste rápido: um lead pela extensão 1.10.4 e um pelo painel.
 3. **Publicar a Fase B** (push do painel). Conferir:
    - `app.js?v=` novo no `index.html`;
@@ -102,3 +113,33 @@ A chave privada está exposta (repositório público, GitHub Pages e histórico 
 7. **Só depois disso** considerar a limpeza das inscrições antigas.
 
 **Por que a `notify` NÃO apaga inscrição em 401/403 (ainda):** a ideia era limpar sozinha as inscrições presas à chave antiga. O risco é o inverso: 401/403 também aparece quando a configuração está temporariamente inconsistente — *secret* novo com `config.js` antigo, uma função publicada pela metade, relógio fora de hora ou erro de digitação na chave. Nesse cenário, a função apagaria **inscrições válidas** de toda a equipe, e cada pessoa teria de reativar na mão. Por isso a `notify` continua apagando só em **404/410** (inscrição que o próprio serviço de push declara inexistente), e a limpeza por 401/403 fica para uma revisão específica, depois da rotação, com os números da janela em mãos.
+
+
+## Achado que fica para uma fase própria: privilégios de tabela
+
+O diagnóstico mostrou `anon` e `authenticated` com **DELETE, INSERT, REFERENCES, SELECT, TRIGGER, TRUNCATE e UPDATE** nas tabelas do schema `public` — inclusive em tabelas de backup histórico. É o padrão do Supabase (quem protege é o RLS), mas a superfície é maior do que o necessário.
+
+**Risco:** médio hoje, porque o RLS limita linha a linha. O que incomoda é o que o RLS **não** cobre: `TRUNCATE` não é filtrado por policy (apaga a tabela inteira de todas as equipes), `REFERENCES` permite criar FK apontando para as tabelas e `TRIGGER` permite anexar trigger a elas. Basta um papel da API conseguir executar SQL arbitrário — por exemplo via uma função `SECURITY DEFINER` mal escrita — para que isso pese.
+
+**Nesta rodada, nada foi alterado.** Proposta de **Fase E**, independente e com testes e rollback próprios:
+1. medir o que painel e extensão realmente usam por tabela (o painel lê e escreve `leads`, `calls`, `deals`, `messages`, `weekly_payments`, `push_subscriptions` e as tabelas de configuração; a extensão não toca em tabela nenhuma, só em RPC);
+2. revogar primeiro os candidatos óbvios: **TRUNCATE, TRIGGER e REFERENCES** de `anon` e `authenticated`;
+3. depois avaliar `DELETE`/`INSERT`/`UPDATE` de `anon` (que não deveria precisar de nenhum, já que a extensão só usa RPC);
+4. cada passo com rollback que devolve exatamente os privilégios registrados, como nas Fases A, C e D.
+
+## Leads sem ext_id (171 na produção)
+
+Nenhuma fase depende de preencher isso, e **não há backfill proposto**:
+- o índice único `(org_id, ext_id)` aceita vários nulos, então nada quebra;
+- `ext2_list_leads` devolve `coalesce(ext_id, id::text)`, e `ext2_update_lead`/`ext2_delete_lead` localizam por `ext_id` **ou** pelo `id` quando o `ext_id` está vazio;
+- `ext2_add_lead` exige `ext_id` só para o lead novo que a extensão cria.
+
+Preencher `ext_id` nesses 171 leads é uma decisão de produto (mudaria como a extensão os enxerga) e precisa de estratégia aprovada em separado.
+
+## Usuários em várias equipes (5 na produção)
+
+É comportamento legítimo e continua funcionando: `ext2_my_orgs` lista as equipes de que a pessoa é membro, `ext2_org_members` lista todos os membros ativos (e não só quem está com a equipe aberta) e o RLS continua limitando leitura e escrita à equipe ativa. Há teste específico para isso.
+
+## Códigos de equipe curtos (3 na produção)
+
+Continuam sendo o ponto mais frágil enquanto a Fase C não roda: código curto é varrível por força bruta e dá acesso às RPCs anônimas. A rotação (`supabase-rotacionar-todos-join-codes.sql`) é independente destas fases e desconecta as extensões já conectadas — decidir com o proprietário se roda antes da Fase C ou junto com ela.
