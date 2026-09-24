@@ -71,32 +71,30 @@ test('Pages: _config.yml exclui SQL, docs, testes e fontes de servidor do site',
   }
 });
 
-test('painel: metas e destinatário do pagamento usam a RPC org_set_goals, com retorno ao caminho antigo', () => {
-  // A Fase A fecha o UPDATE amplo em public.orgs (hoje qualquer membro ativo
-  // pode alterar nome, token do CRM e código de convite). O que membro comum
-  // realmente faz — salvar metas e escolher quem recebe — passa pela RPC.
-  const fn = APP.slice(APP.indexOf('async function saveOrgGoals'), APP.indexOf('async function saveOrgGoals') + 1200);
-  assert.match(fn, /sb\.rpc\('org_set_goals'/, 'a RPC é o caminho principal');
-  assert.match(fn, /PGRST202|42883/, 'fallback só quando a RPC ainda não existe no banco');
-  assert.match(fn, /sb\.from\('orgs'\)\.update/, 'fallback mantém o painel funcionando antes da Fase A');
-
-  // nenhum outro ponto do painel grava metas direto na tabela
-  const forasteiros = [];
-  const re = /sb\.from\('orgs'\)\.update\(([^)]*)\)/g;
-  let m;
-  while ((m = re.exec(APP))) {
-    const linha = APP.slice(0, m.index).split('\n').length;
-    const dentroDoFallback = Math.abs(linha - APP.slice(0, APP.indexOf('async function saveOrgGoals')).split('\n').length) < 15;
-    if (/goals/.test(m[1]) && !dentroDoFallback) forasteiros.push(linha);
-  }
-  assert.deepEqual(forasteiros, [], 'sobrou gravação de metas fora da RPC');
+test('painel: metas e destinatário usam cada um a sua RPC; o UPDATE direto só existe no fallback', () => {
+  // Inventário estático complementar. O COMPORTAMENTO (payload real, erros,
+  // fallback, estado local) é testado de verdade em tests/metas-painel.test.js.
+  const corpo = nome => { const i = APP.indexOf(`async function ${nome}(`); assert.ok(i >= 0, nome); return APP.slice(i, APP.indexOf('\n}\n', i)); };
+  assert.match(corpo('saveOrgGoals'), /sb\.rpc\('org_set_goals'/);
+  assert.match(corpo('savePayRecipient'), /sb\.rpc\('org_set_pay_recipient'/);
+  assert.doesNotMatch(corpo('saveOrgGoals'), /org_set_pay_recipient/);
+  // nenhum outro ponto grava metas direto na tabela: só o helper do fallback
+  const fora = [...APP.matchAll(/sb\.from\('orgs'\)\.update\(([^)]*)\)/g)]
+    .filter(m => /settings/.test(m[1]))
+    .map(m => APP.slice(0, m.index).split('\n').length)
+    .filter(l => l !== APP.slice(0, APP.indexOf("sb.from('orgs').update({ settings }).eq('id',S.org.id).select('id')")).split('\n').length);
+  // o outro UPDATE de settings é o card do CRM (dono) — ver inventário abaixo
+  assert.equal(fora.length, 1, `gravações de settings fora do fallback: ${fora}`);
+  // e nenhum ReferenceError latente: "settings" solto depois de salvar
+  assert.doesNotMatch(APP, /S\.org\.settings=settings;/);
 });
 
 test('painel: as escritas diretas em public.orgs são só as quatro conhecidas', () => {
   // Inventário fechado: qualquer ponto NOVO de UPDATE em orgs reprova aqui e
   // precisa ser avaliado contra a policy da Fase A (dono/admin).
   //   1. doCreateOrg  — quem acabou de criar a equipe já é dono dela;
-  //   2. fallback de saveOrgGoals — só enquanto a RPC não existir no banco;
+  //   2. saveOrgSettingsGoalsDirect — fallback de saveOrgGoals e de
+  //      savePayRecipient, só enquanto as RPCs não existirem no banco;
   //   3. st-save (token do CRM) — card exclusivo do dono;
   //   4. st-auto/agendorAuto (ajuste do envio ao CRM) — mesmo card do dono;
   //   5. st-module (módulo de profissão) — seletor exclusivo do dono.

@@ -529,19 +529,42 @@ const callFromRow = r => ({ id:r.id, leadId:r.lead_id, name:r.name, phone:r.phon
 const withOrg = row => ({ ...row, org_id:S.org.id });
 // METAS: até a Fase A do banco, qualquer membro ativo pode dar UPDATE na linha
 // da organização (nome, token do CRM, código de convite…). A Fase A fecha isso
-// para dono/admin e deixa só esta RPC para o que membro comum faz de verdade:
-// salvar metas e escolher quem recebe o pagamento. Enquanto a RPC não existir
-// no banco, cai no caminho antigo — assim o painel funciona antes e depois da
-// migração, sem depender da ordem de publicação.
-async function saveOrgGoals(goals){
-  const { data, error }=await sb.rpc('org_set_goals',{ p_org_id:S.org.id, p_goals:goals });
-  if(!error){ S.org={ ...S.org, settings:{ ...(S.org.settings||{}), goals:data||goals } }; return { error:null }; }
-  const faltaRpc = error.code==='PGRST202' || error.code==='42883' || /(function|rota).*(não existe|does not exist|not found)/i.test(error.message||'');
-  if(!faltaRpc) return { error };
+// para dono/admin e cria duas RPCs, uma para cada coisa que se grava aqui:
+//   org_set_goals          — metas (qualquer membro ativo). Nunca mexe no
+//                            destinatário do pagamento: o que está gravado fica.
+//   org_set_pay_recipient  — quem recebe o pagamento (só o dono / admin).
+// Enquanto a RPC não existir no banco (PGRST202, ou 42883 citando a própria
+// RPC), cai no UPDATE antigo — assim o painel funciona antes e depois da
+// migração. Qualquer OUTRO erro da RPC é devolvido como está: depois da Fase A
+// o UPDATE amplo não passaria mesmo (o RLS devolve 0 linhas sem erro), e cair
+// nele faria o painel mostrar "salvo" sem ter salvado nada.
+// Em qualquer falha o estado local (S.org) fica como estava.
+const rpcAusente = (error, fn) => !!error && (error.code==='PGRST202' || (error.code==='42883' && String(error.message||'').includes(fn)));
+async function saveOrgSettingsGoalsDirect(goals){
   const settings={ ...(S.org.settings||{}), goals };
-  const r=await sb.from('orgs').update({ settings }).eq('id',S.org.id);
-  if(!r.error) S.org={ ...S.org, settings };
-  return { error:r.error };
+  const r=await sb.from('orgs').update({ settings }).eq('id',S.org.id).select('id');
+  if(r.error) return { error:r.error };
+  if(!r.data||!r.data.length) return { error:{ message:'Sem permissão para alterar as metas desta equipe' } };
+  S.org={ ...S.org, settings };
+  return { error:null, goals };
+}
+async function saveOrgGoals(goals){
+  const metas={ ...goals }; delete metas.payRecipientId;   // destinatário é do dono (savePayRecipient)
+  const { data, error }=await sb.rpc('org_set_goals',{ p_org_id:S.org.id, p_goals:metas });
+  if(!error){ S.org={ ...S.org, settings:{ ...(S.org.settings||{}), goals:data } }; return { error:null, goals:data }; }
+  if(!rpcAusente(error,'org_set_goals')) return { error };
+  // antes da Fase A: mesmo resultado da RPC — merge e destinatário preservado
+  const atuais=(S.org.settings&&S.org.settings.goals)||{};
+  return saveOrgSettingsGoalsDirect({ ...atuais, ...metas });
+}
+async function savePayRecipient(payRecipientId){
+  const id=payRecipientId||null;
+  const { data, error }=await sb.rpc('org_set_pay_recipient',{ p_org_id:S.org.id, p_recipient_id:id });
+  if(!error){ S.org={ ...S.org, settings:{ ...(S.org.settings||{}), goals:data } }; return { error:null, goals:data }; }
+  if(!rpcAusente(error,'org_set_pay_recipient')) return { error };
+  const goals={ ...((S.org.settings&&S.org.settings.goals)||{}) };
+  if(id) goals.payRecipientId=id; else delete goals.payRecipientId;
+  return saveOrgSettingsGoalsDirect(goals);
 }
 const callToRow = c => ({ lead_id:c.leadId||null, name:c.name, phone:c.phone, outcome:c.outcome, duration:c.duration, at:c.at, notes:c.notes });
 const dealFromRow = r => ({ id:r.id, orgId:r.org_id, leadId:r.lead_id, createdBy:r.created_by, prospectorName:r.prospector_name, status:r.status||'contato', cardType:r.card_type, cardValue:r.card_value, commissionValue:r.commission_value, commissionPct:r.commission_pct, commissionPaid:!!r.commission_paid, paidAt:r.paid_at, report:r.report, notes:r.notes, closedAt:r.closed_at, createdAt:r.created_at, leadName:r.leads&&r.leads.name, leadUsername:r.leads&&r.leads.username, leadPhone:r.leads&&r.leads.phone, leadNiche:r.leads&&r.leads.niche });
@@ -1837,9 +1860,9 @@ function goalsForm(){
   $('gf-save').onclick=async()=>{
     const newGoals={ contacts:parseInt($('gf-contacts').value)||0, sales:parseInt($('gf-sales').value)||0, revenue:moneyToNumber($('gf-revenue').value)||0, commission:moneyToNumber($('gf-commission').value)||0, leadDailyMin:parseInt($('gf-leadmin').value)||0, leadDailyMax:parseInt($('gf-leadmax').value)||0, callsWeekly:parseInt($('gf-callsweek').value)||0, payDayRate:moneyToNumber($('gf-pay-rate').value)||0, payTargetPerDay:parseInt($('gf-pay-target').value)||50, commissionPct:parseFloat($('gf-commpct').value)||0.1, payBasis:$('gf-pay-basis').value==='chamados'?'chamados':'seguidos', payFollowUp:$('gf-pay-followup').checked, payBonusMinPerDay:parseInt($('gf-pay-bonusmin').value)||0, payBonusRate:moneyToNumber($('gf-pay-bonusrate').value)||0 };
     $('gf-save').disabled=true;
-    const{error}=await saveOrgGoals(newGoals);
+    const{error}=await saveOrgGoals(newGoals);   // já atualiza S.org quando dá certo
     if(error){ toast(error.message,'error'); $('gf-save').disabled=false; return; }
-    S.org.settings=settings; closeModal(); toast('Metas atualizadas!','success'); renderGoals();
+    closeModal(); toast('Metas atualizadas!','success'); renderGoals();
   };
 }
 
@@ -3462,9 +3485,9 @@ function renderSettings(){
   document.querySelectorAll('[data-theme-set]').forEach(b=>b.onclick=()=>setTheme(b.dataset.themeSet));
   $('st-pay-recipient')&&($('st-pay-recipient').onchange=async e=>{
     const payRecipientId=e.target.value;
-    const{error}=await saveOrgGoals({ ...getGoals(), payRecipientId });
-    if(error){ toast(error.message,'error'); return; }
-    S.org.settings=settings; toast(payRecipientId?'Destinatário do pagamento definido':'Voltou a somar a equipe inteira','success');
+    const{error}=await savePayRecipient(payRecipientId);   // já atualiza S.org quando dá certo
+    if(error){ toast(error.message,'error'); e.target.value=getGoals().payRecipientId; return; }
+    toast(payRecipientId?'Destinatário do pagamento definido':'Voltou a somar a equipe inteira','success');
   });
   // ---- Equipe (owner-only): promover a dono / remover membro ----
   document.querySelectorAll('[data-promote]').forEach(b=>b.onclick=async()=>{
