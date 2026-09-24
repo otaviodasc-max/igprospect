@@ -40,9 +40,42 @@ O diagnóstico foi rodado na produção (PostgreSQL 17.6) e mostrou que o banco 
 
 1. **`orgs_update` era a policy do `supabase-schema.sql`, não a do `supabase-lock-orgs-owner.sql`** (esse arquivo nunca foi executado lá). Ou seja, **qualquer membro ativo** pode alterar a linha da organização: nome, `settings`, `module_id`, `agendor_token` e até o `join_code`. A Fase A da revisão 3 esperava a versão restrita e **abortaria na primeira tentativa**, sem mudar nada — a precondição funcionou como devia, mas contra o banco errado.
    - A revisão 4 passa a **esperar a policy real**, registra-a para o rollback e a **substitui de propósito** por dono da equipe ativa ou admin da plataforma, com `USING` e `WITH CHECK` explícitos.
-   - No painel, as telas que gravam em `orgs` são do dono, **menos duas**: metas e destinatário do pagamento. Para elas entra a RPC mínima `org_set_goals` (membro ativo, só a chave `goals` de `settings`, chaves e tipos validados). O painel já usa a RPC e cai no caminho antigo enquanto ela não existir.
+   - No painel, as telas que gravam em `orgs` são do dono, **menos a aba Metas**. Para ela entra a RPC `org_set_goals`; o destinatário do pagamento tem RPC própria, só do dono (`org_set_pay_recipient`). **A versão da revisão 4 desta RPC estava errada — ver "Revisão 5" logo abaixo.**
 2. **Os blocos 8 e 10 do diagnóstico tinham defeito** (comparação por texto de `regclass` e alias reservado). Corrigidos e cobertos por teste.
 3. **A inconsistência histórica foi limpa pelo proprietário** (50 negociações de uma equipe apontando lead de outra, criadas em lote em 16/09/2026, antes do hotfix). Nenhuma migration daqui mexe nessas linhas. O que entra é a **prevenção**: as travas da Fase A tornam esse padrão impossível, e as precondições agregadas abortam a fase se algum cruzamento reaparecer.
+
+## O que a revisão independente da REV4 encontrou (revisão 5)
+
+A RPC `org_set_goals` da revisão 4 **não conversava com o painel de verdade**. Os testes passavam porque usavam um objeto simplificado, escrito à mão, e não o que o painel manda. Depois da Fase A, "Salvar metas" teria parado de funcionar para todo mundo:
+
+1. **Chaves erradas.** O painel (`goalsForm()` e `getGoals()` em `app.js`) usa 14 chaves: `contacts`, `sales`, `revenue`, `commission`, `leadDailyMin`, `leadDailyMax`, `callsWeekly`, `payDayRate`, `payTargetPerDay`, `commissionPct`, `payBasis`, `payFollowUp`, `payBonusMinPerDay` e `payBonusRate`. A RPC aceitava outra lista (`payRate`, `dailyTarget`, `weeklyTarget`…), que **nunca existiu no painel**, e recusava 7 das chaves reais.
+2. **Booleano recusado.** `payFollowUp` é booleano, e a RPC só aceitava número, nulo ou texto.
+3. **Dois `ReferenceError` no painel.** Depois de salvar metas e depois de trocar o destinatário, o código fazia `S.org.settings=settings` com uma variável que não existia ali. O banco gravava, mas o modal não fechava, o aviso não aparecia e a tela não era redesenhada.
+4. **Destinatário do pagamento aberto.** A interface trata "quem recebe" como coisa do dono, mas a RPC aceitava `payRecipientId` de qualquer membro ativo. Por chamada direta, um membro trocava, apagava ou injetava o destinatário.
+5. **Rollback conferido pela metade.** A verificação final não citava `org_set_goals` e só procurava o que estava no registro. A verificação da Fase A olhava só o `USING` de `orgs_update`.
+
+**Como a revisão 5 resolve:**
+
+- **Duas RPCs, responsabilidades separadas.**
+  - `org_set_goals(p_org_id, p_goals)` é para **membro ativo** daquela equipe (ou admin da plataforma). O contrato é exatamente o objeto do painel, com regra própria por chave:
+    - contagens: inteiro ≥ 0;
+    - dinheiro e percentual: número ≥ 0, com teto;
+    - `payBasis`: só `seguidos` ou `chamados`;
+    - `payFollowUp`: só booleano.
+
+    Texto no lugar de número, lista, objeto, nulo e chave desconhecida são recusados. Se o objeto trouxer `payRecipientId`, **a chamada inteira é recusada**. A gravação faz *merge* sobre as metas atuais num único `UPDATE`, então o destinatário gravado fica onde está.
+  - `org_set_pay_recipient(p_org_id, p_recipient_id)` é **só para o dono daquela equipe** (`org_members.role = 'owner'` em `p_org_id`, com perfil ativo) ou para o admin da plataforma. Aceita só duas coisas: vazio ou nulo ("todo mundo", que remove a chave), ou o UUID de um **membro ativo da própria equipe**.
+- **Várias equipes.** As duas RPCs decidem pelo `p_org_id` e por `org_members`, nunca pela equipe aberta. Quem é dono de A e está com B aberta continua definindo o destinatário de A, e em B é tratado como membro.
+- **Painel.**
+  - `saveOrgGoals` nunca manda o destinatário, e `savePayRecipient` usa a RPC própria. As duas atualizam `S.org` só quando dá certo, e o `settings` solto saiu dos dois pontos.
+  - O caminho antigo (UPDATE direto) só é usado quando a RPC **não existe** (`PGRST202`, ou `42883` citando a própria RPC). Qualquer outro erro é mostrado como está, sem cair no UPDATE amplo.
+  - Se o UPDATE antigo não afetar nenhuma linha, isso agora é erro, e não um "salvo" falso.
+- **Verificações.**
+  - A Fase A confere `orgs_update` inteira (comando, tipo, papel, `USING` e `WITH CHECK`) e as duas RPCs: assinatura, `SECURITY DEFINER`, `search_path` fixo e ACL exatamente `authenticated`.
+  - O rollback compara policies, grants e a definição restaurada com o registro **antes** de apagá-lo. Depois procura, **pelo nome**, qualquer função ou trigger da Fase A que tenha sobrado, e confere que `orgs_update` voltou a ser a de membro ativo, sem `WITH CHECK`.
+- **Bug antigo corrigido de quebra:** na versão publicada (`777faf3`), salvar metas **apagava o destinatário do pagamento**, porque o formulário regravava `goals` inteiro sem essa chave. Com o *merge*, isso acabou, tanto na RPC quanto no caminho antigo.
+
+Os testes agora usam o **objeto real**: o `app.js` roda inteiro num contexto isolado do Node, com Supabase simulado (`tests/harness-painel.js`). O payload dos testes de banco sai desse mesmo painel, não de um objeto escrito à mão.
 
 ## Precondições e rollback exato (revisão 2)
 
@@ -56,20 +89,27 @@ Se um hash ou uma policy divergir, isso não é um erro do plano: é o sinal de 
 
 ## Ordem exata de publicação
 
-0. **Incidente VAPID (fora destas fases, ordem própria — ver abaixo).**
-1. **Preparar a Fase A:**
-   - rodar `DIAGNOSTICO-00-somente-leitura.sql` inteiro e guardar os resultados. Ele é a fonte que confirma (ou desmente) cada precondição;
-   - conferir no BLOCO 4 o hash de `org_members_by_join_code` contra o valor esperado na Fase A; no BLOCO 5, que nenhum nome novo existe; no BLOCO 6, as policies; no BLOCO 11, o índice único;
-   - rodar também os diagnósticos do cabeçalho do A-01.
-1b. **Publicar o painel (Fase B) ANTES da Fase A.** Ordem obrigatória desde a revisão 4: a Fase A fecha o `UPDATE` amplo em `orgs`, e o painel antigo salvaria metas com um update que passa a não afetar nenhuma linha — sem erro visível para quem clicou. O painel novo usa `org_set_goals` e só recorre ao caminho antigo enquanto a RPC não existir.
-2. **Aplicar a Fase A** (SQL Editor, arquivo inteiro). Ela confere a si mesma e aborta tudo se algo não bater. Não precisa pausar o sistema. Logo depois, fazer um teste rápido: um lead pela extensão 1.10.4 e um pelo painel.
-3. **Publicar a Fase B** (push do painel). Conferir:
-   - `app.js?v=` novo no `index.html`;
-   - `…/supabase-schema.sql` e `…/NOTIFICACOES-SETUP.txt` respondendo **404**;
-   - todos recarregando o painel.
-4. **Implementar e testar a extensão 1.11** (tarefa separada, depende de autorização). Distribuir o ZIP e acompanhar a adoção: todo usuário ativo logado na extensão, e nos logs de API do Supabase nenhuma chamada a `/rpc/extension_*` ou `/rpc/org_*_by_join_code` por alguns dias.
-5. **Fase C**, somente depois do item 4 confirmado. Aplicar fora do horário de uso (~5 min). Quem ainda estiver na 1.10.4 para de sincronizar; os leads ficam guardados na extensão e voltam ao atualizar para a 1.11.
-6. **Fase D**, com a Fase B publicada há pelo menos 48 h e todos tendo recarregado. Aplicar fora do horário de uso (~5 min). A fase aborta sozinha se houver perfil com equipe ativa sem associação.
+0. **Incidente VAPID** (fora destas fases, com ordem própria — ver abaixo).
+1. **Preparar:**
+   - rodar `DIAGNOSTICO-00-somente-leitura.sql` bloco a bloco e guardar os resultados, porque é ele que confirma (ou desmente) cada precondição;
+   - conferir no BLOCO 4 o hash de `org_members_by_join_code`, no BLOCO 5 que nenhum nome novo existe (inclusive `org_set_goals` e `org_set_pay_recipient`), no BLOCO 6 as policies e no BLOCO 11 o índice único.
+
+**Da publicação do painel até a Fase A** (ordem da revisão independente da REV4; nada disso foi executado):
+
+1. **Publicar o painel compatível** (push do `main`, com `app.js?v=20260924a`). Ele chama as RPCs novas e, enquanto elas não existem, usa o caminho antigo.
+2. **Verificar que o painel continua funcionando pelo fallback, antes da Fase A.** Salvar metas e trocar o destinatário com uma conta de teste. Os dois precisam gravar, e a aba de rede mostra `org_set_goals`/`org_set_pay_recipient` respondendo 404 (`PGRST202`), seguidos do `PATCH` em `orgs`. Conferir também `…/supabase-schema.sql` e `…/NOTIFICACOES-SETUP.txt` respondendo **404** e todos recarregando o painel.
+3. **Aplicar a Fase A** (SQL Editor, arquivo inteiro). Ela confere a si mesma e aborta tudo se algo não bater. Não precisa pausar o sistema.
+4. **Verificar que o painel passou a usar as RPCs:** a aba de rede mostra `org_set_goals` respondendo 200, e não há mais `PATCH` em `orgs` ao salvar metas.
+5. **Testar metas com o payload completo:** abrir "Definir metas", preencher **todos** os campos (inclusive "Pagar também pelos follow-ups" ligado e desligado e as duas bases de pagamento), salvar e reabrir. Tudo tem que voltar igual, e o destinatário tem que continuar o mesmo.
+6. **Testar o destinatário como dono:** escolher uma pessoa, recarregar, voltar para "Todo mundo" e recarregar de novo.
+7. **Testar a recusa como membro comum:** com uma conta de membro de teste, salvar metas tem que funcionar. Chamar `org_set_pay_recipient` direto (console) tem que devolver "Só o dono da equipe…", e o destinatário tem que continuar o mesmo.
+8. **Testar criação de lead, negociação e ligação em duas equipes de teste:** um lead pela extensão 1.10.4 e um pelo painel em cada equipe; mover um lead para "contato" e conferir que a negociação nasceu na equipe do lead; registrar uma ligação. Com uma conta que participa das duas equipes, repetir na outra.
+9. **Só depois disso considerar as fases seguintes:**
+   - extensão 1.11 com login (tarefa separada), com distribuição e confirmação de adoção. Em todo usuário ativo logado na extensão, nos logs de API do Supabase não pode aparecer nenhuma chamada a `/rpc/extension_*` ou `/rpc/org_*_by_join_code` por alguns dias;
+   - **Fase C**, somente depois disso, fora do horário de uso (~5 min);
+   - **Fase D**, com o painel publicado há pelo menos 48 h e todos tendo recarregado, fora do horário de uso (~5 min).
+
+**Por que o painel vem antes da Fase A:** a Fase A fecha o `UPDATE` amplo em `orgs`. O painel publicado hoje (`777faf3`) salva metas com esse UPDATE, e o RLS passaria a devolver 0 linhas **sem erro**: quem clica veria "Metas atualizadas!" sem nada ter sido gravado.
 
 **Pausa do sistema:** nenhuma fase exige parar o uso. As Fases C e D devem ser aplicadas fora do expediente, porque é nesses dois momentos que clientes desatualizados passam a ser recusados.
 
@@ -87,8 +127,8 @@ Sempre na ordem inversa: **D → C → A**. Nenhum rollback mexe em dados.
 |---|---|---|
 | D | `D-01-rollback.sql` | Volta os defaults `my_org()` e as policies da Fase A |
 | C | `C-01-rollback.sql` | Devolve o `anon` às RPCs por código (a 1.10.4 volta a funcionar) |
-| B | `git revert` do commit do painel + push | O painel volta a gravar sem `org_id` explícito (funciona com a Fase A; **não** com a D) |
-| A | `A-01-rollback.sql` (com a C já desfeita) | Remove travas, policies novas e `ext2_*`, e devolve o `anon` às RPCs do painel e o e-mail na RPC de membros |
+| B | `git revert` dos commits do painel + push | O painel volta a gravar sem `org_id` explícito (**não** funciona com a D). Com a Fase A aplicada, o painel antigo **não** salva metas (UPDATE vira 0 linhas): desfazer o painel só depois de desfazer a A |
+| A | `A-01-rollback.sql` (com a C já desfeita) | Remove travas, policies novas, `ext2_*`, `org_set_goals` e `org_set_pay_recipient`. Devolve `orgs_update` a "membro ativo, sem `WITH CHECK`", o `anon` às RPCs do painel e o e-mail na RPC de membros. Aborta se algo não bater com o registro |
 
 ## Fora do escopo desta tarefa (tarefas separadas)
 
