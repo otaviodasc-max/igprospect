@@ -469,27 +469,6 @@ describe('orgs_update', () => {
       /row-level security|duplicate key/);
   });
 
-  test('org_set_goals: o mínimo que o membro comum precisa continua funcionando', async () => {
-    const db = await createDb({ phases: [A_FILE] });
-    const f = await seed(db);
-    // preserva o resto de settings
-    await db.query(`update public.orgs set settings = '{"agendorAuto":true}'::jsonb where id = $1`, [f.orgA]);
-
-    const metas = { contacts: 40, sales: 5, payRate: 0.5, payRecipientId: f.u.removido };
-    const r = await as(db, f.u.removido, () => one(db, 'select public.org_set_goals($1, $2::jsonb) g', [f.orgA, JSON.stringify(metas)]));
-    assert.equal(r.g.contacts, 40);
-    const s = await one(db, 'select settings from public.orgs where id = $1', [f.orgA]);
-    assert.equal(s.settings.agendorAuto, true, 'outras chaves de settings preservadas');
-    assert.equal(s.settings.goals.sales, 5);
-
-    // e não vira uma porta para o resto da linha
-    await assert.rejects(as(db, f.u.removido, () => db.query("select public.org_set_goals($1, '{\"nome\":\"hack\"}'::jsonb)", [f.orgA])), /chave desconhecida/);
-    await assert.rejects(as(db, f.u.removido, () => db.query(`select public.org_set_goals($1, '{"contacts":{"a":1}}'::jsonb)`, [f.orgA])), /valor inválido/);
-    await assert.rejects(as(db, f.u.removido, () => db.query("select public.org_set_goals($1, '{}'::jsonb)", [f.orgB])), /Sem acesso a esta equipe/);
-    await assert.rejects(as(db, f.u.bloq, () => db.query("select public.org_set_goals($1, '{}'::jsonb)", [f.orgA])), /Sem acesso a esta equipe/);
-    await assert.rejects(as(db, null, () => db.query("select public.org_set_goals($1, '{}'::jsonb)", [f.orgA])), /permission denied/);
-  });
-
   test('divergência futura da policy faz a Fase A abortar antes de qualquer alteração', async () => {
     // producao:false = banco com a policy do repositório (dono), diferente da
     // que a fase espera encontrar. É o caso "alguém rodou outro SQL antes".
@@ -597,5 +576,323 @@ describe('precondições de integridade da Fase A', () => {
     await seed(db);
     await db.exec(fs.readFileSync(path.join(SECURITY_DIR, A_FILE), 'utf8'));
     assert.equal((await one(db, "select to_regprocedure('public.is_org_member(uuid)') is not null as ok")).ok, true);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* REV5 — metas e destinatário do pagamento: contrato REAL do painel    */
+/* ------------------------------------------------------------------ */
+// O payload não é escrito à mão: sai do goalsForm() do app.js rodando de
+// verdade (tests/harness-painel.js). Se o painel mudar o objeto, estes
+// testes passam a exercitar o objeto novo automaticamente.
+const { payloadRealDoPainel, FORMULARIO_COMPLETO } = require('../harness-painel');
+
+const metas = (db, uid, org, goals) =>
+  as(db, uid, () => one(db, 'select public.org_set_goals($1, $2::jsonb) g', [org, JSON.stringify(goals)]));
+const destinatario = (db, uid, org, id) =>
+  as(db, uid, () => one(db, 'select public.org_set_pay_recipient($1, $2) g', [org, id]));
+const goalsGravadas = async (db, org) => (await one(db, 'select settings from public.orgs where id = $1', [org])).settings.goals;
+const virarAdmin = (db, uid) => db.exec(`set session_replication_role = replica;
+  update public.profiles set platform_role = 'admin' where id = '${uid}'; set session_replication_role = origin;`);
+
+describe('REV5 · org_set_goals (metas) e org_set_pay_recipient (destinatário)', () => {
+  let payload;
+  before(async () => { payload = await payloadRealDoPainel(); });
+
+  test('0. o payload do painel é o objeto completo de goalsForm(), com payFollowUp booleano', () => {
+    same(Object.keys(payload).sort(), ['callsWeekly', 'commission', 'commissionPct', 'contacts', 'leadDailyMax', 'leadDailyMin',
+      'payBasis', 'payBonusMinPerDay', 'payBonusRate', 'payDayRate', 'payFollowUp', 'payTargetPerDay', 'revenue', 'sales']);
+    assert.equal(typeof payload.payFollowUp, 'boolean');
+    assert.ok(!('payRecipientId' in payload), 'goalsForm não manda destinatário');
+  });
+
+  test('1/2/7. membro ativo salva o payload real completo e todas as chaves voltam iguais', async () => {
+    const db = await createDb({ phases: [A_FILE] });
+    const f = await seed(db);
+    await db.query(`update public.orgs set settings = '{"agendorAuto":true}'::jsonb where id = $1`, [f.orgA]);
+    const r = await metas(db, f.u.removido, f.orgA, payload);        // membro comum (não é dono)
+    // deepEqual: jsonb não guarda a ordem das chaves, só o conteúdo
+    assert.deepEqual(r.g, payload, 'a RPC devolve exatamente o que gravou');
+    assert.deepEqual(await goalsGravadas(db, f.orgA), payload, 'gravado igual ao enviado');
+    const s = await one(db, 'select settings from public.orgs where id = $1', [f.orgA]);
+    assert.equal(s.settings.agendorAuto, true, 'o resto de settings fica intacto');
+  });
+
+  test('3. payFollowUp true e false funcionam (e só booleano)', async () => {
+    const db = await createDb({ phases: [A_FILE] });
+    const f = await seed(db);
+    for (const v of [true, false]) {
+      await metas(db, f.u.a, f.orgA, { ...payload, payFollowUp: v });
+      assert.equal((await goalsGravadas(db, f.orgA)).payFollowUp, v);
+    }
+    const semFollow = await payloadRealDoPainel({ ...FORMULARIO_COMPLETO, 'gf-pay-followup': false });
+    assert.equal(semFollow.payFollowUp, false, 'o painel manda false de verdade');
+    await metas(db, f.u.a, f.orgA, semFollow);
+    for (const v of ['true', 1, 0, null, [], {}]) {
+      await assert.rejects(metas(db, f.u.a, f.orgA, { ...payload, payFollowUp: v }), /payFollowUp \(valor inválido\)/, JSON.stringify(v));
+    }
+  });
+
+  test('4. payBasis aceita só "seguidos" e "chamados"', async () => {
+    const db = await createDb({ phases: [A_FILE] });
+    const f = await seed(db);
+    for (const v of ['seguidos', 'chamados']) {
+      await metas(db, f.u.a, f.orgA, { ...payload, payBasis: v });
+      assert.equal((await goalsGravadas(db, f.orgA)).payBasis, v);
+    }
+    for (const v of ['Seguidos', 'outro', '', 1, true, null, ['chamados']]) {
+      await assert.rejects(metas(db, f.u.a, f.orgA, { ...payload, payBasis: v }), /payBasis \(valor inválido\)/, JSON.stringify(v));
+    }
+  });
+
+  test('5. número negativo, "infinito", texto, objeto, lista, nulo e fração em inteiro são recusados', async () => {
+    const db = await createDb({ phases: [A_FILE] });
+    const f = await seed(db);
+    const antes = await goalsGravadas(db, f.orgA);
+    const ruins = [
+      ['contacts', -1], ['revenue', -0.01], ['payDayRate', -5],
+      ['contacts', '40'], ['revenue', '500000'], ['commissionPct', '0.1'],
+      ['sales', { n: 5 }], ['callsWeekly', [30]], ['payBonusRate', null],
+      ['leadDailyMin', 50.5], ['payTargetPerDay', 1e9], ['commissionPct', 101], ['revenue', 1e13],
+    ];
+    for (const [k, v] of ruins) {
+      await assert.rejects(metas(db, f.u.a, f.orgA, { ...payload, [k]: v }), new RegExp(`${k} \\(valor inválido\\)`), `${k}=${JSON.stringify(v)}`);
+    }
+    // Infinity/NaN não existem em JSON: o navegador serializa como null (recusado
+    // acima). E um número gigante escrito no JSON bate no limite.
+    await assert.rejects(as(db, f.u.a, () => db.query(`select public.org_set_goals($1, '{"revenue": 1e400}'::jsonb)`, [f.orgA])), /revenue \(valor inválido\)/);
+    same(JSON.parse(JSON.stringify({ x: Infinity })), { x: null });
+    same(await goalsGravadas(db, f.orgA), antes, 'nada foi gravado em nenhuma recusa');
+    // e os limites legítimos passam: zero em tudo e decimal nos campos de dinheiro
+    await metas(db, f.u.a, f.orgA, { ...payload, contacts: 0, revenue: 1234.56, commissionPct: 0 });
+  });
+
+  test('6. chave desconhecida é recusada (inclusive os nomes inventados na REV4)', async () => {
+    const db = await createDb({ phases: [A_FILE] });
+    const f = await seed(db);
+    for (const k of ['payRate', 'dailyTarget', 'weeklyTarget', 'nome', 'join_code', 'agendor_token']) {
+      await assert.rejects(metas(db, f.u.a, f.orgA, { ...payload, [k]: 1 }), new RegExp(`${k} \\(chave desconhecida\\)`), k);
+    }
+    for (const v of [[], 'x', 1, null]) {
+      await assert.rejects(as(db, f.u.a, () => db.query('select public.org_set_goals($1, $2::jsonb)', [f.orgA, JSON.stringify(v)])), /Metas inválidas/);
+    }
+  });
+
+  test('8. membro comum não troca, não apaga e não injeta destinatário — nem por chamada direta', async () => {
+    const db = await createDb({ phases: [A_FILE] });
+    const f = await seed(db);
+    // destinatário já gravado (como está hoje na produção), sem depender da RPC nova
+    await db.query(`update public.orgs set settings = jsonb_build_object('goals', jsonb_build_object('payRecipientId', $1::text)) where id = $2`, [f.u.a, f.orgA]);
+    for (const v of [f.u.removido, '', null]) {
+      await assert.rejects(metas(db, f.u.removido, f.orgA, { contacts: 1, payRecipientId: v }), /destinatário do pagamento não é alterado por aqui/, JSON.stringify(v));
+      assert.equal((await goalsGravadas(db, f.orgA)).payRecipientId, f.u.a, `continua o do dono depois de ${JSON.stringify(v)}`);
+    }
+    for (const v of [f.u.removido, '', null]) {
+      await assert.rejects(destinatario(db, f.u.removido, f.orgA, v), /Só o dono da equipe/);
+    }
+    // e salvar metas sem a chave preserva o destinatário do dono
+    await metas(db, f.u.removido, f.orgA, payload);
+    assert.equal((await goalsGravadas(db, f.orgA)).payRecipientId, f.u.a);
+    // nem o UPDATE direto na tabela passa mais (policy de dono/admin)
+    const r = await as(db, f.u.removido, () => db.query(
+      `update public.orgs set settings = jsonb_set(settings, '{goals,payRecipientId}', to_jsonb($1::text)) where id = $2`, [f.u.removido, f.orgA]));
+    assert.equal(r.affectedRows, 0);
+    assert.equal((await goalsGravadas(db, f.orgA)).payRecipientId, f.u.a);
+  });
+
+  test('9. dono define, troca e remove o destinatário ("todo mundo")', async () => {
+    const db = await createDb({ phases: [A_FILE] });
+    const f = await seed(db);
+    await metas(db, f.u.a, f.orgA, payload);
+    assert.equal((await destinatario(db, f.u.a, f.orgA, f.u.removido)).g.payRecipientId, f.u.removido);
+    assert.equal((await destinatario(db, f.u.a, f.orgA, f.u.a.toUpperCase())).g.payRecipientId, f.u.a, 'UUID normalizado');
+    for (const vazio of ['', '   ', null]) {
+      await destinatario(db, f.u.a, f.orgA, f.u.a);
+      const g = (await destinatario(db, f.u.a, f.orgA, vazio)).g;
+      assert.ok(!('payRecipientId' in g), `vazio (${JSON.stringify(vazio)}) = todo mundo`);
+    }
+    assert.deepEqual(await goalsGravadas(db, f.orgA), payload, 'as metas não foram tocadas pelo destinatário');
+  });
+
+  test('10. admin da plataforma mantém o acesso previsto nas duas RPCs', async () => {
+    const db = await createDb({ phases: [A_FILE] });
+    const f = await seed(db);
+    await virarAdmin(db, f.u.b);                                     // admin, mas não é membro de A
+    await metas(db, f.u.b, f.orgA, payload);
+    assert.equal((await destinatario(db, f.u.b, f.orgA, f.u.removido)).g.payRecipientId, f.u.removido);
+    // mesmo o admin só aponta para membro ativo DA equipe
+    await assert.rejects(destinatario(db, f.u.b, f.orgA, f.u.b), /não é membro ativo desta equipe/);
+  });
+
+  test('11. destinatário de outra equipe, bloqueado, inexistente ou inválido é recusado', async () => {
+    const db = await createDb({ phases: [A_FILE] });
+    const f = await seed(db);
+    await assert.rejects(destinatario(db, f.u.a, f.orgA, f.u.b), /não é membro ativo desta equipe/, 'outra equipe');
+    await assert.rejects(destinatario(db, f.u.a, f.orgA, f.u.bloq), /não é membro ativo desta equipe/, 'bloqueado');
+    await assert.rejects(destinatario(db, f.u.a, f.orgA, '00000000-0000-4000-8000-000000000000'), /não é membro ativo/, 'inexistente');
+    for (const v of ['abc', `${f.u.a}x`, "'; drop table x; --", '{}']) {
+      await assert.rejects(destinatario(db, f.u.a, f.orgA, v), /Destinatário inválido/, v);
+    }
+    assert.ok(!('payRecipientId' in ((await goalsGravadas(db, f.orgA)) || {})));
+  });
+
+  test('12. bloqueado, removido, anônimo e forasteiro são recusados nas duas RPCs', async () => {
+    const db = await createDb({ phases: [A_FILE] });
+    const f = await seed(db);
+    await as(db, f.u.a, () => db.query('select public.remove_team_member($1)', [f.u.removido]));
+    for (const [quem, uid] of [['bloqueado', f.u.bloq], ['removido', f.u.removido], ['forasteiro', f.u.b]]) {
+      await assert.rejects(metas(db, uid, f.orgA, payload), /Sem acesso a esta equipe/, quem);
+      await assert.rejects(destinatario(db, uid, f.orgA, null), /Só o dono da equipe/, quem);
+    }
+    await assert.rejects(metas(db, null, f.orgA, payload), /permission denied/, 'anônimo');
+    await assert.rejects(destinatario(db, null, f.orgA, null), /permission denied/, 'anônimo');
+    // dono bloqueado também perde o acesso
+    await db.exec(`set session_replication_role = replica; update public.profiles set status = 'blocked' where id = '${f.u.a}'; set session_replication_role = origin;`);
+    await assert.rejects(destinatario(db, f.u.a, f.orgA, null), /Só o dono da equipe/);
+    await assert.rejects(metas(db, f.u.a, f.orgA, payload), /Sem acesso a esta equipe/);
+  });
+
+  test('13. usuário em várias equipes: vale o p_org_id, não a equipe aberta', async () => {
+    const db = await createDb({ phases: [A_FILE] });
+    const f = await seed(db);
+    // dono de A entra em B como membro — B passa a ser a equipe ATIVA dele
+    await as(db, f.u.a, () => db.query('select public.join_org($1)', [f.codeB]));
+    assert.equal((await one(db, 'select org_id, org_role from public.profiles where id = $1', [f.u.a])).org_id, f.orgB);
+    await metas(db, f.u.a, f.orgA, payload);                         // A, mesmo com B aberta
+    await metas(db, f.u.a, f.orgB, { ...payload, contacts: 7 });     // B, como membro
+    assert.equal((await goalsGravadas(db, f.orgA)).contacts, payload.contacts);
+    assert.equal((await goalsGravadas(db, f.orgB)).contacts, 7);
+    // continua dono de A (org_members), mesmo com a equipe ativa sendo B
+    assert.equal((await destinatario(db, f.u.a, f.orgA, f.u.removido)).g.payRecipientId, f.u.removido);
+    // mas em B é só membro
+    await assert.rejects(destinatario(db, f.u.a, f.orgB, f.u.b), /Só o dono da equipe/);
+    // e o dono de B aponta para ele, que agora é membro ativo de B
+    assert.equal((await destinatario(db, f.u.b, f.orgB, f.u.a)).g.payRecipientId, f.u.a);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* REV5 — verificação posterior da Fase A e do rollback                 */
+/* ------------------------------------------------------------------ */
+const A_SQL = () => fs.readFileSync(path.join(SECURITY_DIR, A_FILE), 'utf8');
+const R_SQL = () => fs.readFileSync(path.join(SECURITY_DIR, 'A-01-rollback.sql'), 'utf8');
+const execSql = async (db, sql) => {
+  try { await db.exec(sql); } finally { try { await db.exec('rollback'); } catch { /* sem transação aberta */ } }
+};
+const polOrgsUpdate = db => one(db, `select cmd, permissive, array(select r::text from unnest(roles) r) roles, qual, with_check
+  from pg_policies where schemaname='public' and tablename='orgs' and policyname='orgs_update'`);
+const mutar = (sql, de, para) => { assert.ok(sql.includes(de), `trecho não encontrado: ${de}`); return sql.replace(de, para); };
+
+describe('REV5 · verificação posterior da Fase A confere tudo', () => {
+  test('aplicada: orgs_update completa (UPDATE, PERMISSIVE, public, USING e WITH CHECK) e as duas RPCs só para authenticated', async () => {
+    const db = await createDb({ phases: [A_FILE] });
+    const p = await polOrgsUpdate(db);
+    same([p.cmd, p.permissive, p.roles], ['UPDATE', 'PERMISSIVE', ['public']]);
+    const norm = x => x.replace(/[()"'\s]/g, '').toLowerCase();
+    assert.equal(norm(p.qual), 'id=my_organdis_org_owneroris_platform_admin');
+    assert.equal(norm(p.with_check), 'id=my_organdis_org_owneroris_platform_admin');
+    for (const fn of ['public.org_set_goals(uuid,jsonb)', 'public.org_set_pay_recipient(uuid,text)']) {
+      const g = await one(db, `select has_function_privilege('anon', $1, 'EXECUTE') anon,
+        has_function_privilege('authenticated', $1, 'EXECUTE') auth`, [fn]);
+      same([g.anon, g.auth], [false, true], fn);
+    }
+  });
+
+  const sabotagens = [
+    ['WITH CHECK diferente do esperado (a REV4 só conferia o USING)',
+      s => mutar(s, "  with check ((id = public.my_org() and public.is_org_owner()) or public.is_platform_admin());",
+                    '  with check (true);'),
+      /orgs_update não ficou exatamente como dono\/admin/],
+    ['orgs_update sem WITH CHECK',
+      s => mutar(s, "  with check ((id = public.my_org() and public.is_org_owner()) or public.is_platform_admin());", ';'),
+      /orgs_update não ficou exatamente como dono\/admin/],
+    ['orgs_update restrita a um papel diferente de public',
+      s => mutar(s, 'create policy orgs_update on public.orgs for update\n', 'create policy orgs_update on public.orgs for update to authenticated\n'),
+      /orgs_update não ficou exatamente como dono\/admin/],
+    ['RPC do destinatário executável por anon',
+      s => mutar(s, 'revoke execute on function public.org_set_pay_recipient(uuid, text) from public, anon;', ''),
+      /RPC de metas ausente ou com acesso errado: public.org_set_pay_recipient/],
+    ['RPC de metas sem search_path fixo',
+      s => mutar(s, "create function public.org_set_goals(p_org_id uuid, p_goals jsonb)\nreturns jsonb\nlanguage plpgsql security definer\nset search_path = public, pg_temp",
+                    "create function public.org_set_goals(p_org_id uuid, p_goals jsonb)\nreturns jsonb\nlanguage plpgsql security definer"),
+      /RPC de metas ausente ou com acesso errado: public.org_set_goals/],
+  ];
+  for (const [nome, sabotar, msg] of sabotagens) {
+    test(`aborta a Fase A inteira se: ${nome}`, async () => {
+      const db = await createDb();
+      await seed(db);
+      const antes = await estadoIntacto(db);
+      await assert.rejects(execSql(db, sabotar(A_SQL())), msg);
+      same(await estadoIntacto(db), antes, 'transação desfeita: nada ficou');
+      assert.equal((await one(db, "select to_regprocedure('public.org_set_goals(uuid,jsonb)') is null sem")).sem, true);
+    });
+  }
+});
+
+describe('REV5 · rollback da Fase A conferido de ponta a ponta', () => {
+  test('depois do rollback: sem RPCs novas, sem triggers, orgs_update volta a is_active sem WITH CHECK e ACL idêntica', async () => {
+    const db = await createDb();
+    await seed(db);
+    // cada item da ACL (quem recebeu, qual privilégio, quem concedeu, com
+    // grant option?) — como CONJUNTO: revoke+grant pode reordenar o array
+    // aclitem[] sem mudar privilégio nenhum
+    const acl = () => rows(db, `select p.oid::regprocedure::text f,
+        array(select coalesce(nullif(a.grantee::regrole::text,'-'),'public') || ':' || a.privilege_type || ':' ||
+                     a.grantor::regrole::text || ':' || a.is_grantable
+                from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a order by 1) itens
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' order by 1`);
+    const aclAntes = await acl(), polAntes = await polOrgsUpdate(db);
+    await db.exec(A_SQL());
+    await db.exec(R_SQL());
+    for (const fn of ['org_set_goals', 'org_set_pay_recipient', 'is_org_member', 'assert_org_member', 'guard_leads_org', 'guard_child_org']) {
+      assert.equal((await one(db, 'select count(*)::int n from pg_proc where proname = $1', [fn])).n, 0, fn);
+    }
+    assert.equal((await one(db, "select count(*)::int n from pg_proc where proname like 'ext2\\_%'")).n, 0);
+    assert.equal((await one(db, `select count(*)::int n from pg_trigger where not tgisinternal
+      and tgname in ('leads_guard_org','deals_guard_org','calls_guard_org')`)).n, 0);
+    const p = await polOrgsUpdate(db);
+    same(p, polAntes, 'orgs_update idêntica à de antes');
+    same([p.cmd, p.permissive, p.roles, p.with_check], ['UPDATE', 'PERMISSIVE', ['public'], null]);
+    assert.match(p.qual.replace(/\s/g, ''), /is_active\(\)/);
+    same(await acl(), aclAntes, 'ACL idêntica, item a item');
+  });
+
+  const sabotagens = [
+    ['o registro de org_set_goals sumiu (a função sobraria)',
+      "delete from public.seguranca_estado_anterior where tipo = 'objeto_criado' and objeto like 'org_set_goals%'",
+      /função remanescente org_set_goals/],
+    ['o registro de org_set_pay_recipient sumiu',
+      "delete from public.seguranca_estado_anterior where tipo = 'objeto_criado' and objeto like 'org_set_pay_recipient%'",
+      /função remanescente org_set_pay_recipient/],
+    ['o registro da policy orgs_update sumiu (a de dono ficaria)',
+      "delete from public.seguranca_estado_anterior where tipo = 'policy' and objeto = 'orgs.orgs_update'",
+      /orgs_update não voltou a ser a policy anterior/],
+    ['o registro de um trigger sumiu',
+      "delete from public.seguranca_estado_anterior where tipo = 'objeto_criado' and objeto like 'deals_guard_org|%'",
+      // o trigger sem registro segura a própria função: o DROP dela falha e a
+      // transação inteira volta — também é recusa, só que antes da conferência
+      /trigger remanescente deals_guard_org|other objects depend on it/],
+  ];
+  for (const [nome, sabotagem, msg] of sabotagens) {
+    test(`rollback se recusa a concluir se ${nome}`, async () => {
+      const db = await createDb({ phases: [A_FILE] });
+      await db.exec(sabotagem);
+      await assert.rejects(execSql(db, R_SQL()), msg);
+      // transação desfeita: a Fase A continua inteira, nada ficou pela metade
+      assert.equal((await one(db, "select to_regprocedure('public.org_set_goals(uuid,jsonb)') is not null ok")).ok, true);
+      assert.equal((await one(db, "select to_regclass('public.seguranca_estado_anterior') is not null ok")).ok, true);
+    });
+  }
+
+  test('rollback se recusa a concluir se a ACL restaurada não bater com a registrada', async () => {
+    const db = await createDb({ phases: [A_FILE] });
+    // o registro diz que create_org era só de authenticated; o rollback concede
+    // isso, mas alguém "a mais" (anon) continua lá por fora do registro? Não:
+    // o rollback revoga o que não está registrado. Aqui simulamos um registro
+    // impossível de restaurar (papel inexistente na lista) para provar que a
+    // conferência roda de fato.
+    await db.exec(`update public.seguranca_estado_anterior set detalhe = jsonb_build_object('roles', '["anon","authenticated","service_role"]'::jsonb)
+      where tipo = 'grant_execute' and objeto = 'create_org(text,text)'`);
+    await assert.rejects(execSql(db, R_SQL()), /ACL diferente da registrada antes da Fase A: create_org/);
   });
 });

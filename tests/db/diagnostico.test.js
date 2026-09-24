@@ -154,3 +154,25 @@ describe('execução real de cada bloco (PGlite = PostgreSQL 17)', () => {
     }
   });
 });
+
+test('bloco 5 procura TODOS os nomes que a Fase A se recusa a sobrescrever (inclusive as RPCs de metas)', () => {
+  // A precondição 0.4 da Fase A lista os nomes novos; o bloco 5 é quem deixa
+  // o proprietário conferir isso ANTES de rodar a fase. As listas têm de bater.
+  const A = fs.readFileSync(path.join(SECURITY_DIR, 'A-01-aditiva-compativel.sql'), 'utf8');
+  const secao04 = A.slice(A.indexOf('------------------------------------------------------------------ 0.4'),
+                          A.indexOf('------------------------------------------------------------------ 0.5'));
+  const nomesDaFase = [...secao04.matchAll(/'([a-z_0-9]+)'/g)].map(m => m[1]);
+  assert.ok(nomesDaFase.includes('org_set_goals') && nomesDaFase.includes('org_set_pay_recipient'));
+  const b5 = blocos(SQL).find(b => /seguranca_estado_anterior/.test(b.sql) && /ext2/.test(b.sql));
+  const faltam = nomesDaFase.filter(n => !b5.sql.includes(`'${n}'`));
+  assert.deepEqual(faltam, [], 'nomes que a Fase A recusa mas o diagnóstico não procura');
+});
+
+test('bloco 5 acha org_set_goals e org_set_pay_recipient quando eles já existem', async () => {
+  const db = await createDb({ phases: ['A-01-aditiva-compativel.sql'] });
+  const b5 = blocos(SQL).find(b => /seguranca_estado_anterior/.test(b.sql) && /ext2/.test(b.sql));
+  const r = await db.query(consultas(b5)[0]);
+  const objs = r.rows.map(x => x.objeto);
+  assert.ok(objs.some(o => o.startsWith('org_set_goals(')), 'org_set_goals');
+  assert.ok(objs.some(o => o.startsWith('org_set_pay_recipient(')), 'org_set_pay_recipient');
+});

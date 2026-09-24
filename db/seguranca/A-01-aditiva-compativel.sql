@@ -14,6 +14,11 @@
 --   • entra a RPC mínima `org_set_goals` para o que membro comum faz hoje
 --     (metas e destinatário do pagamento), sem devolver UPDATE amplo (A8);
 --   • precondições agregadas de integridade (A0.8), sem exibir dado nenhum.
+-- Revisão 5 (2026-09-24): a RPC de metas da REV4 não aceitava o objeto que
+-- o painel manda de verdade (chaves diferentes e payFollowUp booleano) e
+-- deixava qualquer membro trocar o destinatário do pagamento. Agora são
+-- DUAS RPCs com responsabilidades separadas (A8 e A9), validação por chave,
+-- e a verificação posterior confere a policy orgs_update inteira.
 -- =====================================================================
 -- NÃO RODAR sem autorização. Rode antes DIAGNOSTICO-00-somente-leitura.sql
 -- e compare o resultado com as precondições abaixo. Ver PLANO.md.
@@ -32,7 +37,9 @@
 --   A7. orgs_update passa a ser só do DONO da equipe ativa ou do admin da
 --       plataforma, com USING e WITH CHECK explícitos.
 --   A8. org_set_goals: RPC mínima para a única escrita em orgs que membro
---       comum faz hoje no painel (metas e destinatário do pagamento).
+--       comum faz hoje no painel (metas). Nunca mexe no destinatário.
+--   A9. org_set_pay_recipient: destinatário do pagamento, só dono da equipe
+--       (por p_org_id) ou admin da plataforma.
 --
 -- Compatibilidade: a extensão 1.10.4 continua funcionando (as RPCs por
 -- código de equipe não são tocadas aqui — isso é a Fase C).
@@ -108,7 +115,7 @@ begin
     select p.oid::regprocedure::text as obj
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
      where n.nspname = 'public'
-       and (p.proname like 'ext2\_%' or p.proname in ('is_org_member','assert_org_member','guard_leads_org','guard_child_org','org_set_goals'))
+       and (p.proname like 'ext2\_%' or p.proname in ('is_org_member','assert_org_member','guard_leads_org','guard_child_org','org_set_goals','org_set_pay_recipient'))
     union all
     select t.tgname || ' em ' || t.tgrelid::regclass::text
       from pg_trigger t
@@ -612,10 +619,10 @@ end $$;
 -- ---------------------------------------------------------------------
 -- Hoje (produção) QUALQUER MEMBRO ATIVO pode alterar a linha da organização:
 -- nome, settings, module_id, agendor_token e até o join_code. No painel, as
--- telas que mexem nisso são do dono, MENOS duas — metas e destinatário do
--- pagamento —, resolvidas pela RPC da seção 7.2. Por isso o UPDATE amplo sai.
--- WITH CHECK explícito impede também mudar a linha para um estado que a
--- própria policy não permitiria.
+-- telas que mexem nisso são do dono, MENOS a aba Metas — resolvida pela RPC
+-- da seção 7.2. O destinatário do pagamento (seção 7.3) já era tela do dono.
+-- Por isso o UPDATE amplo sai. WITH CHECK explícito impede também mudar a
+-- linha para um estado que a própria policy não permitiria.
 -- =====================================================================
 drop policy orgs_update on public.orgs;
 create policy orgs_update on public.orgs for update
@@ -623,49 +630,145 @@ create policy orgs_update on public.orgs for update
   with check ((id = public.my_org() and public.is_org_owner()) or public.is_platform_admin());
 
 -- =====================================================================
--- 7.2) A8 — org_set_goals: o mínimo que o membro comum precisa
+-- 7.2) A8 — org_set_goals: metas da equipe, para qualquer membro ativo
 -- ---------------------------------------------------------------------
--- Substitui o UPDATE amplo em orgs para o caso legítimo que existe hoje:
--- salvar METAS (aba Metas) e o DESTINATÁRIO DO PAGAMENTO. Mexe só na chave
--- `goals` de orgs.settings, preserva todo o resto, exige login e associação
--- ATIVA à equipe e aceita apenas chaves conhecidas, com valores numéricos ou
--- texto curto (o id de quem recebe). Não dá acesso a token, join_code,
--- module_id nem nome da equipe.
+-- Contrato = exatamente o objeto que o painel monta em goalsForm() e lê em
+-- getGoals() (app.js). Não há nome legado a aceitar: payRate, dailyTarget e
+-- weeklyTarget só existiram na REV4 desta migration, nunca no painel.
+--
+-- Cada chave tem regra própria (não é validação genérica por tipo):
+--   inteiros ≥ 0  : contacts, sales, leadDailyMin, leadDailyMax, callsWeekly,
+--                   payTargetPerDay, payBonusMinPerDay
+--   decimais ≥ 0  : revenue, commission, payDayRate, payBonusRate, commissionPct
+--   payBasis      : só 'seguidos' ou 'chamados'
+--   payFollowUp   : só booleano
+-- Número tem que ser JSON number de verdade: "10" (texto), null, lista ou
+-- objeto são recusados. Infinito não existe em JSON (o navegador manda null).
+--
+-- payRecipientId NÃO entra aqui: quem decide é o dono (seção 7.3). Se vier
+-- no objeto, a chamada é recusada inteira — assim um membro comum não troca,
+-- não apaga e não injeta destinatário por chamada direta. O valor que já
+-- está gravado é preservado porque a gravação é um merge sobre as metas
+-- atuais, num único UPDATE (sem janela entre ler e gravar).
+--
+-- Acesso: membro ATIVO da equipe p_org_id (org_members + perfil ativo — vale
+-- para quem participa de várias equipes, sem depender da equipe aberta) ou
+-- admin da plataforma.
 -- =====================================================================
 create function public.org_set_goals(p_org_id uuid, p_goals jsonb)
 returns jsonb
 language plpgsql security definer
 set search_path = public, pg_temp
 as $$
-declare v_goals jsonb; v_chaves text[]; v_ruim text;
+declare v_goals jsonb; v_ruim text;
 begin
-  perform public.assert_org_member(p_org_id);
+  if auth.uid() is null then
+    raise exception 'Login obrigatório' using errcode = '42501';
+  end if;
+  if not (public.is_org_member(p_org_id) or public.is_platform_admin()) then
+    raise exception 'Sem acesso a esta equipe' using errcode = '42501';
+  end if;
   if p_goals is null or jsonb_typeof(p_goals) <> 'object' then
-    raise exception 'Metas inválidas' using errcode = '22023';
+    raise exception 'Metas inválidas: esperado um objeto' using errcode = '22023';
   end if;
-  v_chaves := array['contacts','sales','revenue','commission','payRate','payBonusRate',
-                    'payBonusMinPerDay','payBasis','payRecipientId','dailyTarget','weeklyTarget'];
-  select string_agg(k, ', ') into v_ruim
-    from jsonb_object_keys(p_goals) k where k <> all(v_chaves);
-  if v_ruim is not null then
-    raise exception 'Metas com chave desconhecida: %', v_ruim using errcode = '22023';
+  if p_goals ? 'payRecipientId' then
+    raise exception 'O destinatário do pagamento não é alterado por aqui (só o dono, em Configurações)' using errcode = '42501';
   end if;
-  select string_agg(k, ', ') into v_ruim
+
+  with regra(k, tipo, maximo) as (values
+    ('contacts','int',1000000::numeric), ('sales','int',1000000), ('leadDailyMin','int',100000),
+    ('leadDailyMax','int',100000), ('callsWeekly','int',100000), ('payTargetPerDay','int',100000),
+    ('payBonusMinPerDay','int',100000),
+    ('revenue','num',1000000000000), ('commission','num',1000000000000),
+    ('payDayRate','num',1000000), ('payBonusRate','num',1000000), ('commissionPct','num',100),
+    ('payBasis','basis',null), ('payFollowUp','bool',null)
+  )
+  select string_agg(e.k || case when r.k is null then ' (chave desconhecida)' else ' (valor inválido)' end, ', ' order by e.k)
+    into v_ruim
     from jsonb_each(p_goals) e(k, v)
-   where jsonb_typeof(v) not in ('number','null')
-     and not (jsonb_typeof(v) = 'string' and length(v #>> '{}') <= 64);
+    left join regra r on r.k = e.k
+   where r.k is null
+      or not case r.tipo
+           when 'bool'  then jsonb_typeof(e.v) = 'boolean'
+           when 'basis' then jsonb_typeof(e.v) = 'string' and (e.v #>> '{}') in ('seguidos','chamados')
+           else case when jsonb_typeof(e.v) <> 'number' then false
+                     else (e.v #>> '{}')::numeric between 0 and r.maximo
+                          and (r.tipo = 'num' or (e.v #>> '{}')::numeric = trunc((e.v #>> '{}')::numeric))
+                end
+         end;
   if v_ruim is not null then
-    raise exception 'Metas com valor inválido em: %', v_ruim using errcode = '22023';
+    raise exception 'Metas recusadas: %', v_ruim using errcode = '22023';
   end if;
 
   update public.orgs o
-     set settings = coalesce(o.settings, '{}'::jsonb) || jsonb_build_object('goals', p_goals)
+     set settings = coalesce(o.settings, '{}'::jsonb)
+                    || jsonb_build_object('goals', coalesce(o.settings -> 'goals', '{}'::jsonb) || p_goals)
    where o.id = p_org_id
-  returning settings -> 'goals' into v_goals;
+  returning o.settings -> 'goals' into v_goals;
+  if not found then
+    raise exception 'Equipe não encontrada' using errcode = '22023';
+  end if;
   return v_goals;
 end; $$;
 revoke execute on function public.org_set_goals(uuid, jsonb) from public, anon;
 grant  execute on function public.org_set_goals(uuid, jsonb) to authenticated;
+
+-- =====================================================================
+-- 7.3) A9 — org_set_pay_recipient: destinatário do pagamento, só do dono
+-- ---------------------------------------------------------------------
+-- No painel é o seletor "Quem deve receber o valor" (Configurações, card
+-- exclusivo do dono). Aceita só:
+--   • vazio ou nulo → "todo mundo" (remove a chave);
+--   • UUID de um membro ATIVO da própria equipe p_org_id.
+-- Quem pode: dono DAQUELA equipe (org_members.role = 'owner' em p_org_id,
+-- perfil ativo — não depende da equipe aberta) ou admin da plataforma.
+-- =====================================================================
+create function public.org_set_pay_recipient(p_org_id uuid, p_recipient_id text)
+returns jsonb
+language plpgsql security definer
+set search_path = public, pg_temp
+as $$
+declare v_txt text; v_goals jsonb;
+begin
+  if auth.uid() is null then
+    raise exception 'Login obrigatório' using errcode = '42501';
+  end if;
+  if not (public.is_platform_admin() or exists (
+            select 1 from public.org_members m
+            join public.profiles p on p.id = m.user_id and p.status = 'active'
+            where m.org_id = p_org_id and m.user_id = auth.uid() and m.role = 'owner')) then
+    raise exception 'Só o dono da equipe altera o destinatário do pagamento' using errcode = '42501';
+  end if;
+
+  v_txt := nullif(btrim(coalesce(p_recipient_id, '')), '');
+  if v_txt is not null then
+    if v_txt !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
+      raise exception 'Destinatário inválido' using errcode = '22023';
+    end if;
+    v_txt := lower(v_txt);
+    if not exists (select 1 from public.org_members m
+                   join public.profiles p on p.id = m.user_id and p.status = 'active'
+                   where m.org_id = p_org_id and m.user_id = v_txt::uuid) then
+      raise exception 'Destinatário não é membro ativo desta equipe' using errcode = '22023';
+    end if;
+  end if;
+
+  update public.orgs o
+     set settings = coalesce(o.settings, '{}'::jsonb)
+                    || jsonb_build_object('goals',
+                         case when v_txt is null
+                              then coalesce(o.settings -> 'goals', '{}'::jsonb) - 'payRecipientId'
+                              else coalesce(o.settings -> 'goals', '{}'::jsonb) || jsonb_build_object('payRecipientId', v_txt)
+                         end)
+   where o.id = p_org_id
+  returning o.settings -> 'goals' into v_goals;
+  if not found then
+    raise exception 'Equipe não encontrada' using errcode = '22023';
+  end if;
+  return v_goals;
+end; $$;
+revoke execute on function public.org_set_pay_recipient(uuid, text) from public, anon;
+grant  execute on function public.org_set_pay_recipient(uuid, text) to authenticated;
 
 -- =====================================================================
 -- 8) Registro do que foi CRIADO (o rollback só remove o que está aqui)
@@ -676,7 +779,7 @@ from (
   select p.oid::regprocedure::text as obj, 'function' as classe
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
    where n.nspname = 'public'
-     and (p.proname like 'ext2\_%' or p.proname in ('is_org_member','assert_org_member','guard_leads_org','guard_child_org','org_set_goals'))
+     and (p.proname like 'ext2\_%' or p.proname in ('is_org_member','assert_org_member','guard_leads_org','guard_child_org','org_set_goals','org_set_pay_recipient'))
   union all
   select t.tgname || '|' || t.tgrelid::regclass::text, 'trigger'
     from pg_trigger t
@@ -707,13 +810,36 @@ begin
     raise exception 'Fase A: estado anterior incompleto (% registros) — rollback exato ficaria impossível', v_n;
   end if;
 
-  if exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'orgs'
-              and policyname = 'orgs_update'
-              and lower(regexp_replace(coalesce(qual, ''), '[()"''[:space:]]', '', 'g')) <> 'id=my_organdis_org_owneroris_platform_admin') then
-    raise exception 'Fase A: orgs_update não ficou restrita a dono/admin';
+  -- orgs_update INTEIRA: existe uma só, é UPDATE, PERMISSIVE, papel public,
+  -- e USING e WITH CHECK são os de dono/admin (não basta conferir o USING)
+  select count(*) into v_n from pg_policies
+   where schemaname = 'public' and tablename = 'orgs' and policyname = 'orgs_update'
+     and cmd = 'UPDATE' and permissive = 'PERMISSIVE'
+     and array(select r::text from unnest(roles) r) = array['public']::text[]
+     and lower(regexp_replace(coalesce(qual, ''),       '[()"''[:space:]]', '', 'g')) = 'id=my_organdis_org_owneroris_platform_admin'
+     and lower(regexp_replace(coalesce(with_check, ''), '[()"''[:space:]]', '', 'g')) = 'id=my_organdis_org_owneroris_platform_admin';
+  if v_n <> 1 or (select count(*) from pg_policies where schemaname = 'public' and tablename = 'orgs'
+                   and cmd in ('UPDATE','ALL')) <> 1 then
+    raise exception 'Fase A: orgs_update não ficou exatamente como dono/admin (comando, tipo, papel, USING e WITH CHECK)';
   end if;
-  if has_function_privilege('anon', 'public.org_set_goals(uuid,jsonb)', 'EXECUTE') then
-    raise exception 'Fase A: org_set_goals acessível por anon';
+
+  -- as duas RPCs de metas: existem com a assinatura exata, SECURITY DEFINER
+  -- com search_path fixo, e só authenticated executa (ACL explícita — nem
+  -- anon nem PUBLIC)
+  select string_agg(f.sig, ', ') into v_bad
+  from unnest(array['public.org_set_goals(uuid,jsonb)','public.org_set_pay_recipient(uuid,text)']) f(sig)
+  left join pg_proc p on p.oid = to_regprocedure(f.sig)
+  where p.oid is null
+     or not p.prosecdef
+     or not coalesce('search_path=public, pg_temp' = any(p.proconfig), false)
+     or (select coalesce(array_agg(distinct g.role order by g.role), '{}')
+           from (select coalesce(nullif(a.grantee::regrole::text, '-'), 'public') as role
+                   from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                  where a.privilege_type = 'EXECUTE') g
+          where g.role in ('public','anon','authenticated'))
+        is distinct from array['authenticated']::text[];
+  if v_bad is not null then
+    raise exception 'Fase A: RPC de metas ausente ou com acesso errado: %', v_bad;
   end if;
 
   -- compatibilidade com a extensão 1.10.4

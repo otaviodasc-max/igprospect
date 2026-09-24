@@ -107,7 +107,8 @@ select 'funcao' as tipo, p.oid::regprocedure::text as objeto, pg_get_userbyid(p.
 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
 where n.nspname = 'public'
   and (p.proname like 'ext2\_%'
-       or p.proname in ('is_org_member','assert_org_member','guard_leads_org','guard_child_org','guard_leads_author'))
+       or p.proname in ('is_org_member','assert_org_member','guard_leads_org','guard_child_org','guard_leads_author',
+                        'org_set_goals','org_set_pay_recipient'))
 union all
 select 'trigger', t.tgname || ' em ' || t.tgrelid::regclass::text, '-'
 from pg_trigger t
