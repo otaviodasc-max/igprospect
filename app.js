@@ -27,7 +27,7 @@ const S = { session:null, profile:null, org:null, route:'dashboard', period:'all
   // rota/campo que funcionaram nessa instalação — ver loadAgendorOrigins.
   _origins:[], _originsRoute:null, _originField:null,
   relView:'pay', relMemberId:'', relWeeksBack:12, relQ:'',
-  relDashFrom:'', relDashTo:'', relDashPipelineId:'',
+  relDashFrom:'', relDashTo:'', relDashPipelineId:'', relDashPreset:'',
   relPayFrom:'', relPayTo:'',
   goalsFrom:'', goalsTo:'', goalsMemberId:'' };
 const PAGE_SIZE = 25;
@@ -1878,6 +1878,9 @@ const REL_VIEWS = [
   { k:'vendas', label:'Relatório de vendas' },
 ];
 const isoDate = d => new Date(d).toISOString().slice(0,10);
+// AAAA-MM-DD no fuso DESTE aparelho. isoDate() acima usa UTC: no Brasil, das
+// 21h à meia-noite ela já devolve o dia seguinte — por isso o "Hoje" usa esta.
+const localIsoDate = d => { const x=new Date(d); return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`; };
 const fmtDateOnly = s => { if(!s) return '—'; const [y,m,dd]=String(s).split('-'); return `${dd}/${m}/${y}`; };
 const memberLabel = m => (m&&(m.name||m.email))||'—';
 
@@ -2057,11 +2060,32 @@ function periodBuckets(leads, from, to, dateOf){
     return { date:s, count:leads.filter(l=>{ const iso=dateOf(l); if(!iso) return false; const d=new Date(iso); return d>=s&&d<e; }).length };
   });
 }
+// Atalhos de período do Dashboard/Relatórios (Tudo, Hoje, Este mês, Mês passado).
+function applyRelDashPreset(kind){
+  S.relDashPreset = kind==='today' ? 'today' : '';
+  if(kind==='today'){
+    const t=localIsoDate(new Date()); S.relDashFrom=t; S.relDashTo=t;
+  } else if(kind==='all'){
+    // "Tudo" = do lead mais antigo cadastrado até hoje — o filtro De/Até
+    // continua sendo um intervalo de verdade (não um caso especial "sem
+    // filtro"), só que largo o bastante pra cobrir todo mundo.
+    const dates=S.leads.map(l=>l.addedAt).filter(Boolean).map(d=>new Date(d).getTime()).filter(t=>!isNaN(t));
+    const earliest=dates.length?new Date(Math.min(...dates)):new Date();
+    S.relDashFrom=isoDate(earliest); S.relDashTo=isoDate(new Date());
+  } else {
+    const mb=monthBoundsStr(kind==='lastmonth'?-1:0);
+    S.relDashFrom=mb.from; S.relDashTo=mb.to;
+  }
+}
 // targetId: onde desenhar — 'rel-body' (dentro de Relatórios) por padrão, ou
 // 'content' quando chamado como a aba Dashboard (ver renderDashboard).
 function renderRelDash(targetId){
   targetId=targetId||'rel-body';
   if(!S.relDashFrom||!S.relDashTo){ const mb=monthBoundsStr(); S.relDashFrom=mb.from; S.relDashTo=mb.to; }
+  // "Hoje" é recalculado a cada desenho (não fica preso à data do clique):
+  // com o Dashboard aberto virando a meia-noite, o próximo lead que chegar
+  // pelo Realtime já redesenha no dia novo.
+  if(S.relDashPreset==='today'){ const t=localIsoDate(new Date()); S.relDashFrom=t; S.relDashTo=t; }
   if(!S.relDashPipelineId || !S.pipelines.some(p=>p.id===S.relDashPipelineId)) S.relDashPipelineId=(defaultPipeline()&&defaultPipeline().id)||'';
   const pipeline=pipelineById(S.relDashPipelineId);
   const from=new Date(S.relDashFrom+'T00:00:00'), to=new Date(S.relDashTo+'T23:59:59.999');
@@ -2144,7 +2168,7 @@ function renderRelDash(targetId){
   // resumo. Em Relatórios (targetId='rel-body') os campos continuam dentro
   // do conteúdo, com rótulo, como sempre foram.
   const inHeader = targetId==='content';
-  const presetBtns = `<button class="btn btn-outline btn-sm" data-rdpre="all" title="Todos os leads do sistema, sem filtro de data">Tudo</button><button class="btn btn-outline btn-sm" data-rdpre="month">Este mês</button><button class="btn btn-outline btn-sm" data-rdpre="lastmonth">Mês passado</button>`;
+  const presetBtns = `<button class="btn btn-outline btn-sm" data-rdpre="all" title="Todos os leads do sistema, sem filtro de data">Tudo</button><button class="btn btn-outline btn-sm" data-rdpre="today" title="Só o dia de hoje, na data deste aparelho">Hoje</button><button class="btn btn-outline btn-sm" data-rdpre="month">Este mês</button><button class="btn btn-outline btn-sm" data-rdpre="lastmonth">Mês passado</button>`;
   if(inHeader){
     $('tb-controls').innerHTML = `<input type="date" class="tbc-inp" id="rd-from" value="${esc(S.relDashFrom)}" title="De">
       <span style="color:var(--t3);font-size:.68rem">–</span>
@@ -2207,23 +2231,10 @@ function renderRelDash(targetId){
       <div class="card"><div class="card-hd"><div class="card-title">Distribuição por Etapa</div></div><div class="card-bd"><div class="donut-wrap"><div class="donut-cw"><canvas id="rd-donut-chart" width="110" height="110"></canvas><div class="donut-center"><div class="donut-cv">${total}</div><div class="donut-cl">Leads</div></div></div><div class="donut-legend">${donutLgd}</div></div></div></div>
       <div class="card"><div class="card-hd"><div class="card-title">Leads do período</div></div><div class="card-bd" style="padding-top:6px">${recentHtml}</div></div>
     </div></div>`;
-  $('rd-from').onchange=e=>{ S.relDashFrom=e.target.value; renderRelDash(targetId); };
-  $('rd-to').onchange=e=>{ S.relDashTo=e.target.value; renderRelDash(targetId); };
+  $('rd-from').onchange=e=>{ S.relDashPreset=''; S.relDashFrom=e.target.value; renderRelDash(targetId); };
+  $('rd-to').onchange=e=>{ S.relDashPreset=''; S.relDashTo=e.target.value; renderRelDash(targetId); };
   const plSelEl=$('rd-pipeline'); if(plSelEl) plSelEl.onchange=e=>{ S.relDashPipelineId=e.target.value; renderRelDash(targetId); };
-  document.querySelectorAll('[data-rdpre]').forEach(b=>b.onclick=()=>{
-    if(b.dataset.rdpre==='all'){
-      // "Tudo" = do lead mais antigo cadastrado até hoje — o filtro De/Até
-      // continua sendo um intervalo de verdade (não um caso especial "sem
-      // filtro"), só que largo o bastante pra cobrir todo mundo.
-      const dates=S.leads.map(l=>l.addedAt).filter(Boolean).map(d=>new Date(d).getTime()).filter(t=>!isNaN(t));
-      const earliest=dates.length?new Date(Math.min(...dates)):new Date();
-      S.relDashFrom=isoDate(earliest); S.relDashTo=isoDate(new Date());
-    } else {
-      const mb=monthBoundsStr(b.dataset.rdpre==='lastmonth'?-1:0);
-      S.relDashFrom=mb.from; S.relDashTo=mb.to;
-    }
-    renderRelDash(targetId);
-  });
+  document.querySelectorAll('[data-rdpre]').forEach(b=>b.onclick=()=>{ applyRelDashPreset(b.dataset.rdpre); renderRelDash(targetId); });
   // Clique numa etapa (card, barra do funil ou linha do donut) → aba Leads
   // já filtrada por ela (e pelo funil escolhido aqui). Total no período =
   // key vazia → mostra o funil inteiro, sem travar num status.

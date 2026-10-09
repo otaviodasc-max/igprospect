@@ -47,6 +47,7 @@ function consulta(tabela, chamadas, handler) {
 
 function carregarPainel({ rpc, orgsUpdate, root = ROOT } = {}) {
   const chamadas = [];
+  const canais = [];
   const elementos = new Map();
   const el = id => { if (!elementos.has(id)) elementos.set(id, elementoFalso(id)); return elementos.get(id); };
   const sb = {
@@ -58,11 +59,18 @@ function carregarPainel({ rpc, orgsUpdate, root = ROOT } = {}) {
     from(t) {
       return consulta(t, chamadas, q => (orgsUpdate ? orgsUpdate(q) : { data: [{ id: 'x' }], error: null }));
     },
-    channel() { const c = { on() { return c; }, subscribe() { return c; } }; return c; },
+    // Guarda cada canal e cada .on(evento, filtro, callback) registrado pelo
+    // app, para o teste chamar o callback REAL com um payload fictício. Não
+    // há servidor Realtime aqui: publicação, RLS e entrega ficam de fora.
+    channel(nome) {
+      const c = { nome, ouvintes: [], on(evento, filtro, cb) { c.ouvintes.push({ evento, filtro, cb }); return c; }, subscribe() { return c; } };
+      canais.push(c);
+      return c;
+    },
     removeChannel() {},
   };
   const ctx = {
-    console, setTimeout, clearTimeout, setInterval, clearInterval, URL, URLSearchParams, Intl,
+    console, performance, setTimeout, clearTimeout, setInterval, clearInterval, URL, URLSearchParams, Intl,
     requestAnimationFrame: () => 0,
     localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
     sessionStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
@@ -110,7 +118,7 @@ function carregarPainel({ rpc, orgsUpdate, root = ROOT } = {}) {
     await fn({ target: alvo });
   }
 
-  return { S, el, run, chamadas, espioes, salvarMetasPeloFormulario, trocarDestinatario, ctx };
+  return { S, el, run, chamadas, canais, espioes, salvarMetasPeloFormulario, trocarDestinatario, ctx };
 }
 
 // Recorta a função atribuída logo depois de `marcador`, casando chaves e
