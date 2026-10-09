@@ -2935,14 +2935,23 @@ function subscribeLeads(){
   if(!sb || !S.org) return;
   if(leadsChannel && leadsChannelOrgId===S.org.id) return; // já inscrito nesta equipe
   if(leadsChannel){ sb.removeChannel(leadsChannel); leadsChannel=null; }
-  leadsChannelOrgId=S.org.id;
-  leadsChannel = sb.channel('leads-'+S.org.id)
-    .on('postgres_changes', { event:'*', schema:'public', table:'leads', filter:`org_id=eq.${S.org.id}` }, payload=>{
+  const channelOrgId=S.org.id;
+  leadsChannelOrgId=channelOrgId;
+  leadsChannel = sb.channel('leads-'+channelOrgId)
+    .on('postgres_changes', { event:'*', schema:'public', table:'leads', filter:`org_id=eq.${channelOrgId}` }, payload=>{
+      // Defesa extra, além do filtro do servidor e do RLS: só aceita evento
+      // da equipe ATIVA. Cobre evento de outra equipe entregue por engano e
+      // callback atrasado de um canal antigo depois da troca de equipe.
+      if(!S.org || S.org.id!==channelOrgId) return;
       if(payload.eventType==='DELETE'){
-        const oldId=payload.old&&payload.old.id; if(!oldId) return;
+        // Sem REPLICA IDENTITY FULL, o DELETE traz só o id (sem org_id): então
+        // só remove um lead que já está carregado nesta equipe.
+        const old=payload.old||{}; const oldId=old.id; if(!oldId) return;
+        if(old.org_id && old.org_id!==channelOrgId) return;
+        if(!S.leads.some(l=>l.id===oldId)) return;
         S.leads=S.leads.filter(l=>l.id!==oldId);
       } else {
-        const row=payload.new; if(!row) return;
+        const row=payload.new; if(!row || row.org_id!==channelOrgId) return;
         const lead=leadFromRow(row);
         const idx=S.leads.findIndex(l=>l.id===lead.id);
         if(idx===-1) S.leads.unshift(lead); else S.leads[idx]=lead;
