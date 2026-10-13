@@ -16,5 +16,6 @@ drop function public.leads_registrar_acao();
 drop table public.lead_activity_events;
 drop function public.lead_activity_imutavel();
 drop function public.lead_stage_is_followup(uuid,uuid,text);
+drop function public.lead_stage_is_resposta(uuid,uuid,text);
 drop table public.lead_activity_log;
 commit;

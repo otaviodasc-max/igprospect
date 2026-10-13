@@ -13,12 +13,17 @@
 --       BANCO (trigger), nunca pelo navegador:
 --         • chamado   — a primeira vez que o lead sai da 1ª etapa
 --                        (o mesmo momento em que called_at é gravado);
---         • follow_up — cada entrada numa etapa cujo nome contém "follow".
+--         • follow_up — cada entrada numa etapa cujo nome contém "follow";
+--         • respondeu — cada entrada EFETIVA numa etapa de resposta (nome
+--                        com "respond", exceto "não respondeu"), pelo painel
+--                        ou pela extensão. Pular a etapa não conta: só a
+--                        mudança de status PARA ela. É a resposta REGISTRADA
+--                        por alguém, não detecção de mensagem no Instagram.
 --       Responsável = auth.uid() de quem fez a mudança. Mudança feita pela
 --       extensão sem login (RPC anônima por código de equipe) fica SEM
 --       responsável: não conta para pagamento de ninguém.
 --   R2. Sem contar duas vezes: no máximo UM chamado por lead (para sempre)
---       e UM follow-up por lead por dia (horário de Brasília). Reenviar a
+--       e UM follow-up e UMA resposta por lead por dia (horário de Brasília). Reenviar a
 --       mesma etapa, ou o painel e a extensão gravarem a mesma mudança, não
 --       gera evento novo (status igual não dispara nada).
 --   R3. Eventos não mudam nem somem (só a cascata de apagar a equipe ou o
@@ -48,7 +53,7 @@ begin
     select 'tabela ' || t o from unnest(array['lead_activity_events','lead_activity_log']) t where to_regclass('public.' || t) is not null
     union all
     select p.oid::regprocedure::text from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-     where n.nspname = 'public' and p.proname in ('leads_registrar_acao','lead_activity_imutavel','lead_stage_is_followup')
+     where n.nspname = 'public' and p.proname in ('leads_registrar_acao','lead_activity_imutavel','lead_stage_is_followup','lead_stage_is_resposta')
     union all
     select tgname from pg_trigger where not tgisinternal and tgname in ('leads_registrar_acao','lead_activity_imutavel')
   ) x;
@@ -71,7 +76,7 @@ create table public.lead_activity_events (
   id           uuid primary key default gen_random_uuid(),
   org_id       uuid not null references public.orgs(id) on delete cascade,
   lead_id      uuid references public.leads(id) on delete set null,
-  kind         text not null check (kind in ('chamado','follow_up')),
+  kind         text not null check (kind in ('chamado','follow_up','respondeu')),
   stage_key    text,
   occurred_at  timestamptz not null default now(),
   day_br       date not null,
@@ -81,6 +86,7 @@ create table public.lead_activity_events (
 -- R2: identidade de uma ação
 create unique index lead_activity_um_chamado on public.lead_activity_events(lead_id) where kind = 'chamado' and lead_id is not null;
 create unique index lead_activity_um_followup_dia on public.lead_activity_events(lead_id, day_br) where kind = 'follow_up' and lead_id is not null;
+create unique index lead_activity_um_respondeu_dia on public.lead_activity_events(lead_id, day_br) where kind = 'respondeu' and lead_id is not null;
 create index lead_activity_org_dia on public.lead_activity_events(org_id, day_br);
 
 alter table public.lead_activity_events enable row level security;
@@ -106,6 +112,21 @@ language sql stable security definer set search_path = public as $$
 $$;
 revoke all on function public.lead_stage_is_followup(uuid,uuid,text) from public, anon, authenticated;
 
+-- A etapa é de RESPOSTA? Nome com "respond" (sem acento e em minúsculas),
+-- menos "não respondeu"/"sem resposta" (o painel trata essas como chamado).
+create function public.lead_stage_is_resposta(p_org uuid, p_pipeline uuid, p_status text) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1 from public.org_pipelines pl, jsonb_array_elements(coalesce(pl.stages, '[]'::jsonb)) st,
+           lateral (select translate(lower(coalesce(st->>'label', '')), 'áàãâäéêèíìóôõòúùüç', 'aaaaaeeeiioooouuuc') as r) n
+     where pl.org_id = p_org
+       and pl.id = coalesce(p_pipeline, (select id from public.org_pipelines where org_id = p_org and is_default limit 1))
+       and st->>'key' = p_status
+       and n.r like '%respond%' and n.r not like '%nao respond%' and n.r not like '%sem respost%'
+  )
+$$;
+revoke all on function public.lead_stage_is_resposta(uuid,uuid,text) from public, anon, authenticated;
+
 create function public.leads_registrar_acao() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare v_dia date := (now() at time zone 'America/Sao_Paulo')::date;
@@ -118,6 +139,13 @@ begin
   if new.status is distinct from old.status and public.lead_stage_is_followup(new.org_id, new.pipeline_id, new.status) then
     insert into public.lead_activity_events(org_id, lead_id, kind, stage_key, occurred_at, day_br, actor_id)
     values (new.org_id, new.id, 'follow_up', new.status, now(), v_dia, auth.uid())
+    on conflict do nothing;
+  end if;
+  -- resposta registrada: só ao ENTRAR na etapa de resposta (pular não conta);
+  -- responsável = quem está logado (chamada anônima da 1.10.4 fica sem responsável)
+  if new.status is distinct from old.status and public.lead_stage_is_resposta(new.org_id, new.pipeline_id, new.status) then
+    insert into public.lead_activity_events(org_id, lead_id, kind, stage_key, occurred_at, day_br, actor_id)
+    values (new.org_id, new.id, 'respondeu', new.status, now(), v_dia, auth.uid())
     on conflict do nothing;
   end if;
   return null;

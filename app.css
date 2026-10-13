@@ -640,7 +640,7 @@ canvas{display:block}
 .cv-pend span{font-size:.76rem;color:var(--gl-mut);line-height:1.5}
 .cv-carregando{color:var(--gl-mut);font-size:.84rem}
 .cv-h3{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:.98rem;margin-bottom:12px}
-.cv-kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:12px}
+.cv-kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin-bottom:12px}
 .cv-kpis-3{grid-template-columns:repeat(3,minmax(0,1fr))}
 .cv-kpis-2{grid-template-columns:repeat(2,minmax(0,1fr))}
 .cv-kpi{display:flex;flex-direction:column;gap:4px;padding:14px 16px;border-radius:12px;background:var(--gl-card);border:1px solid var(--gl-line);min-width:0}

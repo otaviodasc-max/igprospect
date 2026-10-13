@@ -105,7 +105,7 @@
     const adicionados = S.leads.filter(l => (l.tipo || 'comum') !== 'empresario' && l.addedAt && new Date(l.addedAt) >= from && new Date(l.addedAt) < toExcl && (!mid || l.createdBy === mid)).length;
     const pct = (a, b) => b ? Math.round(a / b * 100) + '%' : '—';
     const kpi = (r, v, extra, cor) => `<div class="cv-kpi"><span><i style="background:${cor || '#B8892B'}"></i>${r}</span><b>${fmtNum(v)}</b>${extra ? `<small>${extra}</small>` : ''}</div>`;
-    const kpiNaoReg = r => `<div class="cv-kpi cv-kpi-pend"><span>${r}</span><b>—</b><small>ainda não registrado</small></div>`;
+    const kpiNaoReg = (r, txt) => `<div class="cv-kpi cv-kpi-pend"><span>${r}</span><b>—</b><small>${txt || 'ainda não registrado'}</small></div>`;
     const inicioBR = ev.inicio ? localIsoDate(new Date(ev.inicio)) : null;
     const incompleto = inicioBR && inicioBR > S.goalsFrom ? `<div class="cv-nota cv-alerta">O registro de ações começou em ${fmtDateOnly(inicioBR)}. Dias anteriores ficam sem contagem confiável — nada é estimado.</div>` : '';
     // evolução: por dia (até 31 dias) ou por semana
@@ -113,10 +113,14 @@
     const baldes = []; for (let d = new Date(from); d < toExcl; d.setDate(d.getDate() + (porSemana ? 7 : 1))) baldes.push(new Date(d));
     // só as ações que o banco registra (ver tiposRegistrados em app.js)
     const reg = ev.tipos || new Set(['chamado', 'follow_up']);
-    const tipos = ['chamado', 'follow_up', 'respondeu', 'contato'].filter(t => reg.has(t));
+    // ações com evento próprio no registro; Contatos vêm da entrada na etapa (abaixo)
+    const tipos = ['chamado', 'follow_up', 'respondeu'].filter(t => reg.has(t));
     const naoReg = ['respondeu'].filter(t => !reg.has(t));
     // Contatos sem o evento "contato": pela data registrada de entrada em "Enviou contato" (stage_dates)
-    const contatosEtapa = reg.has('contato') ? null : contatosPorEtapa(S.goalsFrom, S.goalsTo, S.goalsMemberId);
+    // Contatos: pela data em que o banco gravou a entrada em "Enviou contato" (stage_dates, por
+    // trigger), que vale para o painel, a 1.10.4 e a 1.11 — o evento "contato" da X-02 só
+    // existe para o envio feito pela extensão 1.11 e deixaria de fora quem move pelo painel.
+    const contatosEtapa = contatosPorEtapa(S.goalsFrom, S.goalsTo, S.goalsMemberId);
     const serie = baldes.map(ini => { const fim = new Date(ini); fim.setDate(fim.getDate() + (porSemana ? 7 : 1)); const o = Object.fromEntries(tipos.map(t => [t, 0]));
       for (const [dia, c] of Object.entries(cont.porDia)) { const d = new Date(dia + 'T12:00:00'); if (d >= ini && d < fim) tipos.forEach(t => { o[t] += c[t] || 0; }); } return { ini, ...o }; });
     const max = Math.max(1, ...serie.flatMap(s => tipos.map(t => s[t])));
@@ -128,13 +132,14 @@
         ${S.members.map(m => { const c = contarEventos(ev.linhas, m.id).total; return `<div class="cv-tr"><span>${esc(memberLabel(m))}</span>${tipos.map(t => `<span>${fmtNum(c[t])}</span>`).join('')}</div>`; }).join('')}</div></section>` : '';
     body.innerHTML = topo + incompleto + `
       <section class="gl-card"><div class="cv-kpis">
-        ${kpi('Leads adicionados', adicionados, '', '#64748B')}
+        ${kpi('Leads cadastrados', adicionados, '', '#64748B')}
+        ${reg.has('seguido') ? kpi('Seguidos', T.seguido, 'marcados na extensão', '#64748B') : kpiNaoReg('Seguidos', 'indisponível')}
         ${kpi('Chamados', T.chamado, '', corDaAcao('chamado'))}
         ${kpi('Follow-ups', T.follow_up, '', corDaAcao('follow_up'))}
-        ${reg.has('respondeu') ? kpi('Respostas reais', T.respondeu, `${pct(T.respondeu, T.chamado)} dos chamados`, corDaAcao('respondeu')) : kpiNaoReg('Respostas reais')}
-        ${reg.has('contato') ? kpi('Contatos', T.contato, `${pct(T.contato, T.chamado)} dos chamados`, corDaAcao('contato')) : kpi('Contatos', contatosEtapa, 'entrada em "Enviou contato"', corDaAcao('contato'))}
+        ${reg.has('respondeu') ? kpi('Respostas registradas', T.respondeu, `${pct(T.respondeu, T.chamado)} dos chamados`, corDaAcao('respondeu')) : kpiNaoReg('Respostas registradas')}
+        ${kpi('Contatos', contatosEtapa, `entrada em "Enviou contato" · ${pct(contatosEtapa, T.chamado)} dos chamados`, corDaAcao('contato'))}
       </div>
-      <div class="cv-nota">Contado pelo registro de ações (data de Brasília e responsável). "Respostas reais" são só as registradas como "Respondeu" — nada é deduzido de etapas puladas no CRM.${naoReg.length ? ` Respostas ainda não são registradas com data e responsável: passam a contar com a extensão nova (com login). Até lá, nenhum número é estimado.` : ''}${contatosEtapa !== null ? ' Contatos: leads que entraram em "Enviou contato" no período, pela data gravada pelo banco nessa etapa.' : ''}</div></section>
+      <div class="cv-nota">Contado pelo registro de ações (data de Brasília e responsável). "Respostas registradas" = leads que alguém moveu para a etapa "Respondeu" (no painel ou na extensão), no máximo uma por lead por dia. Não é leitura automática das mensagens do Instagram, e pular a etapa não conta. "Leads cadastrados" não é o mesmo que seguir o perfil: "Seguidos" só conta o que for marcado na extensão 1.11.${naoReg.length ? ' Respostas ainda não são registradas neste banco: nenhum número é estimado.' : ''} Contatos: leads que entraram em "Enviou contato" no período, pela data gravada pelo banco nessa etapa.</div></section>
       <section class="gl-card"><div class="cv-h3">Evolução no período · ${porSemana ? 'por semana' : 'por dia'}</div>
         <div class="cv-legenda">${tipos.map(t => `<span><i style="background:${corDaAcao(t)}"></i>${ROT[t]}</span>`).join('')}</div>
         <div class="cv-grafico">${barras}</div></section>
@@ -589,11 +594,23 @@
       ${seg([['equipes', 'Equipes'], ['pedidos', 'Pedidos de aprovação'], ['diagnostico', 'Diagnóstico']], S.admView, 'data-admv')}<div id="adm-body"><div class="gl-card cv-carregando">Carregando…</div></div></div>`;
     document.querySelectorAll('[data-admv]').forEach(b => b.onclick = () => { S.admView = b.dataset.admv; telaAdmin(); });
     const corpo = $('adm-body'), vez = (S.admVez = (S.admVez || 0) + 1), conta = contaAtual();
-    const [orgs, users, peds] = await Promise.all([sb.rpc('admin_orgs'), sb.rpc('admin_users'), sb.rpc('admin_org_requests')]);
+    const carregar = () => Promise.all([sb.rpc('admin_orgs'), sb.rpc('admin_users'), sb.rpc('admin_org_requests')]);
+    let [orgs, users, peds] = await carregar();
+    const semPermissao = e => e && (e.code === '42501' || /superadmin|administra/i.test(e.message || ''));
+    // falha passageira (rede, servidor ocupado): tenta de novo uma vez antes de mostrar erro
+    if ((orgs.error && !semPermissao(orgs.error)) || (users.error && !semPermissao(users.error))) {
+      await new Promise(r => setTimeout(r, 800));
+      [orgs, users, peds] = await carregar();
+    }
     // resposta atrasada: de uma carga anterior (outra aba da Administração), de outra
     // sessão (saiu/entrou com outra conta) ou depois de sair da tela — não desenha nada
     if (vez !== S.admVez || corpo.isConnected === false || contaAtual() !== conta || S.route !== 'admin') return;
-    if (orgs.error) { corpo.innerHTML = '<div class="cv-vazio">Área restrita à administração da plataforma.</div>'; return; }
+    S.admErro = orgs.error ? { code: orgs.error.code || '', message: String(orgs.error.message || '').slice(0, 120) } : null;
+    if (orgs.error && semPermissao(orgs.error)) { corpo.innerHTML = '<div class="cv-vazio">Área restrita à administração da plataforma.</div>'; return; }
+    if (orgs.error || users.error) {
+      corpo.innerHTML = '<div class="cv-vazio">Não foi possível carregar a administração agora. <button class="btn btn-outline btn-sm" id="adm-tentar">Tentar de novo</button></div>';
+      $('adm-tentar').onclick = () => telaAdmin(); return;
+    }
     ({ equipes: admEquipes, pedidos: admPedidos, diagnostico: admDiagnostico }[S.admView] || admPedidos)(corpo, { orgs: orgs.data || [], users: users.data || [], peds: peds.error ? null : (peds.data || []) });
   }
   // Equipes e usuários da plataforma, com as mesmas ações do painel anterior

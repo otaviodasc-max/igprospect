@@ -146,6 +146,9 @@ function contatosPorEtapa(de, ate, membro){
     return d && !isNaN(d) && d>=ini && d<fim;
   }).length;
 }
+// Etapa de RESPOSTA (mesmo critério da P-03 no banco): nome com "respond", menos
+// "não respondeu" / "sem resposta".
+function etapaDeResposta(st){ const n=normLabel(st&&st.label); return n.includes('respond') && !n.includes('nao respond') && !n.includes('sem respost'); }
 function isLastStage(status, pipeline){
   const stages=STS(pipeline); if(!stages.length) return false;
   const full=stagesOf(pipeline);
@@ -323,12 +326,12 @@ async function bulkSetLeadsStage(idx){
   }
   for(const st in byStatus){
     const idsForSt=byStatus[st];
-    for(let i=0;i<idsForSt.length;i+=200){ const{error}=await sb.from('leads').update({status:st}).eq('org_id',S.org.id).in('id',idsForSt.slice(i,i+200)); if(error){ toast(error.message,'error'); return; } }
+    for(let i=0;i<idsForSt.length;i+=200){ const{error}=await leadsEscrita().update({status:st}).eq('org_id',S.org.id).in('id',idsForSt.slice(i,i+200)); if(error){ toast(error.message,'error'); return; } }
     idsForSt.forEach(id=>{ const l=S.leads.find(x=>x.id===id); if(l) l.status=st; });
   }
   if(markAsAgendor){
     const missingIds=leads.filter(l=>!l.agendorPersonId).map(l=>l.id);
-    for(let i=0;i<missingIds.length;i+=200){ await sb.from('leads').update({agendor_person_id:'manual'}).eq('org_id',S.org.id).in('id',missingIds.slice(i,i+200)); }
+    for(let i=0;i<missingIds.length;i+=200){ await leadsEscrita().update({agendor_person_id:'manual'}).eq('org_id',S.org.id).in('id',missingIds.slice(i,i+200)); }
     missingIds.forEach(id=>{ const l=S.leads.find(x=>x.id===id); if(l) l.agendorPersonId='manual'; });
   }
   // Um lead pode ganhar vários negócios ao longo do tempo (ver "+ Novo negócio"
@@ -875,9 +878,9 @@ function leadForm(id){
     $('f-save').disabled=true;
     const prevStatus = id ? ((S.leads.find(x=>x.id===id)||{}).status) : null;
     let savedId=id;
-    if(id){ const{error}=await sb.from('leads').update(leadToRow(data)).eq('org_id',S.org.id).eq('id',id); if(error){toast(error.message,'error');return;} toast('Lead atualizado','success'); }
-    else { data.source='manual'; const{data:ins,error}=await sb.from('leads').insert(withOrg(leadToRow(data))).select('id').single(); if(error){toast(error.message,'error');return;} savedId=ins&&ins.id; toast('Lead cadastrado','success'); }
-    if(markAsInAgendor && savedId) await sb.from('leads').update({agendor_person_id:'manual'}).eq('org_id',S.org.id).eq('id',savedId);
+    if(id){ const{error}=await leadsEscrita().update(leadToRow(data)).eq('org_id',S.org.id).eq('id',id); if(error){toast(error.message,'error');return;} toast('Lead atualizado','success'); }
+    else { data.source='manual'; const{data:ins,error}=await leadsEscrita().insert(withOrg(leadToRow(data))).select('id').single(); if(error){toast(error.message,'error');return;} savedId=ins&&ins.id; toast('Lead cadastrado','success'); }
+    if(markAsInAgendor && savedId) await leadsEscrita().update({agendor_person_id:'manual'}).eq('org_id',S.org.id).eq('id',savedId);
     const converted=isLastStage(data.status,pipeline);
     closeModal(); await loadLeads(); if(converted||data.tipo==='empresario'){ await loadDeals(); if(savedId) await ensureDealForLead(savedId); } renderShell();
     if(converted && prevStatus!==data.status) notifyLeadContato(S.leads.find(x=>x.id===savedId)||data);
@@ -890,7 +893,7 @@ function delLead(id){ const l=S.leads.find(x=>x.id===id);
   $('d-ok').onclick=async()=>{
     $('d-ok').disabled=true;
     if(hasAg && $('d-ag') && $('d-ag').checked) await deleteFromAgendor(l);
-    const{error}=await sb.from('leads').delete().eq('org_id',S.org.id).eq('id',id);
+    const{error}=await leadsEscrita().delete().eq('org_id',S.org.id).eq('id',id);
     if(error){toast(error.message,'error');$('d-ok').disabled=false;return;}
     closeModal(); toast('Lead excluído','success'); await loadLeads(); await loadDeals(); renderShell();
   };
@@ -1149,7 +1152,7 @@ function renderCRM(){
   board2.addEventListener('dragend',e=>{ const c=e.target.closest('.crm-card'); if(c)c.classList.remove('dragging'); document.querySelectorAll('.crm-col.dragover').forEach(x=>x.classList.remove('dragover')); });
   board2.addEventListener('dragover',e=>{ const col=e.target.closest('.crm-col'); if(col){ e.preventDefault(); col.classList.add('dragover'); } });
   board2.addEventListener('dragleave',e=>{ const col=e.target.closest('.crm-col'); if(col&&!col.contains(e.relatedTarget))col.classList.remove('dragover'); });
-  board2.addEventListener('drop',async e=>{ const col=e.target.closest('.crm-col'); if(!col||!dragId)return; e.preventDefault(); const id=dragId; dragId=null; const ns=col.dataset.status; const l=S.leads.find(x=>x.id===id); if(l&&l.status!==ns){ l.status=ns; const{error}=await sb.from('leads').update({status:ns}).eq('org_id',S.org.id).eq('id',id); if(error){ toast(error.message,'error'); } else { const lp=leadPipeline(l); toast(`Movido para "${(SM(lp)[ns]||{}).label||ns}"`,'success'); if(isLastStage(ns,lp)||l.tipo==='empresario'){ await loadDeals(); await ensureDealForLead(id); if(isLastStage(ns,lp)){ toast('Negociação criada na aba Negociações ☑','success'); notifyLeadContato(l); } } await autoSyncAgendor(l); } } renderCRM(); });
+  board2.addEventListener('drop',async e=>{ const col=e.target.closest('.crm-col'); if(!col||!dragId)return; e.preventDefault(); const id=dragId; dragId=null; const ns=col.dataset.status; const l=S.leads.find(x=>x.id===id); if(l&&l.status!==ns){ l.status=ns; const{error}=await leadsEscrita().update({status:ns}).eq('org_id',S.org.id).eq('id',id); if(error){ toast(error.message,'error'); } else { const lp=leadPipeline(l); toast(`Movido para "${(SM(lp)[ns]||{}).label||ns}"`,'success'); if(isLastStage(ns,lp)||l.tipo==='empresario'){ await loadDeals(); await ensureDealForLead(id); if(isLastStage(ns,lp)){ toast('Negociação criada na aba Negociações ☑','success'); notifyLeadContato(l); } } await autoSyncAgendor(l); } } renderCRM(); });
   board2.addEventListener('click',e=>{ const c=e.target.closest('.crm-card[data-id]'); if(!c)return; if(S.sel.mode){ selToggle(c.dataset.id); renderCRM(); return; } leadForm(c.dataset.id); });
   bindSelBar(leads.map(l=>l.id), renderCRM, bulkDeleteLeads);
 }
@@ -1356,8 +1359,8 @@ function dealForm(id){
       <div class="fld full"><label>Observações</label><textarea id="df-notes" placeholder="Anotações sobre a negociação…">${esc(d.notes||'')}</textarea><div id="df-note-chips" style="margin-top:6px"></div></div>
     </div>
     <label id="df-paid-wrap" style="display:${d.status===WON()?'flex':'none'};align-items:center;gap:10px;margin-top:12px;padding:11px 13px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:10px;cursor:pointer">
-      <input type="checkbox" id="df-paid" ${d.commissionPaid?'checked':''} style="width:19px;height:19px;accent-color:#10B981;cursor:pointer">
-      <span><span style="font-weight:700;font-size:.84rem;color:#10B981">💰 Comissão paga</span><br><span style="font-size:.7rem;color:var(--t3)">Marque quando a comissão desta venda já tiver sido paga</span></span>
+      <input type="checkbox" id="df-paid" ${d.commissionPaid?'checked':''} ${podeConfirmarPagamento()?'':'disabled'} style="width:19px;height:19px;accent-color:#10B981;cursor:pointer">
+      <span><span style="font-weight:700;font-size:.84rem;color:#10B981">💰 Comissão paga</span><br><span style="font-size:.7rem;color:var(--t3)">${podeConfirmarPagamento()?'Marque quando a comissão desta venda já tiver sido paga':'Só o dono da equipe marca a comissão como paga'}</span></span>
     </label>
     <div style="font-size:.72rem;color:var(--t3);margin-top:10px">
       Criado em ${fmtDate(d.createdAt)}${d.closedAt?' · Fechado em '+fmtDate(d.closedAt):''}
@@ -1473,7 +1476,8 @@ function leadPayUnits(l, chamados, withFollowUp){
 function prospectPayOf(units, g){
   const base = g.payTargetPerDay>0 ? (g.payDayRate||0)/g.payTargetPerDay : 0;
   const buckets=new Map();
-  units.forEach(u=>{ const k=(u.by||'-')+'|'+String(u.date).slice(0,10); if(!buckets.has(k)) buckets.set(k,[]); buckets.get(k).push(u); });
+  // dia de America/Sao_Paulo (antes: String(data).slice(0,10) = dia em UTC, e uma ação depois das 21h caía no dia seguinte)
+  units.forEach(u=>{ const k=(u.by||'-')+'|'+(brDay(u.date)||String(u.date).slice(0,10)); if(!buckets.has(k)) buckets.set(k,[]); buckets.get(k).push(u); });
   let pay=0, bonusDays=0;
   buckets.forEach(list=>{
     const bonus = g.payBonusMinPerDay>0 && g.payBonusRate>0 && list.length>=g.payBonusMinPerDay;
@@ -1597,28 +1601,37 @@ async function fixedMonthClosure(ym){
   else if(!recipient) blockers.push('O destinatário configurado não é membro ativo desta equipe.');
   if(last>=todayBR) blockers.push('O mês ainda não terminou.');
   const log=await loadActivityMonth(ym);
-  let events=[];
+  let events=[], semRespDias={};
   if(log.missing) blockers.push('O registro de ações (migração P-03) não está instalado: sem ele não há contagem confiável de cada chamado e follow-up.');
   else {
     events=log.events;
     if(!log.startedAt || brDay(log.startedAt)>first) blockers.push(`O registro de ações começou em ${log.startedAt?fmtDateOnly(brDay(log.startedAt)):'—'}; este mês não tem registro completo.`);
-    const semResp=events.filter(e=>!e.actor_id && fixoDias.includes(String(e.day_br).slice(0,10))).length;
-    if(semResp) blockers.push(`${semResp} ação(ões) do mês sem responsável identificado (feitas pela extensão sem login). Não dá para saber de quem são.`);
+    // só chamados e follow-ups entram no fixo; os sem responsável (extensão 1.10.4, sem login) ficam
+    // preservados e sinalizados, e só ESTE mês fica pendente — os outros meses fecham normalmente
+    const semResp=events.filter(e=>!e.actor_id && ACOES_FIXO.includes(e.kind) && fixoDias.includes(String(e.day_br).slice(0,10)));
+    semResp.forEach(e=>{ const d=String(e.day_br).slice(0,10); semRespDias[d]=(semRespDias[d]||0)+1; });
   }
   const actionsByDay={}; let chamados=0, followUps=0;
-  events.forEach(e=>{ const d=String(e.day_br).slice(0,10); if(!rid||e.actor_id!==rid||!fixoDias.includes(d)) return; actionsByDay[d]=(actionsByDay[d]||0)+1; if(e.kind==='follow_up') followUps++; else chamados++; });
+  events.forEach(e=>{ const d=String(e.day_br).slice(0,10); if(!ACOES_FIXO.includes(e.kind)||!rid||e.actor_id!==rid||!fixoDias.includes(d)) return; actionsByDay[d]=(actionsByDay[d]||0)+1; if(e.kind==='follow_up') followUps++; else chamados++; });
   const calc=fixedMonthPay({ ym, actionsByDay, monthly:plan.fixed_monthly, target:Number(plan.actions_per_day)||0, eligible:d=>payPlanAt(d).model==='fixo_comissao' });
-  // Comissão: vendas do destinatário até o fim do mês, no modelo fixo, ainda
-  // não pagas nem incluídas num pagamento confirmado (nunca paga duas vezes).
+  // O cálculo só DEPENDE de uma ação sem responsável num dia em que o destinatário ainda
+  // não bateu a meta (a fração do dia vai no máximo a 1). Esses dias deixam o mês pendente;
+  // nos outros, as ações ficam preservadas e sinalizadas, sem mudar o valor.
+  const meta=Number(plan.actions_per_day)||0;
+  const diasDependem=Object.keys(semRespDias).filter(d=>!(meta>0 && (actionsByDay[d]||0)>=meta)).sort();
+  if(diasDependem.length) blockers.push(`${diasDependem.reduce((a,d)=>a+semRespDias[d],0)} ação(ões) sem responsável (extensão 1.10.4, sem login) em ${diasDependem.length} dia(s) em que o destinatário não bateu a meta: ${diasDependem.map(fmtDateOnly).join(', ')}. Decisão necessária: a quem pertencem essas ações. Sem ela, só este mês fica pendente; nenhuma ação é atribuída automaticamente.`);
+  // Comissão: vendas do destinatário DENTRO do mês (dia de Brasília), no modelo fixo,
+  // ainda não pagas nem incluídas num pagamento confirmado (nunca paga duas vezes).
+  // Só do mês: um mês anterior pendente não empurra as vendas dele para este.
   const jaIncluidas=new Set(S.weeklyPayments.flatMap(p=>p.dealIds||[]));
   const vendas=S.deals.filter(d=>d.status===WON() && d.closedAt && rid && d.createdBy===rid && dealFromProspecting(d)
-    && brDay(d.closedAt)<=last && payPlanAt(brDay(d.closedAt)).model==='fixo_comissao' && !d.commissionPaid && !jaIncluidas.has(d.id))
+    && brDay(d.closedAt)>=first && brDay(d.closedAt)<=last && payPlanAt(brDay(d.closedAt)).model==='fixo_comissao' && !d.commissionPaid && !jaIncluidas.has(d.id))
     .map(d=>{ const pl=payPlanAt(brDay(d.closedAt)); return { id:d.id, name:d.leadName||d.leadUsername||d.cardType||'Venda', day:brDay(d.closedAt), card:Number(d.cardValue)||0, rate:Number(pl.commission_rate)||0, value:planCommission(d.cardValue, pl.commission_rate) }; });
   const semValor=vendas.filter(v=>!(v.card>0)).length;
   if(semValor) blockers.push(`${semValor} venda(s) sem o valor do crédito da carta: preencha na negociação antes de fechar o mês.`);
   const commTotal=Math.round(vendas.reduce((a,v)=>a+v.value,0)*100)/100;
   const saved=rid?S.weeklyPayments.find(p=>p.memberId===rid && p.weekStart===first):null;
-  return { applicable:true, ym, first, last, plan, recipientId:rid, recipient, blockers, calc, chamados, followUps,
+  return { applicable:true, ym, first, last, plan, recipientId:rid, recipient, blockers, semRespDias, diasDependem, calc, chamados, followUps,
     actions:chamados+followUps, vendas, commTotal, total:Math.round((calc.fixo+commTotal)*100)/100, saved };
 }
 
@@ -1631,11 +1644,16 @@ const modoConalvo = () => (S.org && S.org.module_id==='prospeccao') ? 'prospecca
 // Ações registradas (P-03/X-01/X-02: chamado, follow-up, respondeu, contato, seguido),
 // com data de Brasília e responsável. Cache por equipe+período; ao chegar, redesenha.
 const EV = { chave:'', estado:'vazio', linhas:[], inicio:null, motivo:'' };
+// Toda escrita em leads passa por aqui: a mudança de etapa gera evento no banco
+// (P-03), então o registro guardado deixa de valer e é lido de novo no próximo desenho.
+function leadsEscrita(){ invalidarRegistro(); return sb.from('leads'); }
+function invalidarRegistro(){ EV.chave=''; }
 function eventosPeriodo(de, ate){
   const org=S.org&&S.org.id; if(!org) return { estado:'pendente', linhas:[], motivo:'Sem equipe.' };
   const chave=org+'|'+de+'|'+ate;
-  if(EV.chave===chave) return EV;
-  Object.assign(EV, { chave, estado:'carregando', linhas:[], inicio:null, motivo:'' });
+  // reaproveita o registro do mesmo período por até 30 s (ações de outras pessoas e da extensão também aparecem)
+  if(EV.chave===chave && (EV.estado==='carregando' || Date.now()-(EV.lidoEm||0)<30000)) return EV;
+  Object.assign(EV, { chave, estado:'carregando', linhas:[], inicio:null, motivo:'', lidoEm:Date.now() });
   (async()=>{
     let lg, ev;
     try{ [lg,ev]=await Promise.all([ sb.from('lead_activity_log').select('started_at').limit(1),
@@ -1644,11 +1662,16 @@ function eventosPeriodo(de, ate){
     if(EV.chave!==chave) return;                                    // trocou de equipe/período no meio
     if(lg.error||ev.error) Object.assign(EV, { estado:'pendente', motivo:'O registro de ações (com data e responsável) ainda não está instalado. Sem ele, chamados, follow-ups, respostas e contatos não podem ser contados com segurança.' });
     else Object.assign(EV, { estado:'ok', linhas:(ev.data||[]).filter(e=>e.org_id===org), inicio:(lg.data&&lg.data[0]&&lg.data[0].started_at)||null, tipos:await tiposRegistrados() });
-    if(S.route==='goals'||S.route==='relatorios') routeRender();
+    if(S.route==='goals'||S.route==='relatorios'||S.route==='dashboard') routeRender();
   })();
   return EV;
 }
 const TIPOS_ACAO=['chamado','follow_up','respondeu','contato','seguido'];
+const ACOES_FIXO=['chamado','follow_up'];
+// Confirmar pagamento / marcar comissão paga: só o dono da equipe aberta ou o superadmin
+// (o banco confere de novo: A-01a, policies de weekly_payments e trava de deals).
+const podeConfirmarPagamento = () => !!(S.profile && (S.profile.org_role==='owner' || S.profile.platform_role==='admin'));
+const SO_DONO_CONFIRMA = '<div class="so-dono-confirma" style="font-size:.76rem;color:var(--t3);padding:10px 12px;border-radius:10px;background:var(--surf2)">Só o dono da equipe confirma pagamentos.</div>';   // ações que contam no modelo fixo (regra de 09/10/2026)
 // Quais ações o banco REGISTRA. Com só a P-03: chamado e follow-up (por
 // trigger, painel e extensão). "Respondeu" e "seguido" só existem com a X-01 e
 // "contato" com a X-02 (RPCs da extensão 1.11 com login). Sem elas, a contagem
@@ -1659,8 +1682,8 @@ async function tiposRegistrados(){
   if(_tiposRegistrados) return _tiposRegistrados;
   const existe=async(t,col)=>{ try{ const r=await sb.from(t).select(col).limit(1); return !r.error || r.error.code==='42501'; }catch(e){ return null; } };
   const [x1,x2]=await Promise.all([existe('ext_action_requests','client_id'), existe('crm_envios','lead_id')]);
-  const tipos=new Set(['chamado','follow_up']);
-  if(x1){ tipos.add('respondeu'); tipos.add('seguido'); }
+  const tipos=new Set(['chamado','follow_up','respondeu']);   // P-03: chamado, follow-up e resposta registrada
+  if(x1) tipos.add('seguido');                                  // X-01: "seguido" marcado na extensão 1.11
   if(x2) tipos.add('contato');
   if(x1!==null && x2!==null) _tiposRegistrados=tipos;            // falha de rede: tenta de novo na próxima carga
   return tipos;
@@ -1679,8 +1702,9 @@ function acoesDoRegistro(from, days, cont){
 
 // "Seguidos" hoje = todo lead cadastrado (não verifica se o perfil foi
 // realmente seguido no Instagram). Critério provisório — rótulo honesto.
-const BASIS_SEGUIDOS_LABEL = 'Leads cadastrados (critério atual de “seguidos”, provisório)';
-const basisLabel = basis => basis==='chamados' ? 'leads chamados' : 'leads cadastrados (critério atual de “seguidos”)';
+// A base 'seguidos' (chave gravada nas metas, não muda) conta lead CADASTRADO: não é a ação de seguir.
+const BASIS_SEGUIDOS_LABEL = 'Leads cadastrados';
+const basisLabel = basis => basis==='chamados' ? 'leads chamados' : 'leads cadastrados';
 
 // Cálculo do valor a pagar na semana ao prospector.
 // Modelo: paga-se "payDayRate" por dia ao prospectar "payTargetPerDay" leads do Instagram.
@@ -1784,12 +1808,9 @@ function renderGoals(){
   }).join('');
 
   // ---- Funil de vendas (contatos, vendas, faturamento, comissão) ----
-  // Contatos: pelo evento "contato" quando o banco o registra (X-02); senão, no Consórcio,
-  // pelas negociações criadas (como antes) e, na Prospecção (sem Negociações), pela
-  // data registrada de entrada em "Enviou contato".
-  const contatosP=cont && evs.tipos && evs.tipos.has('contato') ? cont.total.contato
-    : modoConalvo()==='prospeccao' ? contatosPorEtapa(S.goalsFrom, S.goalsTo, mid)
-    : S.deals.filter(d=>inRange(d.createdAt) && (!mid||d.createdBy===mid)).length;
+  // Contatos = leads que entraram em "Enviou contato" no período, pela data gravada pelo
+  // banco (stage_dates): a mesma fonte do Relatório mensal, para painel, 1.10.4 e 1.11.
+  const contatosP=contatosPorEtapa(S.goalsFrom, S.goalsTo, mid);
   const vendidosP=S.deals.filter(d=>d.status===WON()&&inRange(d.closedAt) && (!mid||d.createdBy===mid));
   const vendasP=vendidosP.length;
   const faturP=vendidosP.reduce((a,d)=>a+(Number(d.cardValue)||0),0);
@@ -2097,7 +2118,7 @@ function renderRelPay(){
       ${fixoPer?fixoAviso:payBreakdownHtml(rep,'rp')}
       ${fixoPer?'':saved
         ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:11px 13px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:10px"><span style="font-weight:700;font-size:.84rem;color:#10B981">✅ Pagamento confirmado</span><span style="font-size:.74rem;color:var(--t3)">${fmtCurrency(saved.total)} · confirmado em ${fmtDate(saved.createdAt)}</span></div>`
-        : `<button class="btn btn-primary" id="rel-pay-confirm" ${rep.total<=0?'disabled':''}>Confirmar pagamento do período (${fmtCurrency(rep.total)})</button>`}
+        : podeConfirmarPagamento() ? `<button class="btn btn-primary" id="rel-pay-confirm" ${rep.total<=0?'disabled':''}>Confirmar pagamento do período (${fmtCurrency(rep.total)})</button>` : SO_DONO_CONFIRMA}
       ${fixoPer?'':`<div style="font-size:.68rem;color:var(--t3);margin-top:10px">Pagamento por ${basisLabel(g.payBasis)}${g.payFollowUp?' + follow-ups':''}${g.payBonusMinPerDay>0&&g.payBonusRate>0?` · bônus de ${fmtCurrency(g.payBonusRate)}/lead a partir de ${g.payBonusMinPerDay} no dia`:''}${g.payRecipientId?` · considera só leads de <b style="color:var(--t2)">${esc(payRecipientName())}</b>`:''} · ajuste em <b>Configurações</b>.</div>`}
     </div>
     <div class="card" style="padding:18px;margin-top:16px">
@@ -2126,6 +2147,7 @@ const JA_CONFIRMADO='Este pagamento já foi confirmado e não pode ser alterado.
 async function confirmWeeklyPayment(ws, we, memberId, rep, btnId='rel-pay-confirm', onDone=renderRelPay){
   const btn=$(btnId); if(btn) btn.disabled=true;
   const falha=m=>{ toast(m,'error'); if(btn) btn.disabled=false; };
+  if(!podeConfirmarPagamento()) return falha('Só o dono da equipe confirma pagamentos.');
   if(periodHasFixedPlan(localIsoDate(ws), localIsoDate(new Date(we-1)))) return falha('Período no modelo fixo + comissão: ele é fechado por mês, em Relatórios → "Fechamento mensal".');
   const weekStart=isoDate(ws);
   if(S.weeklyPayments.some(p=>p.memberId===memberId && p.weekStart===weekStart)) return falha(JA_CONFIRMADO);
@@ -2153,22 +2175,48 @@ async function confirmWeeklyPayment(ws, we, memberId, rep, btnId='rel-pay-confir
 // só deixa confirmar sem nenhum bloqueio (registro de ações completo, todas
 // as ações com responsável, mês encerrado, destinatário definido...).
 let relMensalSeq=0;
+// Meses com modelo fixo, do 1º até o mês atual (no máximo 12, mais recente primeiro).
+function mesesDoFixo(){
+  const planos=(S.payPlans||[]).filter(p=>p.model==='fixo_comissao'); if(!planos.length) return [];
+  const hoje=(brDay(new Date().toISOString())||localIsoDate(new Date())).slice(0,7);
+  let [y,m]=planDate(planos[0]).slice(0,7).split('-').map(Number); const out=[];
+  for(;;){ const ym=`${y}-${String(m).padStart(2,'0')}`; if(ym>hoje) break; out.push(ym); if(++m>12){ m=1; y++; } }
+  return out.reverse().slice(0,12);
+}
+// Situação de cada mês, independente dos outros: confirmado, pronto, pendente (motivo) ou em andamento.
+async function resumoMesesFixo(){
+  const meses=mesesDoFixo();
+  const cs=await Promise.all(meses.map(ym=>fixedMonthClosure(ym)));
+  return meses.map((ym,i)=>{ const c=cs[i];
+    const situacao=!c.applicable?'fora':c.saved?'confirmado':!c.blockers.length?'pronto':c.blockers.some(b=>/ainda não terminou/.test(b))&&c.blockers.length===1?'andamento':'pendente';
+    return { ym, c, situacao }; });
+}
 async function renderRelMensal(){
   const body=$('rel-body'); if(!body) return;
   if(!S.relMonth){ const n=new Date(); const p=new Date(n.getFullYear(), n.getMonth()-1, 1); S.relMonth=`${p.getFullYear()}-${String(p.getMonth()+1).padStart(2,'0')}`; }
   const seq=++relMensalSeq;
   body.innerHTML='<div class="card" style="padding:20px;font-size:.8rem;color:var(--t3)">Calculando o fechamento…</div>';
-  const c=await fixedMonthClosure(S.relMonth);
+  const [c, resumo]=await Promise.all([fixedMonthClosure(S.relMonth), resumoMesesFixo()]);
   if(seq!==relMensalSeq || S.relView!=='mensal') return;          // trocou de mês/aba no meio
+  const ROT_SIT={ confirmado:'Confirmado', pronto:'Pronto para confirmar', pendente:'Pendente', andamento:'Em andamento', fora:'Fora do modelo fixo' };
+  const nomeMes=ym=>{ const [y,m]=ym.split('-'); return new Date(Number(y),Number(m)-1,1).toLocaleDateString('pt-BR',{month:'long',year:'numeric'}); };
+  const resumoHtml=resumo.length?`<div class="card" id="rel-mensal-resumo" style="padding:16px 18px;margin-bottom:14px"><div style="font-weight:800;font-size:.86rem;margin-bottom:8px">Meses do modelo fixo</div>
+    ${resumo.map(r=>`<div class="rel-mes" data-mes="${r.ym}" data-situacao="${r.situacao}" style="display:flex;justify-content:space-between;gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid var(--border);font-size:.76rem;cursor:pointer${r.ym===S.relMonth?';font-weight:700':''}">
+      <span>${esc(nomeMes(r.ym))}</span><span>${ROT_SIT[r.situacao]}${r.situacao==='confirmado'?' · '+fmtCurrency(r.c.saved.total):r.situacao==='pendente'?' · '+esc((r.c.diasDependem&&r.c.diasDependem.length)?'ações sem responsável':'ver motivo'):''}</span></div>`).join('')}
+    <div style="font-size:.7rem;color:var(--t3);margin-top:8px">Cada mês é fechado sozinho: um mês pendente não impede confirmar os outros.</div></div>`:'';
   const head=`<div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px"><div class="fld"><label>Mês</label><input type="month" id="rel-month" value="${esc(S.relMonth)}"></div></div>`;
   if(!c.applicable){
-    body.innerHTML=`<div class="card" style="padding:20px">${head}<div id="rel-mensal-na" style="font-size:.8rem;color:var(--t3)">Neste mês a equipe não estava no modelo fixo + comissão. Use "Pagamento por período".</div></div>`;
+    body.innerHTML=resumoHtml+`<div class="card" style="padding:20px">${head}<div id="rel-mensal-na" style="font-size:.8rem;color:var(--t3)">Neste mês a equipe não estava no modelo fixo + comissão. Use "Pagamento por período".</div></div>`;
   } else {
     const fx=c.calc, nome=c.recipient?memberLabel(c.recipient):'—';
     const dias=fx.days.map(r=>`<tr${r.eligible?'':' style="opacity:.45"'}><td>${fmtDateOnly(r.day)}</td><td>${['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'][new Date(r.day+'T12:00:00Z').getUTCDay()]}</td><td style="text-align:right">${r.eligible?r.actions:'—'}</td><td style="text-align:right">${r.eligible?r.frac.toLocaleString('pt-BR',{maximumFractionDigits:2}):'fora do modelo'}</td></tr>`).join('');
     const vendas=c.vendas.length?c.vendas.map(v=>`<div style="display:flex;justify-content:space-between;gap:10px;font-size:.74rem;padding:5px 0;border-bottom:1px dashed var(--border)"><span>${esc(v.name)} <span style="color:var(--t3)">(${fmtDateOnly(v.day)} · crédito ${fmtCurrency(v.card)})</span></span><b>${fmtCurrency(v.value)}</b></div>`).join(''):'<div style="font-size:.74rem;color:var(--t3)">Nenhuma venda com comissão pendente.</div>';
     const bloqueios=c.blockers.length?`<div id="rel-mensal-bloqueios" style="margin-top:14px;padding:12px 14px;border-radius:10px;border:1px solid rgba(245,158,11,.35);background:rgba(245,158,11,.08);font-size:.76rem;line-height:1.5"><b>Ainda não dá para confirmar:</b><ul style="margin:6px 0 0 18px">${c.blockers.map(b=>`<li>${esc(b)}</li>`).join('')}</ul><div style="color:var(--t3);margin-top:6px">Os valores acima são uma prévia, não um valor a pagar.</div></div>`:'';
-    body.innerHTML=`<div class="card" style="padding:20px" id="rel-mensal" data-fixo="${fx.fixo}" data-comm="${c.commTotal}" data-total="${c.total}" data-bloqueios="${c.blockers.length}">
+    const semRespN=Object.values(c.semRespDias||{}).reduce((a,n)=>a+n,0);
+    const semRespHtml=semRespN?`<div id="rel-mensal-sem-resp" style="margin-top:14px;padding:12px 14px;border-radius:10px;border:1px solid var(--border2);background:var(--surf2);font-size:.74rem;line-height:1.5">
+      <b>${semRespN} ação(ões) sem responsável neste mês</b> (extensão 1.10.4, sem login). Ficam guardadas como foram registradas e <b>não entram no cálculo</b> de ninguém.
+      <div style="margin-top:6px">${Object.keys(c.semRespDias).sort().map(d=>`${fmtDateOnly(d)}: ${c.semRespDias[d]}${c.diasDependem.includes(d)?' <b>(o cálculo depende delas)</b>':' (meta do dia já atingida: não altera o valor)'}`).join(' · ')}</div></div>`:'';
+    body.innerHTML=resumoHtml+`<div class="card" style="padding:20px" id="rel-mensal" data-fixo="${fx.fixo}" data-comm="${c.commTotal}" data-total="${c.total}" data-bloqueios="${c.blockers.length}">
       <div style="font-weight:800;font-size:.95rem;margin-bottom:2px">Fechamento mensal · fixo + comissão</div>
       <div style="font-size:.72rem;color:var(--t3);margin-bottom:12px">Destinatário: <b>${esc(nome)}</b> · ${fmtCurrency(c.plan.fixed_monthly)}/mês ÷ ${fx.weekdays} dias de segunda a sexta = ${fmtCurrency(fx.daily)} por dia · meta ${fmtNum(c.plan.actions_per_day)} ações/dia · comissão ${fmtPct(c.plan.commission_rate)} do crédito</div>
       ${head}
@@ -2182,14 +2230,16 @@ async function renderRelMensal(){
       <details style="margin-bottom:12px"><summary style="cursor:pointer;font-size:.76rem;font-weight:700">Dias de segunda a sexta (${fx.weekdays})</summary>
         <table style="width:100%;font-size:.74rem;margin-top:8px;border-collapse:collapse"><thead><tr style="color:var(--t3);text-align:left"><th>Dia</th><th></th><th style="text-align:right">Ações</th><th style="text-align:right">Fração</th></tr></thead><tbody>${dias}</tbody></table></details>
       <div style="font-size:.76rem;font-weight:700;margin-bottom:4px">Comissões (vendas marcadas como Vendida)</div>${vendas}
+      ${semRespHtml}
       ${bloqueios}
       <div style="margin-top:14px">${c.saved
         ? `<div style="font-weight:700;font-size:.84rem;color:#10B981">✅ Mês confirmado: ${fmtCurrency(c.saved.total)}</div>`
-        : `<button class="btn btn-primary" id="rel-mensal-confirm" ${c.blockers.length||c.total<=0?'disabled':''}>Confirmar fechamento (${fmtCurrency(c.total)})</button>`}</div>
+        : podeConfirmarPagamento() ? `<button class="btn btn-primary" id="rel-mensal-confirm" ${c.blockers.length||c.total<=0?'disabled':''}>Confirmar fechamento (${fmtCurrency(c.total)})</button>` : SO_DONO_CONFIRMA}</div>
     </div>`;
     const cf=$('rel-mensal-confirm'); if(cf&&!c.blockers.length) cf.onclick=()=>confirmFixedMonth(c);
   }
   const mi=$('rel-month'); if(mi) mi.onchange=e=>{ if(/^\d{4}-\d{2}$/.test(e.target.value)){ S.relMonth=e.target.value; renderRelMensal(); } };
+  document.querySelectorAll('.rel-mes[data-mes]').forEach(el=>el.onclick=()=>{ S.relMonth=el.dataset.mes; renderRelMensal(); });
 }
 // Grava o fechamento (imutável, como todo pagamento confirmado): primeiro o
 // pagamento, depois marca as comissões. Recalcula antes de gravar e recusa
@@ -2197,6 +2247,7 @@ async function renderRelMensal(){
 async function confirmFixedMonth(prev){
   const btn=$('rel-mensal-confirm'); if(btn) btn.disabled=true;
   const falha=m=>{ toast(m,'error'); if(btn) btn.disabled=false; };
+  if(!podeConfirmarPagamento()) return falha('Só o dono da equipe confirma pagamentos.');
   const c=await fixedMonthClosure(prev.ym);
   if(!c.applicable || c.blockers.length) return falha('Fechamento com pendências: '+(c.blockers[0]||'modelo não se aplica'));
   if(c.total!==prev.total) return falha('Os números mudaram desde que a tela foi aberta. Confira e tente de novo.');
@@ -2316,7 +2367,17 @@ function renderRelDash(targetId){
   const plLeads=S.leads.filter(l=>(!pipeline||l.pipeline_id===pipeline.id));
   const stageLeads=Object.fromEntries(stages.map(st=>[st.key,
     plLeads.filter(l=>leadReachedStage(l,st.key,pipeline) && inRange(leadStageDate(l,st.key,pipeline)))]));
-  const counts=Object.fromEntries(stages.map(st=>[st.key,stageLeads[st.key].length]));
+  // Etapa de RESPOSTA: só conta resposta REGISTRADA (evento "respondeu" do banco, P-03),
+  // nunca a posição do lead no funil — um lead que pulou a etapa não respondeu. Sem o
+  // registro, a etapa aparece como indisponível (—), sem número estimado.
+  const evR=eventosPeriodo(S.relDashFrom, S.relDashTo);
+  const respDia=new Map();
+  if(evR.estado==='ok') evR.linhas.forEach(e=>{ if(e.kind!=='respondeu'||!e.lead_id) return; const d=String(e.day_br).slice(0,10); if(!respDia.has(e.lead_id)||d<respDia.get(e.lead_id)) respDia.set(e.lead_id,d); });
+  const respIndisp=new Set();
+  stages.forEach(st=>{ if(!etapaDeResposta(st)) return;
+    if(evR.estado!=='ok'){ respIndisp.add(st.key); stageLeads[st.key]=[]; return; }
+    stageLeads[st.key]=plLeads.filter(l=>respDia.has(l.id)); });
+  const counts=Object.fromEntries(stages.map(st=>[st.key,respIndisp.has(st.key)?null:stageLeads[st.key].length]));
   // "Total no período" = leads distintos que entraram em ALGUMA etapa dentro
   // do período (contar cada lead uma vez só, mesmo que ele tenha andado por
   // várias etapas nesse intervalo).
@@ -2325,7 +2386,7 @@ function renderRelDash(targetId){
   // (leadEffectiveDate não serve aqui: pode apontar pra fora do período).
   const inPeriod=new Map();
   stages.forEach(st=>stageLeads[st.key].forEach(l=>{
-    const d=leadStageDate(l,st.key,pipeline);
+    const d=etapaDeResposta(st)&&respDia.has(l.id) ? respDia.get(l.id)+'T12:00:00' : leadStageDate(l,st.key,pipeline);
     const cur=inPeriod.get(l.id);
     if(!cur || new Date(d)<new Date(cur)) inPeriod.set(l.id,d);
   }));
@@ -2339,12 +2400,13 @@ function renderRelDash(targetId){
   leads.forEach(l=>{ const st=l.status||firstKey; if(nowCounts[st]!=null) nowCounts[st]++; });
   const displayCount = key => counts[key]||0;
   const maxC=Math.max(...stages.map(st=>counts[st.key]||0), 1);
+  const displayTxt = key => counts[key]==null ? '—' : counts[key];
   // Cada etapa/o total é clicável — abre a aba Leads já filtrada por ela
   // (e pelo funil escolhido aqui), pra ver a lista de verdade por trás do
   // número. Vale pra qualquer etapa que a equipe tenha cadastrado (não é
   // uma lista fixa: vem de `stages`, que é o funil de verdade da equipe).
   const gostatusAttr = key => `data-gostatus="${esc(key)}" data-gopl="${esc(S.relDashPipelineId||'')}"`;
-  const funnelHtml=stages.map(s=>{ const n=displayCount(s.key), w=Math.round(n/maxC*100); return `<div class="funnel-row rd-clickable" ${gostatusAttr(s.key)}><div class="funnel-lbl"><span class="sdot" style="background:${s.color}"></span>${esc(s.label)}</div><div class="funnel-track"><div class="funnel-fill" style="width:${w}%;background:${s.color};opacity:.82"><span>${n>0?pctOf(n)+'%':''}</span></div></div><div class="funnel-cnt">${n}</div></div>`; }).join('');
+  const funnelHtml=stages.map(s=>{ const n=displayCount(s.key), w=Math.round(n/maxC*100); return `<div class="funnel-row rd-clickable" ${gostatusAttr(s.key)}><div class="funnel-lbl"><span class="sdot" style="background:${s.color}"></span>${esc(s.label)}</div><div class="funnel-track"><div class="funnel-fill" style="width:${w}%;background:${s.color};opacity:.82"><span>${n>0?pctOf(n)+'%':''}</span></div></div><div class="funnel-cnt">${respIndisp.has(s.key)?'—':n}</div></div>`; }).join('');
   const plSel = S.pipelines.length>1 ? `<select class="tbc-inp" id="rd-pipeline" title="Funil">${S.pipelines.map(p=>`<option value="${esc(p.id)}" ${p.id===S.relDashPipelineId?'selected':''}>${esc(p.icon||'📋')} ${esc(p.name)}${p.is_default?' (principal)':''}</option>`).join('')}</select>` : '';
   const fromLbl=fmtDateOnly(S.relDashFrom), toLbl=fmtDateOnly(S.relDashTo);
 
@@ -2360,7 +2422,7 @@ function renderRelDash(targetId){
         <div style="width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,${x.color},${x.color}cc);box-shadow:0 4px 14px ${x.color}55;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:#fff;font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:.82rem">${total?pctOf(x.n)+'%':'—'}</div>
         <div style="flex:1;min-width:0">
           <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(x.label)}</div>
-          <div class="rd-stat-val" data-cnt="${x.n}" style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:1.7rem;line-height:1.25">0</div>
+          <div class="rd-stat-val" ${x.key&&respIndisp.has(x.key)?'data-indisp="1" title="Respostas ainda não são registradas neste banco"':`data-cnt="${x.n}"`} style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:1.7rem;line-height:1.25">${x.key&&respIndisp.has(x.key)?'—':'0'}</div>
         </div>
       </div>
     </div>`).join('');
@@ -2935,7 +2997,7 @@ async function sendLeadToAgendor(id, silent=false){
   if(!map||!map.stageId){
     const msg=`Sem destino no CRM mapeado para a etapa "${stLabel(lead)}" do funil "${tipoLbl}"`;
     lead.agendorStatus='failed'; lead.agendorError=msg;
-    try{ await sb.from('leads').update({ agendor_status:'failed', agendor_error:msg }).eq('org_id',S.org.id).eq('id',id); }catch(e){}
+    try{ await leadsEscrita().update({ agendor_status:'failed', agendor_error:msg }).eq('org_id',S.org.id).eq('id',id); }catch(e){}
     if(!silent){ toast(`Defina o destino no CRM da etapa "${stLabel(lead)}" nas Configurações`,'warn'); S.route='settings'; renderShell(); }
     else if(S.route==='leads'||S.route==='crm') renderShell();
     return;
@@ -2982,12 +3044,12 @@ async function sendLeadToAgendor(id, silent=false){
       }
     }
     const stageWarn = warns.length ? warns.join(' · ') : null;
-    await sb.from('leads').update({ agendor_person_id:personId?String(personId):null, agendor_deal_id:dealId?String(dealId):null, agendor_funnel:map.funnelName, agendor_status:stageWarn?'failed':'ok', agendor_error:stageWarn }).eq('org_id',S.org.id).eq('id',id);
+    await leadsEscrita().update({ agendor_person_id:personId?String(personId):null, agendor_deal_id:dealId?String(dealId):null, agendor_funnel:map.funnelName, agendor_status:stageWarn?'failed':'ok', agendor_error:stageWarn }).eq('org_id',S.org.id).eq('id',id);
     Object.assign(lead,{ agendorPersonId:personId, agendorDealId:dealId, agendorFunnel:map.funnelName, agendorStatus:stageWarn?'failed':'ok', agendorError:stageWarn });
     toast(stageWarn?`Enviado ao CRM, mas com aviso: ${stageWarn}`:`Enviado ao CRM → funil ${map.funnelName}${origin?` · origem ${originName}`:''} ✓`, stageWarn?'warn':'success');
   }catch(err){
     lead.agendorStatus='failed'; lead.agendorError=err.message;
-    try{ await sb.from('leads').update({ agendor_status:'failed', agendor_error:err.message }).eq('org_id',S.org.id).eq('id',id); }catch(e){}
+    try{ await leadsEscrita().update({ agendor_status:'failed', agendor_error:err.message }).eq('org_id',S.org.id).eq('id',id); }catch(e){}
     toast('Falha ao enviar ao CRM: '+err.message,'error'); agendorCorsHint(err.message);
   }
   if(S.route==='leads'||S.route==='crm') renderShell();
@@ -3001,12 +3063,12 @@ async function syncAgendorDealStage(lead){
   if(!map||!map.stageId) return;
   try{
     await agendorSetDealStage(lead.agendorDealId, map, agendorOriginFor(lead));
-    await sb.from('leads').update({ agendor_funnel:map.funnelName, agendor_status:'ok', agendor_error:null }).eq('org_id',S.org.id).eq('id',lead.id);
+    await leadsEscrita().update({ agendor_funnel:map.funnelName, agendor_status:'ok', agendor_error:null }).eq('org_id',S.org.id).eq('id',lead.id);
     Object.assign(lead,{ agendorFunnel:map.funnelName, agendorStatus:'ok', agendorError:null });
   }catch(err){
     console.warn('CRM: PUT de mudança de etapa falhou —',err.message);
     lead.agendorStatus='failed'; lead.agendorError=err.message;
-    try{ await sb.from('leads').update({ agendor_status:'failed', agendor_error:err.message }).eq('org_id',S.org.id).eq('id',lead.id); }catch(e){}
+    try{ await leadsEscrita().update({ agendor_status:'failed', agendor_error:err.message }).eq('org_id',S.org.id).eq('id',lead.id); }catch(e){}
   }
   // Sem isso, o ⚠ de falha (ou o ☁ de sucesso) só aparecia na próxima vez que
   // ALGUMA OUTRA coisa forçasse um re-render — essa função nunca desenhava
@@ -3043,7 +3105,7 @@ function removeLeadFromAgendor(id){
     $('agrm-ok').disabled=true;
     const ok=await deleteFromAgendor(l);
     if(ok){
-      await sb.from('leads').update({ agendor_person_id:null, agendor_deal_id:null, agendor_funnel:null, agendor_status:null }).eq('org_id',S.org.id).eq('id',id);
+      await leadsEscrita().update({ agendor_person_id:null, agendor_deal_id:null, agendor_funnel:null, agendor_status:null }).eq('org_id',S.org.id).eq('id',id);
       Object.assign(l,{ agendorPersonId:null, agendorDealId:null, agendorFunnel:null, agendorStatus:null });
       toast('Removido do CRM — mantido no sistema','success');
     }
@@ -3160,6 +3222,7 @@ function subscribeLeads(){
       // da equipe ATIVA. Cobre evento de outra equipe entregue por engano e
       // callback atrasado de um canal antigo depois da troca de equipe.
       if(!S.org || S.org.id!==channelOrgId) return;
+      invalidarRegistro();   // mudança de lead da equipe (painel, extensão ou outra pessoa): o registro de ações muda
       if(payload.eventType==='DELETE'){
         // Sem REPLICA IDENTITY FULL, o DELETE traz só o id (sem org_id): então
         // só remove um lead que já está carregado nesta equipe.
@@ -3480,6 +3543,32 @@ function notePresetsModal(){
 // Depois de gravar, os cartões chamam renderSettings(), que no painel Conalvo
 // redesenha a seção aberta.
 function renderSettings(){ cartoesConfiguracao(); }
+// Extensão 1.11 (login, ações com data e responsável): o download só aparece quando
+// o banco já tem a base dela (A-01b + X-01 + X-02 → "seguido" e "contato" registrados).
+// Antes disso, a 1.11 não funcionaria: fica só a 1.10.4.
+async function mostrarExtensao111(){
+  const box=$('ext-111'); if(!box) return;
+  const tipos=await tiposRegistrados();
+  if(!$('ext-111')) return;
+  if(!(tipos.has('seguido') && tipos.has('contato'))){
+    box.dataset.estado='indisponivel';
+    box.innerHTML='A nova versão (1.11, com login) ainda não está liberada para esta instalação. Continue usando a 1.10.4.';
+    return;
+  }
+  box.dataset.estado='disponivel';
+  box.innerHTML=`<div style="font-weight:800;font-size:.86rem;margin-bottom:4px">Conalvo 1.11 · nova versão</div>
+    <div style="font-size:.78rem;color:var(--t2);line-height:1.55;margin-bottom:10px">Entra com o seu e-mail e senha do painel (sem código de equipe nem "quem é você"). Chamado, respondeu, follow-up e contato ficam registrados com a data e com quem fez.</div>
+    <a class="btn btn-primary" href="conalvo-extensao-1.11.zip" download>⬇ Baixar a 1.11</a>
+    <ol style="font-size:.78rem;color:var(--t2);line-height:1.6;margin:10px 0 0 18px;padding:0">
+      <li>Baixe e descompacte o arquivo .zip numa pasta que não vai apagar.</li>
+      <li>No Chrome, abra <code>chrome://extensions</code> e ligue o <b>Modo do desenvolvedor</b>.</li>
+      <li>Clique em <b>Carregar sem compactação</b> e escolha a pasta descompactada.</li>
+      <li>Abra o Instagram, clique no painel Conalvo e entre com o e-mail e a senha do painel.</li>
+      <li>Funcionou? Em <code>chrome://extensions</code>, <b>remova a IGProspect 1.10.4</b> (as duas juntas mostram dois painéis).</li>
+      <li>Para atualizar depois: substitua a pasta pelos arquivos novos e clique em <b>Recarregar</b> na extensão.</li>
+    </ol>`;
+  const v=$('ext-1104'), t=v&&v.querySelector('b'); if(t) t.textContent='Versão anterior (1.10.4), só até a migração';
+}
 function cartoesConfiguracao(cards, alvo){
   const quer=k=>!cards||cards.includes(k);
   const owner=S.profile&&S.profile.org_role==='owner';
@@ -3567,14 +3656,10 @@ function cartoesConfiguracao(cards, alvo){
       </div></div>`:''}
     ${quer('extensao')?`<div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(236,72,153,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#F472B6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></div><div><div class="st-title">Extensão do Instagram</div><div class="st-sub">Detecta perfis e adiciona leads direto do Instagram para o seu espaço</div></div></div>
       <div class="stg-bd">
-        <div style="display:flex;gap:8px;flex-wrap:wrap"><a class="btn btn-primary" href="igprospect-extension.zip" download>⬇ Baixar extensão</a></div>
-        <div style="font-size:.8rem;color:var(--t2);margin-top:10px;padding:11px 13px;background:rgba(236,72,153,.08);border:1px solid rgba(236,72,153,.2);border-radius:8px;line-height:1.6">
-          <b>Como instalar (Chrome/Edge):</b><br>
-          1. Baixe e descompacte o arquivo .zip<br>
-          2. Acesse <code>chrome://extensions</code><br>
-          3. Ative o <b>Modo do desenvolvedor</b> (canto superior direito)<br>
-          4. Clique em <b>Carregar sem compactação</b> e selecione a pasta descompactada<br>
-          5. Abra o Instagram — a extensão já aparece nos perfis
+        <div id="ext-111" data-estado="verificando" style="font-size:.8rem;color:var(--t2)">Verificando a versão disponível…</div>
+        <div id="ext-1104" style="margin-top:12px">
+          <div style="font-size:.8rem;color:var(--t2);margin-bottom:8px"><b>Versão atual (1.10.4)</b>: funciona como hoje, pelo código da equipe e "quem é você".</div>
+          <a class="btn btn-outline btn-sm" href="igprospect-extension.zip" download>⬇ Baixar a 1.10.4</a>
         </div>
       </div></div>`:''}
     ${quer('conta')?`<div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(139,92,246,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#C084FC" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></div><div><div class="st-title">Conta</div><div class="st-sub">${esc(S.profile&&S.profile.email||'')}</div></div></div>
@@ -3719,6 +3804,7 @@ function cartoesConfiguracao(cards, alvo){
   });
   $('note-presets-edit')&&($('note-presets-edit').onclick=notePresetsModal);
   $('st-logout')&&($('st-logout').onclick=igpLogout);
+  if($('ext-111')) mostrarExtensao111();
   $('st-name-save')&&($('st-name-save').onclick=async()=>{
     const name=$('st-name').value.trim();
     if(!name){ toast('Digite um nome','error'); return; }
@@ -3868,7 +3954,7 @@ async function importExtensionLeads(incoming){
         const nameIsHandle = !existing.name || exN===exU || exN==='@'+exU || exCorrupted || exGlued || GENERIC_NAMES.has(exN);
         if(raw.name && raw.name.toLowerCase()!==uk && nameIsHandle && raw.name.trim()!==(existing.name||'')) patch.name=raw.name.trim();
         if(Object.keys(patch).length){
-          const { error }=await sb.from('leads').update(patch).eq('org_id',S.org.id).eq('id',existing.id);
+          const { error }=await leadsEscrita().update(patch).eq('org_id',S.org.id).eq('id',existing.id);
           if(!error){ Object.assign(existing,patch); updated++; if(patch.status && isLastStage(patch.status,leadPipeline(existing))) becameContato.push(existing.id); }
         }
         continue;
@@ -3967,7 +4053,7 @@ async function normalizeEmpresarios(){
   const bad=S.leads.filter(l=>l.tipo==='empresario' && STS().includes(l.status));
   if(!bad.length) return;
   const ids=bad.map(l=>l.id);
-  for(let i=0;i<ids.length;i+=200){ const { error }=await sb.from('leads').update({status:'a_contatar'}).eq('org_id',S.org.id).in('id',ids.slice(i,i+200)); if(error){ console.warn('normalizeEmpresarios:',error.message); return; } }
+  for(let i=0;i<ids.length;i+=200){ const { error }=await leadsEscrita().update({status:'a_contatar'}).eq('org_id',S.org.id).in('id',ids.slice(i,i+200)); if(error){ console.warn('normalizeEmpresarios:',error.message); return; } }
   bad.forEach(l=>l.status='a_contatar');
 }
 // Garante que todo empresário tenha uma negociação na aba Negociações

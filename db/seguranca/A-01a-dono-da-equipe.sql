@@ -21,6 +21,12 @@
 --       equipe (ou o superadmin) muda. Membro que reenviar o valor JÁ
 --       gravado passa (aba antiga aberta); valor diferente é recusado.
 --   S4. org_set_pay_recipient(org, id): destinatário do pagamento, só dono.
+--   S5. Confirmar pagamento (INSERT em weekly_payments): só o DONO da equipe
+--       ativa ou o superadmin. Membro continua VENDO os pagamentos; alterar
+--       ou apagar um confirmado já é recusado pela P-01.
+--   S6. Marcar comissão como paga (deals.commission_paid / paid_at): só o
+--       dono daquela equipe ou o superadmin. Editar a negociação sem mexer
+--       nesses dois campos continua liberado para o membro.
 --
 -- Fica de fora (avaliado em db/PUBLICACAO.md): travas de integridade (A2),
 -- RLS de usuário ativo (A3), e-mail na RPC anônima (A4), revogar anon das
@@ -65,6 +71,23 @@ begin
      and cmd = 'UPDATE' and permissive = 'PERMISSIVE' and array(select r::text from unnest(roles) r) = array['public']::text[];
   if v_n <> 1 or v_q is distinct from 'id=my_organdis_activeoris_platform_admin' or v_w <> '' then
     raise exception 'A-01a abortada: orgs_update diferente da produção (USING %, WITH CHECK %, % policies de UPDATE em orgs). Nada foi alterado.', v_q, v_w, v_n;
+  end if;
+
+  -- weekly_payments: uma policy só, a da produção (ALL para membro ativo da equipe aberta)
+  select count(*) into v_n from pg_policies where schemaname = 'public' and tablename = 'weekly_payments';
+  select lower(regexp_replace(coalesce(qual, ''), '[()"''[:space:]]', '', 'g')),
+         lower(regexp_replace(coalesce(with_check, ''), '[()"''[:space:]]', '', 'g'))
+    into v_q, v_w
+    from pg_policies where schemaname = 'public' and tablename = 'weekly_payments' and policyname = 'weekly_payments_org' and cmd = 'ALL';
+  if v_n <> 1 or v_q is distinct from 'org_id=my_organdis_active' or v_w is distinct from 'org_id=my_org' then
+    raise exception 'A-01a abortada: policies de weekly_payments diferentes da produção (USING %, WITH CHECK %, % policies). Nada foi alterado.', v_q, v_w, v_n;
+  end if;
+  if exists (select 1 from pg_trigger where not tgisinternal and tgname = 'deals_comissao_so_dono') or to_regprocedure('public.deals_comissao_so_dono()') is not null then
+    raise exception 'A-01a abortada: trava de comissão já existe';
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'deals' and column_name = 'commission_paid')
+     or not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'deals' and column_name = 'paid_at') then
+    raise exception 'A-01a abortada: falta deals.commission_paid ou deals.paid_at';
   end if;
 end $$;
 
@@ -193,6 +216,37 @@ end; $$;
 revoke execute on function public.org_set_pay_recipient(uuid, text) from public, anon;
 grant  execute on function public.org_set_pay_recipient(uuid, text) to authenticated;
 
+-- --------------------------------------------------------------- S5
+drop policy weekly_payments_org on public.weekly_payments;
+create policy weekly_payments_select on public.weekly_payments for select
+  using (org_id = public.my_org() and public.is_active());
+create policy weekly_payments_insert on public.weekly_payments for insert
+  with check ((org_id = public.my_org() and public.is_org_owner()) or public.is_platform_admin());
+create policy weekly_payments_dono on public.weekly_payments for update
+  using ((org_id = public.my_org() and public.is_org_owner()) or public.is_platform_admin())
+  with check ((org_id = public.my_org() and public.is_org_owner()) or public.is_platform_admin());
+create policy weekly_payments_dono_delete on public.weekly_payments for delete
+  using ((org_id = public.my_org() and public.is_org_owner()) or public.is_platform_admin());
+
+-- --------------------------------------------------------------- S6
+create function public.deals_comissao_so_dono() returns trigger
+language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if tg_op = 'UPDATE' and new.commission_paid is not distinct from old.commission_paid and new.paid_at is not distinct from old.paid_at then return new; end if;
+  if tg_op = 'INSERT' and coalesce(new.commission_paid, false) = false and new.paid_at is null then return new; end if;
+  -- chamada do próprio servidor (sem usuário da API): migrações, scripts do dono do banco
+  if auth.uid() is null and current_user not in ('anon', 'authenticated') then return new; end if;
+  if public.is_platform_admin() or exists (
+       select 1 from public.org_members m join public.profiles p on p.id = m.user_id and p.status = 'active'
+        where m.org_id = new.org_id and m.user_id = auth.uid() and m.role = 'owner') then
+    return new;
+  end if;
+  raise exception 'Só o dono da equipe marca comissão como paga' using errcode = '42501';
+end $$;
+revoke all on function public.deals_comissao_so_dono() from public, anon, authenticated;
+create trigger deals_comissao_so_dono before insert or update on public.deals
+  for each row execute function public.deals_comissao_so_dono();
+
 -- --------------------------------------------------------------- verificação
 do $$
 declare v_bad text;
@@ -208,6 +262,13 @@ begin
    where p.oid is null or not p.prosecdef
       or has_function_privilege('anon', p.oid, 'EXECUTE') or not has_function_privilege('authenticated', p.oid, 'EXECUTE');
   if v_bad is not null then raise exception 'A-01a: função ausente ou com acesso errado: %', v_bad; end if;
+  if (select count(*) from pg_policies where schemaname = 'public' and tablename = 'weekly_payments') <> 4
+     or exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'weekly_payments' and cmd = 'ALL') then
+    raise exception 'A-01a: policies de weekly_payments não ficaram como esperado';
+  end if;
+  if not exists (select 1 from pg_trigger where not tgisinternal and tgname = 'deals_comissao_so_dono') then
+    raise exception 'A-01a: trava de comissão ausente';
+  end if;
 end $$;
 
 commit;
