@@ -1,6 +1,6 @@
 # Conalvo: roteiro único de publicação, transição e reversão
 
-> **Nada disto foi publicado nem aplicado.** Tudo está em commits locais e no staging. Publicar só com autorização explícita, nesta ordem.
+> **PUBLICADO em 13/10/2026** (autorização do dono): site no commit `68c38a6`; migrações aplicadas na produção nesta ordem: E-01 → A-01a → P-03 → P-01 → A-01b → X-01 → **`supabase-agendor-error-column.sql`** → X-02. A X-02 falhou na 1ª tentativa (faltava `leads.agendor_error` na produção, sem nada aplicado) e foi aplicada depois dessa coluna, com autorização. Registro de ações começou em 13/10/2026 18h13 (Brasília). Diagnóstico da faixa de 90: 0 dias afetados. Retrato antes × depois: igual. **C-01a não aplicada** (1.10.4 segue ativa).
 > O pacote está no branch local **`publicacao-conalvo`**, montado a partir do `origin/main` só com os arquivos abaixo.
 
 ## Pacote
@@ -29,7 +29,7 @@ A 1.11 é montada por `node dev/extensao/montar-1.11.js` a partir de `extension-
 | 4 | `db/pagamentos/P-01-modelo-pagamento-e-trava.sql` | Pagamento confirmado imutável; troca de modelo agendada por data |
 | 5 | `db/seguranca/A-01b-extensao-login.sql` | Base da 1.11: `assert_org_member` e as RPCs `ext2_*` com login (recorte da Fase A) |
 | 6 | `db/extensao/X-01-extensao-1-11.sql` | 1.11: lead do perfil aberto, "seguido", ação idempotente (clique repetido, sem duplicar) |
-| 7 | `db/extensao/X-02-paridade-e-crm.sql` | 1.11: Hoje, Leads, Contatos, mudar etapa, notas, "Enviou contato" e CRM com reserva (sem envio duplicado) |
+| 7 | `supabase-agendor-error-column.sql` e depois `db/extensao/X-02-paridade-e-crm.sql` (a X-02 precisa da coluna `leads.agendor_error`, que faltava na produção) | 1.11: Hoje, Leads, Contatos, mudar etapa, notas, "Enviou contato" e CRM com reserva (sem envio duplicado) |
 
 **Não entra agora:**
 - `db/seguranca/C-01a-desligar-extensao-1-10-4.sql`: o desligamento da 1.10.4 é o **último** passo da transição, abaixo;
