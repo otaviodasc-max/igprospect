@@ -1973,8 +1973,10 @@ function goalsForm(){
     <div class="modal-ft"><button class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" id="gf-save">Salvar metas</button></div></div></div>`);
   maskMoneyInput($('gf-revenue')); maskMoneyInput($('gf-commission'));
   $('gf-save').onclick=async()=>{
-    // Financeiro e Ligações (callsWeekly) vão com o valor GRAVADO: salvar metas nunca mexe neles.
-    const newGoals={ ...goalsFinanceiros(g), callsWeekly:g.callsWeekly, contacts:parseInt($('gf-contacts').value)||0,
+    // Só METAS. Pagamento por lead e Ligações (callsWeekly) não vão no objeto: a gravação
+    // é um merge (RPC org_set_goals ou o UPDATE antigo), então ficam como estão gravados.
+    // Com a A-01a, só o dono altera as chaves de pagamento — e isso é em Configurações → Pagamento.
+    const newGoals={ contacts:parseInt($('gf-contacts').value)||0,
       sales:prosp?g.sales:(parseInt($('gf-sales').value)||0), revenue:prosp?g.revenue:(moneyToNumber($('gf-revenue').value)||0), commission:prosp?g.commission:(moneyToNumber($('gf-commission').value)||0),
       leadDailyMin:fixoHoje?g.leadDailyMin:(parseInt($('gf-leadmin').value)||0), leadDailyMax:fixoHoje?g.leadDailyMax:(parseInt($('gf-leadmax').value)||0) };
     $('gf-save').disabled=true;

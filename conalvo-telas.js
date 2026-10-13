@@ -33,6 +33,7 @@
   };
 
   // ── utilidades ──
+  const contaAtual = () => (S.session && S.session.user && S.session.user.id) || null;
   const dono = () => !!(S.profile && S.profile.org_role === 'owner');
   const consorcio = () => modoConalvo() === 'consorcio';
     const membroNome = id => { const m = S.members.find(x => x.id === id); return m ? memberLabel(m) : '—'; };
@@ -501,8 +502,10 @@
     $('cv-cod').onkeydown = e => { if (e.key === 'Enter') entrarComCodigo($('cv-cod'), $('cv-cod-msg')); };
     montarPedidos($('cv-pedidos'));
     const alvo = S.contaAncora && $(S.contaAncora); if (alvo && alvo.scrollIntoView) alvo.scrollIntoView({ block: 'start' });
+    const conta = contaAtual(), equipe = S.org && S.org.id;
     const { data: orgs, error } = await sb.rpc('my_orgs');
-    const box = $('cv-minhas-lista'); if (!box) return;
+    const box = $('cv-minhas-lista'); if (!box || box.isConnected === false) return;
+    if (contaAtual() !== conta || (S.org && S.org.id) !== equipe || S.cfgView !== 'conta') return;   // resposta atrasada
     if (error) { box.className = 'cv-vazio'; box.textContent = 'Não foi possível carregar suas equipes agora.'; return; }
     box.className = '';
     box.innerHTML = listaEquipes(orgs || [], { botao: true });
@@ -585,10 +588,11 @@
     $('content').innerHTML = `<div class="gl">${cabecalho('Administração', 'Equipes da plataforma, pedidos de aprovação e diagnóstico.', true)}
       ${seg([['equipes', 'Equipes'], ['pedidos', 'Pedidos de aprovação'], ['diagnostico', 'Diagnóstico']], S.admView, 'data-admv')}<div id="adm-body"><div class="gl-card cv-carregando">Carregando…</div></div></div>`;
     document.querySelectorAll('[data-admv]').forEach(b => b.onclick = () => { S.admView = b.dataset.admv; telaAdmin(); });
-    const corpo = $('adm-body'), vez = (S.admVez = (S.admVez || 0) + 1);
+    const corpo = $('adm-body'), vez = (S.admVez = (S.admVez || 0) + 1), conta = contaAtual();
     const [orgs, users, peds] = await Promise.all([sb.rpc('admin_orgs'), sb.rpc('admin_users'), sb.rpc('admin_org_requests')]);
-    // resposta de uma carga anterior (trocou de aba ou de tela no meio): não desenha por cima
-    if (vez !== S.admVez || corpo.isConnected === false) return;
+    // resposta atrasada: de uma carga anterior (outra aba da Administração), de outra
+    // sessão (saiu/entrou com outra conta) ou depois de sair da tela — não desenha nada
+    if (vez !== S.admVez || corpo.isConnected === false || contaAtual() !== conta || S.route !== 'admin') return;
     if (orgs.error) { corpo.innerHTML = '<div class="cv-vazio">Área restrita à administração da plataforma.</div>'; return; }
     ({ equipes: admEquipes, pedidos: admPedidos, diagnostico: admDiagnostico }[S.admView] || admPedidos)(corpo, { orgs: orgs.data || [], users: users.data || [], peds: peds.error ? null : (peds.data || []) });
   }
