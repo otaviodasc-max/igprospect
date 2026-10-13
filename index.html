@@ -3,19 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>IGProspect · Sistema</title>
+  <title>Conalvo</title>
   <link rel="manifest" href="manifest.json">
-  <meta name="theme-color" content="#6366F1">
+  <meta name="theme-color" content="#0B0B0C">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="apple-mobile-web-app-title" content="IGProspect">
+  <meta name="apple-mobile-web-app-title" content="Conalvo">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
   <link rel="icon" href="favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="icon-192.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="app.css?v=20260818e">
+  <link rel="stylesheet" href="app.css?v=20261013b">
 </head>
 <body>
   <!-- AUTH -->
@@ -42,8 +42,8 @@
   <div id="app" class="app">
     <aside class="sidebar">
       <div class="s-logo">
-        <div class="logo-ico"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10" r="6"/><line x1="14.8" y1="14.3" x2="20" y2="19.5"/><circle cx="10.5" cy="8.2" r="1.7"/><path d="M7.4 12.7a3.3 3.3 0 0 1 6.2 0"/></svg></div>
-        <div><div class="l1">IGProspect</div><div class="l2">Sistema de Leads</div></div>
+        <div class="logo-ico cv-logo"><img src="conalvo-alvo.png" alt=""></div>
+        <div><div class="l1">Conalvo</div><div class="l2">Prospecção e consórcio</div></div>
       </div>
       <nav class="s-nav" id="s-nav"></nav>
       <div class="s-foot">
@@ -80,8 +80,13 @@
   <!-- ?v= é cache-busting: sem isso o navegador servia o app.js antigo por horas
        depois do deploy, e um recurso novo simplesmente não aparecia na tela.
        Suba o número a cada deploy que mexa em app.js/app.css/modules.js. -->
-  <script src="config.js?v=20261009b"></script>
-  <script src="modules.js?v=20260818e"></script>
-  <script src="app.js?v=20261009b"></script>
+  <script src="config.js?v=20261013b"></script>
+  <script src="modules.js?v=20261013b"></script>
+  <!-- painel Conalvo: conalvo-telas.js (Relatórios, Equipe, Configurações,
+       Administração e telas de acesso) vem ANTES do app.js, que o instala
+       antes do 1º desenho. Publicar os três juntos, com a mesma versão, e
+       junto com as migrações de db/PUBLICACAO.md. -->
+  <script src="conalvo-telas.js?v=20261013b"></script>
+  <script src="app.js?v=20261013b"></script>
 </body>
 </html>

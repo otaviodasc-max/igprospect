@@ -26,10 +26,13 @@ const S = { session:null, profile:null, org:null, route:'dashboard', period:'all
   // Origens ("Origem" do negócio) carregadas do CRM junto com os funis, e a
   // rota/campo que funcionaram nessa instalação — ver loadAgendorOrigins.
   _origins:[], _originsRoute:null, _originField:null,
-  relView:'pay', relMemberId:'', relWeeksBack:12, relQ:'',
+  relView:'pay', relMemberId:'', relWeeksBack:12, relQ:'', relMonth:'',
   relDashFrom:'', relDashTo:'', relDashPipelineId:'', relDashPreset:'',
   relPayFrom:'', relPayTo:'',
-  goalsFrom:'', goalsTo:'', goalsMemberId:'' };
+  goalsFrom:'', goalsTo:'', goalsMemberId:'',
+  // Modelos de pagamento da equipe ativa (org_pay_plans, db/pagamentos/P-01).
+  // null = a migração não existe no banco: tudo segue como hoje (por lead).
+  payPlans:null };
 const PAGE_SIZE = 25;
 // Resolve o módulo de profissão ativo na organização atual (ver modules.js).
 // Serve como PONTO DE PARTIDA ao criar uma org (backfill) e como fallback
@@ -130,6 +133,19 @@ const CONTACT_STAGE_KEYS=['contato','enviou_contato'], CONTACT_STAGE_LABELS=['en
 // "Follow-up" depois de "Enviou Contato", não pode mudar o que conta como
 // conversão). Pipelines 100% customizados sem essa etapa (ex.: "Empresários")
 // caem no fallback de "última etapa do funil".
+// Contatos pela data REGISTRADA de entrada na etapa "Enviou contato" (stage_dates,
+// gravada pelo trigger do banco na 1ª entrada; nunca reconstruída aqui). Usada
+// quando o banco ainda não registra o evento "contato" (X-02): na Prospecção,
+// que não tem Negociações, e no Relatório mensal. `de`/`ate` = AAAA-MM-DD locais.
+function contatosPorEtapa(de, ate, membro){
+  const ini=new Date(de+'T00:00:00'), fim=new Date(ate+'T00:00:00'); fim.setDate(fim.getDate()+1);
+  return S.leads.filter(l=>{
+    if((l.tipo||'comum')==='empresario' || (membro && l.createdBy!==membro)) return false;
+    const st=stagesOf(leadPipeline(l)).find(x=>CONTACT_STAGE_KEYS.includes(x.key)||CONTACT_STAGE_LABELS.includes(normLabel(x.label)));
+    const d=st && l.stageDates && l.stageDates[st.key] && new Date(l.stageDates[st.key]);
+    return d && !isNaN(d) && d>=ini && d<fim;
+  }).length;
+}
 function isLastStage(status, pipeline){
   const stages=STS(pipeline); if(!stages.length) return false;
   const full=stagesOf(pipeline);
@@ -407,111 +423,18 @@ function traduzErro(m){
 /* =====================================================================
    ONBOARDING
 ===================================================================== */
-// Questionário que escolhe o Módulo de Profissão (ver modules.js) para a
-// nova organização. Regras fixas, sem IA: cada opção soma pontos por
-// módulo, o maior total vence (empate cai em 'consorcio', 1º da ordem).
-const QUIZ = [
-  { id:'q1', weight:3, label:'O que você vende ou oferece?', options:[
-    { key:'a', label:'Cartas de consórcio (imóvel, veículo, investimento)', points:{consorcio:3} },
-    { key:'b', label:'Imóveis (compra, venda, aluguel)', points:{imoveis:3} },
-    { key:'c', label:'Seguros (auto, vida, residencial, saúde...)', points:{seguros:3} },
-    { key:'d', label:'Software, assinatura ou curso/infoproduto', points:{saas:3} },
-    { key:'e', label:'Outro', points:{consorcio:1,imoveis:1,seguros:1,saas:1} },
-  ]},
-  { id:'q2', weight:1, label:'Qual sua principal fonte de leads?', options:[
-    { key:'a', label:'Instagram / redes sociais (prospecção ativa)', points:{consorcio:2,imoveis:1,seguros:1,saas:1} },
-    { key:'b', label:'Indicação e carteira de clientes', points:{imoveis:2,seguros:2} },
-    { key:'c', label:'Site, anúncios pagos, inbound', points:{saas:2,imoveis:1} },
-    { key:'d', label:'Portais especializados (ex.: Zap Imóveis, comparadores)', points:{imoveis:2,seguros:2} },
-  ]},
-  { id:'q3', weight:1, label:'Quanto tempo dura, em média, do primeiro contato até fechar?', options:[
-    { key:'a', label:'Menos de 1 semana', points:{seguros:2,saas:1} },
-    { key:'b', label:'1 a 4 semanas', points:{consorcio:1,seguros:1,imoveis:1,saas:2} },
-    { key:'c', label:'1 a 3 meses', points:{consorcio:2,imoveis:2} },
-    { key:'d', label:'Mais de 3 meses', points:{imoveis:2,saas:1} },
-  ]},
-  { id:'q4', weight:1, label:'Como você chama o resultado final de uma venda fechada?', options:[
-    { key:'a', label:'Uma carta contemplada/vendida', points:{consorcio:3} },
-    { key:'b', label:'Um imóvel vendido ou alugado', points:{imoveis:3} },
-    { key:'c', label:'Uma apólice emitida', points:{seguros:3} },
-    { key:'d', label:'Um contrato assinado / cliente ativo', points:{saas:3} },
-  ]},
-];
-function scoreModule(answers){
-  const order=window.IGP_MODULE_ORDER||['consorcio'];
-  const totals={}; order.forEach(m=>totals[m]=0);
-  QUIZ.forEach(q=>{ const opt=q.options.find(o=>o.key===answers[q.id]); if(!opt) return;
-    for(const m in opt.points){ if(totals[m]!=null) totals[m]+=opt.points[m]*q.weight; } });
-  let best=order[0], bestScore=-1;
-  order.forEach(m=>{ if(totals[m]>bestScore){ best=m; bestScore=totals[m]; } });
-  return { moduleId:best, totals };
-}
+// Sem equipe: só ENTRAR por código. Equipe nova é pedida em Minha conta e
+// criada pela administração Conalvo (E-01: create_org recusa usuário comum).
+// conalvo-telas.js troca esta tela pela versão completa (código ou pedido);
+// esta é só a reserva, sem nenhum caminho para criar equipe.
 function renderOnboard(){
   $('auth').classList.add('hidden'); $('app').classList.remove('show'); $('onboard').classList.remove('hidden');
   $('onboard-card').innerHTML=`
-    <div class="auth-logo"><div class="logo-ico"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></div><div><div class="l1">Seu espaço</div><div class="l2">Onde seus leads ficam</div></div></div>
-    <div class="auth-h">Bem-vindo!</div>
-    <div class="auth-sub">Crie um espaço novo (você vira o dono) ou entre num existente com o código de convite.</div>
-    <div class="seg"><button class="active" id="sg-new">Criar espaço</button><button id="sg-join">Entrar por código</button></div>
-    <div id="ob-body"></div>
+    <div class="auth-h">Você ainda não está em uma equipe</div>
+    <div class="auth-sub">Entre com o código de convite que você recebeu. Para pedir uma equipe nova, use Minha conta.</div>
+    <div id="ob-body"><div class="field"><label>Código de convite</label><input class="inp" id="ob-code" placeholder="Ex.: 7K2P9X" style="text-transform:uppercase"></div><button class="btn-block" id="ob-go">Entrar na equipe</button></div>
     <div class="auth-err" id="ob-err"></div>`;
-  let mode='new', orgName='';
-  const body=()=>{ $('ob-body').innerHTML = mode==='new'
-    ? `<div class="field"><label>Nome do espaço</label><input class="inp" id="ob-name" placeholder="Ex.: Equipe da Chefe" value="${esc(orgName)}"></div><button class="btn-block" id="ob-go">Continuar</button>`
-    : `<div class="field"><label>Código de convite</label><input class="inp" id="ob-code" placeholder="Ex.: 7K2P9X" style="text-transform:uppercase"></div><button class="btn-block" id="ob-go">Entrar no espaço</button>`;
-    $('ob-go').onclick = mode==='new' ? (()=>{ orgName=$('ob-name').value.trim()||'Meu espaço'; renderModuleQuiz(orgName); }) : doJoinOrg;
-  };
-  $('sg-new').onclick=()=>{ mode='new'; $('sg-new').classList.add('active'); $('sg-join').classList.remove('active'); body(); };
-  $('sg-join').onclick=()=>{ mode='join'; $('sg-join').classList.add('active'); $('sg-new').classList.remove('active'); body(); };
-  body();
-}
-// Tela 2 do onboarding: questionário de 1 pergunta por vez que escolhe o
-// Módulo de Profissão da nova organização.
-function renderModuleQuiz(orgName, step=0, answers={}){
-  const total=QUIZ.length;
-  if(step>=total){ renderModuleResult(orgName, answers); return; }
-  const q=QUIZ[step];
-  const dots=Array.from({length:total},(_,i)=>`<span style="width:6px;height:6px;border-radius:50%;background:${i<=step?'var(--p)':'var(--surf3)'}"></span>`).join('');
-  $('onboard-card').innerHTML=`
-    <div class="auth-logo"><div class="logo-ico"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></div><div><div class="l1">${esc(orgName)}</div><div class="l2">Pergunta ${step+1} de ${total}</div></div></div>
-    <div style="display:flex;gap:5px;margin:4px 0 16px">${dots}</div>
-    <div class="auth-h" style="font-size:1.05rem">${esc(q.label)}</div>
-    <div id="quiz-opts" style="display:flex;flex-direction:column;gap:8px;margin-top:12px">
-      ${q.options.map(o=>`<button class="btn btn-outline" style="text-align:left;justify-content:flex-start" data-opt="${o.key}">${esc(o.label)}</button>`).join('')}
-    </div>
-    <div style="display:flex;justify-content:space-between;margin-top:16px">
-      <button class="btn btn-outline btn-sm" id="quiz-back">${step===0?'Voltar':'‹ Anterior'}</button>
-      <button class="btn btn-outline btn-sm" id="quiz-skip">Pular por enquanto</button>
-    </div>`;
-  $('quiz-opts').onclick=e=>{ const b=e.target.closest('[data-opt]'); if(!b)return; renderModuleQuiz(orgName, step+1, { ...answers, [q.id]:b.dataset.opt }); };
-  $('quiz-back').onclick=()=> step===0 ? renderOnboard() : renderModuleQuiz(orgName, step-1, answers);
-  $('quiz-skip').onclick=()=> doCreateOrg(orgName, 'consorcio', answers);
-}
-// Tela 3: mostra o módulo escolhido pelo questionário, com opção de trocar
-// manualmente antes de confirmar a criação do espaço.
-function renderModuleResult(orgName, answers){
-  const { moduleId }=scoreModule(answers);
-  const order=window.IGP_MODULE_ORDER||['consorcio'];
-  const render=sel=>{
-    const m=window.IGP_MODULES[sel];
-    $('onboard-card').innerHTML=`
-      <div class="auth-logo"><div class="logo-ico"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></div><div><div class="l1">${esc(orgName)}</div><div class="l2">Módulo sugerido</div></div></div>
-      <div class="auth-h">${m.icon} Achamos que seu negócio é: ${esc(m.name)}</div>
-      <div class="auth-sub">O sistema já vem configurado com o funil, os termos e os campos certos para ${esc(m.name)}. Você pode trocar isso depois em Configurações.</div>
-      <div class="field"><label>Não é bem isso? Escolha manualmente</label><select class="inp" id="mq-sel">${order.map(id=>`<option value="${id}" ${id===sel?'selected':''}>${window.IGP_MODULES[id].icon} ${window.IGP_MODULES[id].name}</option>`).join('')}</select></div>
-      <button class="btn-block" id="mq-go">Confirmar e criar espaço</button>
-      <div class="auth-err" id="ob-err"></div>`;
-    $('mq-sel').onchange=e=>render(e.target.value);
-    $('mq-go').onclick=()=>doCreateOrg(orgName, $('mq-sel').value, answers);
-  };
-  render(moduleId);
-}
-async function doCreateOrg(orgName, moduleId, answers){
-  const btn=$('mq-go')||$('quiz-skip'); if(btn) btn.disabled=true;
-  const { data:orgId, error }=await sb.rpc('create_org',{ p_name:orgName||'Meu espaço', p_module_id:moduleId||'consorcio' });
-  if(error){ if($('ob-err')){ $('ob-err').textContent=error.message; $('ob-err').classList.add('show'); } if(btn) btn.disabled=false; return; }
-  if(orgId && answers && Object.keys(answers).length) await sb.from('orgs').update({ module_answers:answers }).eq('id',orgId);
-  toast('Espaço criado!','success'); await boot();
+  $('ob-go').onclick=doJoinOrg;
 }
 async function doJoinOrg(){ const code=$('ob-code').value.trim(); if(!code) return; $('ob-go').disabled=true; const { error }=await sb.rpc('join_org',{ p_code:code }); if(error){ $('ob-err').textContent='Código inválido.'; $('ob-err').classList.add('show'); $('ob-go').disabled=false; return; } toast('Você entrou no espaço!','success'); await boot(); }
 
@@ -603,6 +526,9 @@ async function loadOrgConfig(){ await Promise.all([loadPipelines(), loadNiches()
 // Membros ativos na organização atual (aba Relatórios — pagamento por pessoa)
 // e histórico de pagamentos semanais já confirmados (nunca some da tela).
 async function loadMembers(){ if(!S.org) return; const { data, error }=await sb.from('profiles').select('id,name,email,org_role').eq('org_id',S.org.id).order('name'); if(error){ S.members=[]; return; } S.members=data||[]; }
+// Sem a P-01 a tabela não existe e a consulta falha: S.payPlans fica null e
+// a equipe continua no pagamento por lead, exatamente como hoje.
+async function loadPayPlans(){ if(!S.org){ S.payPlans=null; return; } const { data, error }=await sb.from('org_pay_plans').select('*').eq('org_id',S.org.id).order('effective_from',{ascending:true}); S.payPlans=error?null:(data||[]).filter(p=>p.org_id===S.org.id); }
 async function loadWeeklyPayments(){ const { data, error }=await sb.from('weekly_payments').select('*').eq('org_id',S.org.id).order('week_start',{ascending:false}); if(error){ S.weeklyPayments=[]; return; } S.weeklyPayments=(data||[]).map(weeklyPaymentFromRow); }
 
 /* =====================================================================
@@ -828,8 +754,6 @@ function renderLeads(){
   const soOpts=[['newest','Mais recentes'],['oldest','Mais antigos'],['name','Nome A–Z']].map(([v,l])=>`<option value="${v}" ${S.lf.sort===v?'selected':''}>${l}</option>`).join('');
   const periodLeads=inPeriod(S.leads,S.period); const nIn=periodLeads.filter(l=>!!l.agendorPersonId).length; const nOut=periodLeads.length-nIn;
   const agSegs=[['','Todos',periodLeads.length],['in','☁ No CRM',nIn],['out','Fora do CRM',nOut]].map(([v,l,n])=>`<div class="period-tab${S.lf.ag===v?' active':''}" data-leadag="${v}">${l} <span style="opacity:.6">(${n})</span></div>`).join('');
-  const NOTE_PRESETS=['Perdido','Sem interesse','Sem retorno'];
-  const noteChips=NOTE_PRESETS.map(t=>`<div class="period-tab${(S.lf.note||'').toLowerCase()===t.toLowerCase()?' active':''}" data-note="${esc(t)}">${t}</div>`).join('');
   $('content').innerHTML=`<div class="tbl-controls" style="margin-bottom:10px"><div class="period-tabs" id="leads-ag-tabs">${agSegs}</div></div><div class="tbl-controls">
     <div class="search-wrap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input class="search-inp" id="ls-q" placeholder="Buscar por nome, @usuário, nicho…" value="${esc(S.lf.q)}"></div>
     <select class="flt-sel" id="ls-status">${stOpts}</select><select class="flt-sel" id="ls-tipo">${tpOpts}</select><select class="flt-sel" id="ls-niche">${niOpts}</select><select class="flt-sel" id="ls-sort">${soOpts}</select>
@@ -844,8 +768,7 @@ function renderLeads(){
       </div>
     </div>`:''}
     <div class="tbl-controls" style="margin-bottom:10px">
-      <div class="search-wrap" style="flex:0 1 260px;min-width:150px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg><input class="search-inp" id="ls-note" placeholder="Filtrar por nota (ex.: perdido)…" value="${esc(S.lf.note)}"></div>
-      <div class="period-tabs" id="leads-note-chips">${noteChips}</div>
+      <div class="search-wrap" style="flex:0 1 260px;min-width:150px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg><input class="search-inp" id="ls-note" placeholder="Filtrar por nota…" value="${esc(S.lf.note)}"></div>
       ${S.lf.note?`<button class="btn btn-outline" id="ls-note-clear"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Limpar nota</button>`:''}
     </div>
     <div class="card"><div class="res-bar"><span>${all.length>0?`<strong>${from}–${to}</strong> de <strong>${all.length}</strong> leads`:'<strong>0</strong> leads'}</span><span style="color:var(--t3)">${S.leads.length} no total</span></div>
@@ -853,7 +776,6 @@ function renderLeads(){
     ${pages>1?`<div class="pagination"><span>${all.length} leads</span><div class="pag-btns" id="pag-btns">${pag}</div></div>`:''}</div>`;
   $('ls-q').oninput=e=>{ S.lf.q=e.target.value; S.lf.page=1; renderLeads(); refocus('ls-q'); };
   $('ls-note').oninput=e=>{ S.lf.note=e.target.value; S.lf.page=1; renderLeads(); refocus('ls-note'); };
-  $('leads-note-chips').onclick=e=>{ const t=e.target.closest('[data-note]'); if(!t)return; const v=t.dataset.note; S.lf.note=(S.lf.note||'').toLowerCase()===v.toLowerCase()?'':v; S.lf.page=1; renderLeads(); };
   $('ls-note-clear')&&($('ls-note-clear').onclick=()=>{ S.lf.note=''; S.lf.page=1; renderLeads(); });
   $('leads-ag-tabs').onclick=e=>{ const t=e.target.closest('[data-leadag]'); if(!t)return; S.lf.ag=t.dataset.leadag; S.lf.page=1; renderLeads(); };
   $('leads-stage-bulk')&&($('leads-stage-bulk').onclick=e=>{ const b=e.target.closest('[data-bulkstage]'); if(!b)return; const v=b.dataset.bulkstage; bulkSetLeadsStage(v==='last'?'last':parseInt(v)); });
@@ -1578,6 +1500,188 @@ function prospectReport(inW, memberId){
   return { prospectLeads:units.length-followUps, followUps, prospectUnits:units.length, prospectPay:pay, perLead, bonusDays, payBasis:g.payBasis };
 }
 
+/* ---- Modelo de pagamento por equipe -----------------------------------
+   'por_lead'      = o modelo de hoje (taxa por lead/ação, faixa opcional),
+                     com os valores de orgs.settings.goals.
+   'fixo_comissao' = fixo mensal + comissão sobre o crédito da carta vendida,
+                     com meta de atividade em ações/dia.
+   O modelo vale A PARTIR de effective_from (data local) e nunca para trás.
+   Equipe sem plano gravado = 'por_lead' (legacy), sem mudança nenhuma. */
+const planDate = p => String(p&&p.effective_from||'').slice(0,10);
+function payPlanAt(dayStr){
+  let cur=null;
+  for(const p of (S.payPlans||[])){ if(planDate(p)<=dayStr && (!cur||planDate(p)>=planDate(cur))) cur=p; }
+  return cur || { model:'por_lead', legacy:true };
+}
+function periodHasFixedPlan(fromStr, toStr){
+  if(payPlanAt(fromStr).model==='fixo_comissao') return true;
+  return (S.payPlans||[]).some(p=>p.model==='fixo_comissao' && planDate(p)>fromStr && planDate(p)<=toStr);
+}
+function nextScheduledPlan(){ const t=localIsoDate(new Date()); return (S.payPlans||[]).find(p=>planDate(p)>t)||null; }
+// Comissão do modelo fixo: valor do crédito da carta × taxa (0.001 = 0,1%).
+// R$ 360.000 × 0,1% = R$ 360,00. Arredonda em centavos.
+const planCommission = (cardValue, rate) => Math.round((Number(cardValue)||0)*(Number(rate)||0)*100)/100;
+// "0,1" e "0.1" = 0,1%. Com vírgula, ela é o decimal e pontos são milhar.
+const parsePct = v => { const t=String(v==null?'':v).trim(); return parseFloat(t.includes(',')?t.replace(/\./g,'').replace(',','.'):t); };
+const fmtPct = rate => (Number(rate)*100).toLocaleString('pt-BR',{maximumFractionDigits:4})+'%';
+// Ações de prospecção = chamados + follow-ups (a mesma unidade do pagamento
+// por lead: leadPayUnits com base "chamados" e follow-ups ligados), contadas
+// por dia LOCAL. 60 chamados + 10 follow-ups no mesmo dia = 70 ações.
+function activityByDay(from, days, memberId){
+  const starts=Array.from({length:days+1},(_,i)=>{ const d=new Date(from); d.setDate(d.getDate()+i); return d; });
+  const perDay=Array.from({length:days},(_,i)=>({ date:starts[i], chamados:0, followUps:0, total:0 }));
+  S.leads.forEach(l=>{
+    if((l.tipo||'comum')==='empresario') return;
+    if(memberId && l.createdBy!==memberId) return;
+    leadPayUnits(l, true, true).forEach(u=>{
+      const t=new Date(u.date); if(isNaN(t)) return;
+      for(let i=0;i<days;i++){ if(t>=starts[i] && t<starts[i+1]){ const b=perDay[i]; if(u.kind==='followup') b.followUps++; else b.chamados++; b.total++; break; } }
+    });
+  });
+  return { perDay, total:perDay.reduce((a,b)=>a+b.total,0), chamados:perDay.reduce((a,b)=>a+b.chamados,0), followUps:perDay.reduce((a,b)=>a+b.followUps,0) };
+}
+/* ---- Fechamento mensal do modelo fixo + comissão (regra de 09/10/2026) ----
+   • Destinatário: o "Quem deve receber o valor" da equipe (payRecipientId).
+   • Atividade: chamados + follow-ups REGISTRADOS por esse destinatário no
+     registro de ações do banco (P-03: um evento por ação, com dia de Brasília
+     e responsável). Nunca pelas etapas do funil (stage_dates), que não
+     guardam follow-ups repetidos nem quem fez.
+   • Dias: segunda a sexta do mês, pela data de Brasília.
+   • Valor diário = fixo mensal ÷ dias de segunda a sexta do mês.
+   • Fração do dia = mín(1, ações do dia ÷ meta): 35/70 = 0,5; 70+ = 1; 0 = 0.
+   • Fixo = valor diário × Σ frações, no máximo o fixo mensal; centavos no fim.
+   • Comissão: 0,1% do crédito da carta, devida quando a negociação originada
+     pela prospecção é marcada como Vendida; separada do fixo e das 70 ações.
+   • Bônus adicional: indefinido, não calculado. */
+const BR_DAY_FMT = new Intl.DateTimeFormat('en-CA',{ timeZone:'America/Sao_Paulo', year:'numeric', month:'2-digit', day:'2-digit' });
+// Dia de Brasília (AAAA-MM-DD) de um instante, qualquer que seja o fuso do aparelho.
+const brDay = iso => { if(!iso) return null; const d=new Date(iso); return isNaN(d)?null:BR_DAY_FMT.format(d); };
+const ymLastDay = ym => { const [y,m]=ym.split('-').map(Number); return `${ym}-${String(new Date(Date.UTC(y,m,0)).getUTCDate()).padStart(2,'0')}`; };
+function weekdaysOfMonth(ym){
+  const [y,m]=ym.split('-').map(Number), n=new Date(Date.UTC(y,m,0)).getUTCDate(), out=[];
+  for(let d=1;d<=n;d++){ const wd=new Date(Date.UTC(y,m-1,d)).getUTCDay(); if(wd>=1&&wd<=5) out.push(`${ym}-${String(d).padStart(2,'0')}`); }
+  return out;
+}
+// `eligible(dia)`: o dia conta para o fixo (ex.: modelo fixo já vigente nele).
+// Dia fora disso tem fração 0, mas o valor diário continua sendo o do mês
+// inteiro — é assim que um mês incompleto paga proporcionalmente.
+function fixedMonthPay({ ym, actionsByDay, monthly, target, eligible=()=>true }){
+  const dias=weekdaysOfMonth(ym), daily=dias.length?Number(monthly)/dias.length:0;
+  const rows=dias.map(day=>{ const ok=!!eligible(day), actions=ok?(actionsByDay[day]||0):0; return { day, eligible:ok, actions, frac:ok&&target>0?Math.min(1,actions/target):0 }; });
+  const fracSum=rows.reduce((a,r)=>a+r.frac,0);
+  return { days:rows, weekdays:dias.length, daily, fracSum, fixo:Math.round(Math.min(Number(monthly), daily*fracSum)*100)/100 };
+}
+// Negociação originada pela prospecção = tem lead de origem e ele não é do
+// funil de Empresários. Critério num lugar só, fácil de ajustar.
+const dealFromProspecting = d => { if(!d||!d.leadId) return false; const l=S.leads.find(x=>x.id===d.leadId); return !!l && (l.tipo||'comum')!=='empresario'; };
+// Lê o registro de ações do mês (P-03). { missing:true } se não estiver instalado.
+async function loadActivityMonth(ym){
+  const [lg, ev]=await Promise.all([
+    sb.from('lead_activity_log').select('started_at').limit(1),
+    sb.from('lead_activity_events').select('id,org_id,lead_id,kind,day_br,actor_id').eq('org_id',S.org.id).gte('day_br',ym+'-01').lte('day_br',ymLastDay(ym)),
+  ]);
+  if(lg.error||ev.error) return { missing:true };
+  return { startedAt:(lg.data&&lg.data[0]&&lg.data[0].started_at)||null, events:(ev.data||[]).filter(e=>e.org_id===S.org.id) };
+}
+// Tudo o que o fechamento de um mês precisa, e por que ele pode NÃO ser
+// confirmável (bloqueios). Nada aqui grava.
+async function fixedMonthClosure(ym){
+  const first=ym+'-01', last=ymLastDay(ym), todayBR=brDay(new Date().toISOString());
+  const dias=weekdaysOfMonth(ym), fixoDias=dias.filter(d=>payPlanAt(d).model==='fixo_comissao');
+  if(!fixoDias.length) return { applicable:false };
+  const planos=[...new Set(fixoDias.map(d=>payPlanAt(d)))], plan=planos[planos.length-1];
+  const blockers=[];
+  if(planos.length>1) blockers.push('Há mais de um modelo fixo vigente neste mês.');
+  const rid=getGoals().payRecipientId, recipient=rid?S.members.find(m=>m.id===rid):null;
+  if(!rid) blockers.push('Defina o destinatário do pagamento (Configurações → "Quem deve receber o valor").');
+  else if(!recipient) blockers.push('O destinatário configurado não é membro ativo desta equipe.');
+  if(last>=todayBR) blockers.push('O mês ainda não terminou.');
+  const log=await loadActivityMonth(ym);
+  let events=[];
+  if(log.missing) blockers.push('O registro de ações (migração P-03) não está instalado: sem ele não há contagem confiável de cada chamado e follow-up.');
+  else {
+    events=log.events;
+    if(!log.startedAt || brDay(log.startedAt)>first) blockers.push(`O registro de ações começou em ${log.startedAt?fmtDateOnly(brDay(log.startedAt)):'—'}; este mês não tem registro completo.`);
+    const semResp=events.filter(e=>!e.actor_id && fixoDias.includes(String(e.day_br).slice(0,10))).length;
+    if(semResp) blockers.push(`${semResp} ação(ões) do mês sem responsável identificado (feitas pela extensão sem login). Não dá para saber de quem são.`);
+  }
+  const actionsByDay={}; let chamados=0, followUps=0;
+  events.forEach(e=>{ const d=String(e.day_br).slice(0,10); if(!rid||e.actor_id!==rid||!fixoDias.includes(d)) return; actionsByDay[d]=(actionsByDay[d]||0)+1; if(e.kind==='follow_up') followUps++; else chamados++; });
+  const calc=fixedMonthPay({ ym, actionsByDay, monthly:plan.fixed_monthly, target:Number(plan.actions_per_day)||0, eligible:d=>payPlanAt(d).model==='fixo_comissao' });
+  // Comissão: vendas do destinatário até o fim do mês, no modelo fixo, ainda
+  // não pagas nem incluídas num pagamento confirmado (nunca paga duas vezes).
+  const jaIncluidas=new Set(S.weeklyPayments.flatMap(p=>p.dealIds||[]));
+  const vendas=S.deals.filter(d=>d.status===WON() && d.closedAt && rid && d.createdBy===rid && dealFromProspecting(d)
+    && brDay(d.closedAt)<=last && payPlanAt(brDay(d.closedAt)).model==='fixo_comissao' && !d.commissionPaid && !jaIncluidas.has(d.id))
+    .map(d=>{ const pl=payPlanAt(brDay(d.closedAt)); return { id:d.id, name:d.leadName||d.leadUsername||d.cardType||'Venda', day:brDay(d.closedAt), card:Number(d.cardValue)||0, rate:Number(pl.commission_rate)||0, value:planCommission(d.cardValue, pl.commission_rate) }; });
+  const semValor=vendas.filter(v=>!(v.card>0)).length;
+  if(semValor) blockers.push(`${semValor} venda(s) sem o valor do crédito da carta: preencha na negociação antes de fechar o mês.`);
+  const commTotal=Math.round(vendas.reduce((a,v)=>a+v.value,0)*100)/100;
+  const saved=rid?S.weeklyPayments.find(p=>p.memberId===rid && p.weekStart===first):null;
+  return { applicable:true, ym, first, last, plan, recipientId:rid, recipient, blockers, calc, chamados, followUps,
+    actions:chamados+followUps, vendas, commTotal, total:Math.round((calc.fixo+commTotal)*100)/100, saved };
+}
+
+// ── Conalvo: modo da equipe e registro de ações (fonte única de Metas e Relatórios) ──
+// Modo = só apresentação: 'consorcio' quando o módulo é consorcio; qualquer outro
+// aparece como Prospecção. Nada é reclassificado no banco.
+// Prospecção só para equipe criada como tipo 'prospeccao'. Qualquer outro
+// módulo (consorcio, imoveis…) segue como está: nenhuma equipe é reclassificada.
+const modoConalvo = () => (S.org && S.org.module_id==='prospeccao') ? 'prospeccao' : 'consorcio';
+// Ações registradas (P-03/X-01/X-02: chamado, follow-up, respondeu, contato, seguido),
+// com data de Brasília e responsável. Cache por equipe+período; ao chegar, redesenha.
+const EV = { chave:'', estado:'vazio', linhas:[], inicio:null, motivo:'' };
+function eventosPeriodo(de, ate){
+  const org=S.org&&S.org.id; if(!org) return { estado:'pendente', linhas:[], motivo:'Sem equipe.' };
+  const chave=org+'|'+de+'|'+ate;
+  if(EV.chave===chave) return EV;
+  Object.assign(EV, { chave, estado:'carregando', linhas:[], inicio:null, motivo:'' });
+  (async()=>{
+    let lg, ev;
+    try{ [lg,ev]=await Promise.all([ sb.from('lead_activity_log').select('started_at').limit(1),
+      fetchAll(()=>sb.from('lead_activity_events').select('id,org_id,lead_id,kind,day_br,actor_id').eq('org_id',org).gte('day_br',de).lte('day_br',ate)) ]); }
+    catch(e){ lg={ error:e }; ev={ error:e }; }                      // falha de rede etc.: mostra pendente, nunca "carregando" para sempre
+    if(EV.chave!==chave) return;                                    // trocou de equipe/período no meio
+    if(lg.error||ev.error) Object.assign(EV, { estado:'pendente', motivo:'O registro de ações (com data e responsável) ainda não está instalado. Sem ele, chamados, follow-ups, respostas e contatos não podem ser contados com segurança.' });
+    else Object.assign(EV, { estado:'ok', linhas:(ev.data||[]).filter(e=>e.org_id===org), inicio:(lg.data&&lg.data[0]&&lg.data[0].started_at)||null, tipos:await tiposRegistrados() });
+    if(S.route==='goals'||S.route==='relatorios') routeRender();
+  })();
+  return EV;
+}
+const TIPOS_ACAO=['chamado','follow_up','respondeu','contato','seguido'];
+// Quais ações o banco REGISTRA. Com só a P-03: chamado e follow-up (por
+// trigger, painel e extensão). "Respondeu" e "seguido" só existem com a X-01 e
+// "contato" com a X-02 (RPCs da extensão 1.11 com login). Sem elas, a contagem
+// seria sempre zero: a tela mostra "ainda não registrado" em vez de inventar 0.
+// Sonda só de leitura: tabela que existe mas é fechada (42501) conta como instalada.
+let _tiposRegistrados=null;
+async function tiposRegistrados(){
+  if(_tiposRegistrados) return _tiposRegistrados;
+  const existe=async(t,col)=>{ try{ const r=await sb.from(t).select(col).limit(1); return !r.error || r.error.code==='42501'; }catch(e){ return null; } };
+  const [x1,x2]=await Promise.all([existe('ext_action_requests','client_id'), existe('crm_envios','lead_id')]);
+  const tipos=new Set(['chamado','follow_up']);
+  if(x1){ tipos.add('respondeu'); tipos.add('seguido'); }
+  if(x2) tipos.add('contato');
+  if(x1!==null && x2!==null) _tiposRegistrados=tipos;            // falha de rede: tenta de novo na próxima carga
+  return tipos;
+}
+function contarEventos(linhas, membro){
+  const zero=()=>Object.fromEntries(TIPOS_ACAO.map(k=>[k,0]));
+  const total=zero(), porDia={};
+  linhas.forEach(e=>{ if(membro&&e.actor_id!==membro) return; if(!(e.kind in total)) return; total[e.kind]++; const d=String(e.day_br).slice(0,10); (porDia[d]=porDia[d]||zero())[e.kind]++; });
+  return { total, porDia };
+}
+// Ações por dia (chamado + follow-up) a partir do registro — mesmo formato de activityByDay.
+function acoesDoRegistro(from, days, cont){
+  const perDay=Array.from({length:days},(_,i)=>{ const d=new Date(from); d.setDate(d.getDate()+i); const c=cont.porDia[localIsoDate(d)]||{}; const ch=c.chamado||0, fu=c.follow_up||0; return { date:d, chamados:ch, followUps:fu, total:ch+fu }; });
+  return { perDay, total:perDay.reduce((a,b)=>a+b.total,0), chamados:perDay.reduce((a,b)=>a+b.chamados,0), followUps:perDay.reduce((a,b)=>a+b.followUps,0) };
+}
+
+// "Seguidos" hoje = todo lead cadastrado (não verifica se o perfil foi
+// realmente seguido no Instagram). Critério provisório — rótulo honesto.
+const BASIS_SEGUIDOS_LABEL = 'Leads cadastrados (critério atual de “seguidos”, provisório)';
+const basisLabel = basis => basis==='chamados' ? 'leads chamados' : 'leads cadastrados (critério atual de “seguidos”)';
+
 // Cálculo do valor a pagar na semana ao prospector.
 // Modelo: paga-se "payDayRate" por dia ao prospectar "payTargetPerDay" leads do Instagram.
 // Acima/abaixo da meta é proporcional: cada lead vale payDayRate/payTargetPerDay.
@@ -1607,22 +1711,36 @@ function motivMsg(pct,target){
 }
 
 // Metas — uma tela só, com período livre (De/Até) em vez do antigo par de
-// abas Semanal/Mensal travadas na semana/mês corrente. Junta atividade de
-// prospecção (leads/dia, ligações efetivas) com o funil de vendas (contatos,
-// vendas, faturamento, comissão) no mesmo período escolhido, e dá pra filtrar
-// por quem prospecta — pra cada pessoa acompanhar a própria meta, não só a
-// da equipe inteira.
+// abas Semanal/Mensal travadas na semana/mês corrente. Junta a atividade de
+// prospecção (leads/dia) com o funil de vendas (contatos, vendas,
+// faturamento, comissão) no mesmo período escolhido, e dá pra filtrar por
+// quem prospecta — pra cada pessoa acompanhar a própria meta, não só a da
+// equipe inteira. Ligações não entram mais aqui (os registros continuam no
+// banco e na aba Ligações). Visual próprio (classes .gl-*, em app.css).
+// Modelo e valores de pagamento: Configurações → Pagamento (conalvo-telas.js),
+// sempre da equipe ATIVA e sem valor padrão copiado de outra equipe.
+// Atalhos de período de Metas, em datas LOCAIS e inclusivas: "Esta semana" =
+// segunda a domingo (7 dias); "Este mês" = dia 1 ao último dia. Com isoDate
+// (UTC), o domingo 23h59 virava segunda no Brasil e a semana tinha 8 dias.
+function goalsPresetBounds(kind){
+  if(kind==='month'){ const { s,e }=monthRange(); const last=new Date(e); last.setDate(last.getDate()-1); return { from:localIsoDate(s), to:localIsoDate(last) }; }
+  const { ws }=weekRange(); const sun=new Date(ws); sun.setDate(sun.getDate()+6);
+  return { from:localIsoDate(ws), to:localIsoDate(sun) };
+}
+function applyGoalsPreset(kind){ const b=goalsPresetBounds(kind); S.goalsFrom=b.from; S.goalsTo=b.to; }
 function renderGoals(){
   const g=getGoals();
-  if(!S.goalsFrom||!S.goalsTo){ const { ws,we }=weekRange(); S.goalsFrom=isoDate(ws); S.goalsTo=isoDate(new Date(we-1)); }
+  if(!S.goalsFrom||!S.goalsTo) applyGoalsPreset('week');
   if(S.goalsMemberId && !S.members.some(m=>m.id===S.goalsMemberId)) S.goalsMemberId='';
   const mid=S.goalsMemberId;
-
   const from=new Date(S.goalsFrom+'T00:00:00');
   const to=new Date(S.goalsTo+'T23:59:59.999');
   const toExcl=new Date(S.goalsTo+'T00:00:00'); toExcl.setDate(toExcl.getDate()+1);
   const inRange = iso => { if(!iso) return false; const d=new Date(iso); return d>=from && d<toExcl; };
   const days=Math.max(1,Math.round((toExcl-from)/86400000));
+  const dayNames=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const ddmm = d => `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`;
+  const today=new Date(); today.setHours(0,0,0,0);
 
   // ---- Leads (esforço de prospecção) ----
   const rangeLeads=S.leads.filter(l=>(l.tipo||'comum')!=='empresario' && inRange(l.addedAt) && (!mid||l.createdBy===mid));
@@ -1630,77 +1748,87 @@ function renderGoals(){
   const min=g.leadDailyMin||0, max=g.leadDailyMax||0;
   const targetMin=min*days, targetMax=max*days;
   const showBars=days<=31;
-  const dayNames=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
-  let hitMin=0, barsHtml='';
+  let hitMin=0, perDay=[], barsHtml='', markersHtml='', minLine=0;
   if(showBars){
-    const perDay=Array.from({length:days},(_,i)=>{ const ds=new Date(from); ds.setDate(ds.getDate()+i); const de=new Date(ds); de.setDate(de.getDate()+1); return rangeLeads.filter(l=>{ const t=new Date(l.addedAt); return t>=ds&&t<de; }).length; });
+    perDay=Array.from({length:days},(_,i)=>{ const ds=new Date(from); ds.setDate(ds.getDate()+i); const de=new Date(ds); de.setDate(de.getDate()+1); return rangeLeads.filter(l=>{ const t=new Date(l.addedAt); return t>=ds&&t<de; }).length; });
     hitMin = min>0 ? perDay.filter(c=>c>=min).length : 0;
     const barMax=Math.max(max,...perDay,1);
-    const today=new Date(); today.setHours(0,0,0,0);
+    minLine = min>0 ? Math.min(100,Math.round(min/barMax*100)) : 0;   // tracejado do mínimo/dia
     barsHtml=perDay.map((c,i)=>{
       const ds=new Date(from); ds.setDate(ds.getDate()+i);
-      const col = max>0&&c>=max?'#F59E0B':min>0&&c>=min?'#10B981':c>0?'#EF4444':'var(--surf4)';
-      const h=Math.max(Math.round(c/barMax*100),c>0?6:2);
+      const lvl = max>0&&c>=max?'top':min>0&&c>=min?'ok':c>0?'low':'zero';
+      const h=Math.max(Math.round(c/barMax*100),c>0?4:0);
       const isToday=ds.getTime()===today.getTime();
-      const status = max>0&&c>=max?'acima do máximo 🔥':min>0&&c>=min?'dentro da meta ✓':c>0?'abaixo do mínimo':'sem leads ainda';
-      return `<div data-tip="${esc(fmtDateOnly(isoDate(ds)))}: ${c} lead(s)${min||max?` — ${esc(status)}`:''}" style="flex:1;min-width:14px;display:flex;flex-direction:column;align-items:center;gap:5px;cursor:default">
-        <div style="font-size:.62rem;font-weight:700;color:${c>0?'var(--t2)':'var(--t3)'}">${c}</div>
-        <div style="width:100%;max-width:34px;height:92px;background:var(--surf2);border-radius:6px;display:flex;align-items:flex-end;overflow:hidden">
-          <div class="gw-bar-fill" style="width:100%;height:${h}%;background:${col};border-radius:6px;transition:height .4s,filter .15s"></div>
-        </div>
-        <div style="font-size:.58rem;color:${isToday?'var(--p)':'var(--t3)'};font-weight:${isToday?'700':'500'}">${days<=14?dayNames[ds.getDay()]:ds.getDate()}</div>
+      const status = max>0&&c>=max?'acima do máximo':min>0&&c>=min?'dentro da meta':c>0?'abaixo do mínimo':'sem leads ainda';
+      return `<div class="gl-bar${isToday?' is-today':''}" data-tip="${esc(fmtDateOnly(isoDate(ds)))}: ${c} lead(s)${min||max?` — ${esc(status)}`:''}">
+        <div class="gl-bar-val">${c}</div>
+        <div class="gl-bar-track">${minLine?`<i class="gl-bar-min" style="bottom:${minLine}%"></i>`:''}<div class="gl-bar-fill gw-bar-fill lvl-${lvl}" style="height:${h}%"></div></div>
+        <div class="gl-bar-day">${days<=14?dayNames[ds.getDay()]:ds.getDate()}</div>${days<=14?`<div class="gl-bar-date">${ddmm(ds)}</div>`:''}
       </div>`;
     }).join('');
   }
 
-  // ---- Ligações efetivas ----
-  const rangeCalls=S.calls.filter(c=>inRange(c.at) && (!mid||c.createdBy===mid));
-  const totalEff=rangeCalls.filter(c=>(c.outcome||'nao_atendeu')!=='nao_atendeu').length;
-  const callsGoalWeekly=g.callsWeekly||0;
-  const callsTarget=callsGoalWeekly>0?Math.max(1,Math.round(callsGoalWeekly*days/7)):0;
-  const callPct=callsTarget>0?Math.min(100,Math.round(totalEff/callsTarget*100)):0;
+  // ---- Modelo de pagamento vigente no fim do período (por lead = hoje) ----
+  const planFim=payPlanAt(S.goalsTo), fixo=planFim.model==='fixo_comissao';
+  const actTarget=fixo?(Number(planFim.actions_per_day)||0):0;
+  const evs=eventosPeriodo(S.goalsFrom, S.goalsTo);
+  const cont=evs.estado==='ok'?contarEventos(evs.linhas, mid):null;    // mesma fonte do Relatório mensal
+  const act=fixo?(cont?acoesDoRegistro(from, days, cont):activityByDay(from, days, mid)):null;    // chamados + follow-ups por dia
+  // Linha do dia no topo: ✓ = dia que bateu a meta diária (ações no modelo
+  // fixo, mínimo de leads no pagamento por lead).
+  const dayVals=fixo?act.perDay.map(d=>d.total):perDay, dayGoal=fixo?actTarget:min;
+  if(days<=14 && dayVals.length) markersHtml=dayVals.map((c,i)=>{
+    const ds=new Date(from); ds.setDate(ds.getDate()+i);
+    const st = dayGoal>0&&c>=dayGoal ? 'ok' : ds.getTime()===today.getTime() ? 'today' : ds<today ? 'past' : 'future';
+    return `<div class="gl-day st-${st}" data-tip="${esc(fmtDateOnly(localIsoDate(ds)))}: ${c} ${fixo?'ação(ões)':'lead(s)'}"><span class="gl-day-dot">${st==='ok'?'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>':''}</span><span class="gl-day-wd">${dayNames[ds.getDay()]}</span><span class="gl-day-dt">${ddmm(ds)}</span></div>`;
+  }).join('');
 
   // ---- Funil de vendas (contatos, vendas, faturamento, comissão) ----
-  const contatosP=S.deals.filter(d=>inRange(d.createdAt) && (!mid||d.createdBy===mid)).length;
+  // Contatos: pelo evento "contato" quando o banco o registra (X-02); senão, no Consórcio,
+  // pelas negociações criadas (como antes) e, na Prospecção (sem Negociações), pela
+  // data registrada de entrada em "Enviou contato".
+  const contatosP=cont && evs.tipos && evs.tipos.has('contato') ? cont.total.contato
+    : modoConalvo()==='prospeccao' ? contatosPorEtapa(S.goalsFrom, S.goalsTo, mid)
+    : S.deals.filter(d=>inRange(d.createdAt) && (!mid||d.createdBy===mid)).length;
   const vendidosP=S.deals.filter(d=>d.status===WON()&&inRange(d.closedAt) && (!mid||d.createdBy===mid));
   const vendasP=vendidosP.length;
   const faturP=vendidosP.reduce((a,d)=>a+(Number(d.cardValue)||0),0);
   const commP=vendidosP.reduce((a,d)=>a+(Number(d.commissionValue)||0),0);
 
-  const today0=new Date(); today0.setHours(0,0,0,0);
   const periodEndDate=new Date(S.goalsTo+'T00:00:00');
-  const daysLeft = periodEndDate>=today0 ? Math.max(1,Math.round((periodEndDate-today0)/86400000)+1) : 0;
+  const daysLeft = periodEndDate>=today ? Math.max(1,Math.round((periodEndDate-today)/86400000)+1) : 0;
 
   const defs=[
-    { key:'contacts',   label:'Contatos conquistados', hint:'leads que enviaram o contato', color:'#6366F1', color2:'#8B5CF6', money:false, cur:contatosP, target:g.contacts,
+    { key:'contacts',   label:'Contatos conquistados', hint:'leads que enviaram o contato', tone:'gold', money:false, cur:contatosP, target:g.contacts,
       icon:'<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/>' },
-    { key:'sales',      label:'Vendas fechadas', hint:'negociações marcadas como vendido', color:'#10B981', color2:'#34D399', money:false, cur:vendasP, target:g.sales,
-      icon:'<polyline points="20 6 9 17 4 12"/>' },
-    { key:'revenue',    label:'Faturamento (cartas vendidas)', hint:'soma do valor das cartas vendidas', color:'#F59E0B', color2:'#FBBF24', money:true, cur:faturP, target:g.revenue,
+    { key:'sales',      label:'Vendas fechadas', hint:'negociações marcadas como vendido', tone:'ink', money:false, cur:vendasP, target:g.sales,
+      icon:'<path d="M8 21h8"/><path d="M12 17v4"/><path d="M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M17 5h3v2a3 3 0 0 1-3 3"/><path d="M7 5H4v2a3 3 0 0 0 3 3"/>' },
+    { key:'revenue',    label:'Faturamento', hint:'soma do valor das cartas vendidas', tone:'soft', money:true, cur:faturP, target:g.revenue,
       icon:'<line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>' },
-    { key:'commission', label:'Comissão acumulada', hint:'comissões das vendas do período', color:'#8B5CF6', color2:'#C084FC', money:true, cur:commP, target:g.commission,
+    { key:'commission', label:'Comissão acumulada', hint:'comissões das vendas do período', tone:'line', money:true, cur:commP, target:g.commission,
       icon:'<path d="M20 12V8H6a2 2 0 0 1-2-2c0-1.1.9-2 2-2h12v4"/><path d="M4 6v12c0 1.1.9 2 2 2h14v-4"/><path d="M18 12a2 2 0 0 0-2 2c0 1.1.9 2 2 2h4v-4z"/>' },
   ];
 
+  // Prospecção: só metas de prospecção — sem vendas, faturamento ou comissão.
+  if(modoConalvo()==='prospeccao') defs.splice(0, defs.length, ...defs.filter(d=>d.key==='contacts'));
+  if(cont) defs[0].hint='registrados como "Enviou contato"';
   const defined=defs.filter(d=>d.target>0).length;
   const done=defs.filter(d=>d.target>0&&d.cur>=d.target).length;
-  const heroIcon = defined&&done===defined ? '🏆' : done>0 ? '🔥' : '🎯';
   const heroTitle = defined ? `${done} de ${defined} metas batidas` : 'Defina as metas da equipe';
   const heroSub = !defined ? 'Clique em "Definir metas" para começar a acompanhar o progresso.'
-    : done===defined ? 'Todas as metas concluídas nesse período! Equipe imparável. 🚀'
+    : done===defined ? 'Todas as metas concluídas nesse período! Equipe imparável.'
     : done>0 ? `Faltam ${defined-done} para completar o período. Vocês conseguem!`
     : daysLeft>0 ? `Restam ${daysLeft} dia${daysLeft===1?'':'s'} no período. Foco total no resultado!`
     : 'Período encerrado — confira o resultado final abaixo.';
 
-  const hero=`<div class="card" style="padding:20px;margin-bottom:16px;background:linear-gradient(135deg,rgba(99,102,241,.16),rgba(16,185,129,.10));border:1px solid rgba(99,102,241,.28)">
-    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-      <div style="font-size:2.1rem;line-height:1">${heroIcon}</div>
-      <div style="flex:1;min-width:160px">
-        <div style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.1rem">${heroTitle}</div>
-        <div style="font-size:.82rem;color:var(--t2);margin-top:3px">${heroSub}</div>
-      </div>
+  const hero=`<section class="gl-hero${defined&&done===defined?' is-done':''}">
+    <div class="gl-hero-main">
+      <div class="gl-hero-logo"><img src="../conalvo-alvo.png" alt="" width="34" height="34"></div>
+      <div><div class="gl-hero-title">${heroTitle}</div><div class="gl-hero-sub">${heroSub}</div></div>
     </div>
-  </div>`;
+    ${markersHtml?`<div class="gl-days">${markersHtml}</div>`:''}
+    <div class="gl-hero-left">${daysLeft>0?`<span>Faltam</span><b>${daysLeft} dia${daysLeft===1?'':'s'}</b><small>para o fim do período</small>`:'<span>Período</span><b>encerrado</b>'}</div>
+  </section>`;
 
   const cards=defs.map(d=>{
     const target=Number(d.target)||0;
@@ -1708,163 +1836,156 @@ function renderGoals(){
     const remaining=Math.max(0,target-d.cur);
     const tgtTxt=d.money?fmtCurrency(target):fmtNum(target);
     const remTxt=d.money?fmtCurrency(remaining):fmtNum(remaining);
-    const [msg,mc]=motivMsg(pct,target);
-    const perDay=(!d.money&&target>0&&remaining>0&&daysLeft>0)?Math.ceil(remaining/daysLeft):0;
+    const [msg]=motivMsg(pct,target);
+    const perDayNeed=(!d.money&&target>0&&remaining>0&&daysLeft>0)?Math.ceil(remaining/daysLeft):0;
     let foot='';
-    if(target>0&&remaining>0&&daysLeft>0) foot=`<div style="font-size:.73rem;color:var(--t2);margin-top:9px;padding-top:9px;border-top:1px solid rgba(255,255,255,.06)">Falta <b style="color:var(--t1)">${remTxt}</b> para a meta${perDay?` · ~<b style="color:${d.color}">${perDay}</b>/dia nos ${daysLeft} dia${daysLeft===1?'':'s'} restantes`:''}</div>`;
-    else if(target>0&&remaining>0) foot=`<div style="font-size:.73rem;color:var(--t2);margin-top:9px;padding-top:9px;border-top:1px solid rgba(255,255,255,.06)">Falta <b style="color:var(--t1)">${remTxt}</b> para a meta — período já encerrado</div>`;
-    else if(target>0) foot=`<div style="font-size:.73rem;color:#10B981;margin-top:9px;padding-top:9px;border-top:1px solid rgba(255,255,255,.06)">✓ Meta concluída nesse período!</div>`;
-    return `<div class="card" style="padding:18px;margin-bottom:14px;border-left:3px solid ${d.color}">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
-        <div style="width:42px;height:42px;border-radius:11px;background:linear-gradient(135deg,${d.color},${d.color2});box-shadow:0 4px 14px ${d.color}55;display:flex;align-items:center;justify-content:center;flex-shrink:0"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d.icon}</svg></div>
-        <div style="flex:1;min-width:0">
-          <div style="font-weight:700;font-size:.95rem">${d.label}</div>
-          <div style="font-size:.72rem;color:var(--t3)">${d.hint}</div>
-        </div>
-        <div style="text-align:right">
-          <div id="gm-cnt-${d.key}" data-cnt="${d.cur}" data-money="${d.money?1:0}" style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.5rem;line-height:1;color:${d.color}">${d.money?fmtCurrency(0):0}</div>
-          <div style="font-size:.72rem;color:var(--t3)">de ${tgtTxt}</div>
-        </div>
+    if(target>0&&remaining>0&&daysLeft>0) foot=`Falta <b>${remTxt}</b> para a meta${perDayNeed?` · ~<b>${perDayNeed}</b>/dia nos ${daysLeft} dia${daysLeft===1?'':'s'} restantes`:''}`;
+    else if(target>0&&remaining>0) foot=`Falta <b>${remTxt}</b> para a meta — período já encerrado`;
+    else if(target>0) foot=`<span class="gl-ok">✓ Meta concluída nesse período!</span>`;
+    return `<article class="gl-kpi tone-${d.tone}${target>0&&remaining===0?' is-done':''}">
+      <div class="gl-kpi-hd">
+        <div class="gl-kpi-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d.icon}</svg></div>
+        <div class="gl-kpi-lbl"><div class="gl-kpi-name">${d.label}</div><div class="gl-kpi-hint">${d.hint}</div></div>
       </div>
-      <div style="background:rgba(255,255,255,.06);border-radius:20px;height:12px;overflow:hidden">
-        <div style="width:${pct}%;height:100%;background:linear-gradient(90deg,${d.color},${d.color}bb);border-radius:20px;transition:width .5s"></div>
-      </div>
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:9px;gap:8px">
-        <span style="font-size:.78rem;font-weight:600;color:${mc}">${msg}</span>
-        <span style="font-size:.85rem;font-weight:800;color:${d.color}">${pct}%</span>
-      </div>
-      ${foot}
-    </div>`;
+      <div class="gl-kpi-num"><div id="gm-cnt-${d.key}" data-cnt="${d.cur}" data-target="${target}" data-money="${d.money?1:0}" class="gl-kpi-val">${d.money?fmtCurrency(0):0}</div><div class="gl-kpi-of">${target>0?'de '+tgtTxt:'sem meta'}</div></div>
+      <div class="gl-prog"><div class="gl-prog-fill" style="width:${pct}%"></div></div>
+      <div class="gl-kpi-row"><span class="gl-kpi-msg">${msg}</span><span class="gl-kpi-pct">${pct}%</span></div>
+      ${foot?`<div class="gl-kpi-foot">${foot}</div>`:''}
+    </article>`;
   }).join('');
 
   const fromLbl=fmtDateOnly(S.goalsFrom), toLbl=fmtDateOnly(S.goalsTo);
   const memberSel = S.members.length>1
-    ? `<div class="fld"><label>Quem</label><select class="flt-sel" id="gp-member"><option value="">Toda a equipe</option>${S.members.map(m=>`<option value="${esc(m.id)}" ${m.id===mid?'selected':''}>${esc(memberLabel(m))}</option>`).join('')}</select></div>`
+    ? `<div class="fld"><label>Membro</label><select class="flt-sel" id="gp-member"><option value="">Toda a equipe</option>${S.members.map(m=>`<option value="${esc(m.id)}" ${m.id===mid?'selected':''}>${esc(memberLabel(m))}</option>`).join('')}</select></div>`
     : '';
+  // Atalho ativo = De/Até batem exatamente com o que o botão aplicaria.
+  const wk=goalsPresetBounds('week'), mo=goalsPresetBounds('month');
+  const presetOn = { week: S.goalsFrom===wk.from&&S.goalsTo===wk.to, month: S.goalsFrom===mo.from&&S.goalsTo===mo.to };
 
-  const leadsCard=`<div class="card" style="padding:18px;border-left:3px solid #6366F1;margin-bottom:14px">
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;gap:10px;flex-wrap:wrap">
-      <div><div style="font-weight:700;font-size:.95rem">📸 Leads prospectados</div><div style="font-size:.72rem;color:var(--t3)">${fromLbl} a ${toLbl}${min||max?` · meta do período: ${min?fmtNum(targetMin):'—'}–${max?fmtNum(targetMax):'—'}`:''}</div></div>
-      <div style="text-align:right"><div id="gw-leads-cnt" data-cnt="${totalLeads}" style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.7rem;line-height:1;color:#6366F1">0</div><div style="font-size:.7rem;color:var(--t3)">${days} dia${days===1?'':'s'}</div></div>
+  const leadsCard=`<section class="gl-card">
+    <div class="gl-card-hd">
+      <div class="gl-card-ttl"><span class="gl-mark"></span><div><div class="gl-card-name">Leads prospectados</div><div class="gl-card-sub">${fromLbl} a ${toLbl}${min||max?` · <span class="gl-nowrap">meta do período: ${min?fmtNum(targetMin):'—'}–${max?fmtNum(targetMax):'—'}</span>`:''}</div></div></div>
+      <div class="gl-card-big"><div id="gw-leads-cnt" data-cnt="${totalLeads}">0</div><span>${days} dia${days===1?'':'s'}</span></div>
     </div>
-    ${showBars?`<div style="display:flex;gap:${days>14?'3px':'6px'};align-items:flex-end;overflow-x:auto;padding-bottom:2px">${barsHtml}</div>
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding-top:10px;border-top:1px solid var(--border);flex-wrap:wrap;gap:6px">
-      ${min>0?`<span style="font-size:.72rem;color:var(--t2)"><b style="color:#10B981">${hitMin}/${days}</b> dias bateram o mínimo</span>`:'<span></span>'}
-      <span style="font-size:.7rem;color:var(--t3)">meta/dia: <b style="color:#10B981">${min||'—'}</b>–<b style="color:#F59E0B">${max||'—'}</b></span>
-    </div>
-    <div style="display:flex;gap:13px;margin-top:9px;font-size:.63rem;color:var(--t3);flex-wrap:wrap">
-      <span><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#EF4444;vertical-align:middle"></i> abaixo de ${min||'—'}</span>
-      <span><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#10B981;vertical-align:middle"></i> ${min||'—'} ou mais</span>
-      <span><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#F59E0B;vertical-align:middle"></i> ${max||'—'} ou mais</span>
+    ${showBars?`<div class="gl-bars${days>14?' is-dense':''}">${barsHtml}</div>
+    <div class="gl-card-ft">
+      ${min>0?`<span><b>${hitMin}/${days}</b> dias bateram o mínimo</span>`:'<span></span>'}
+      <div class="gl-legend"><span><i class="lvl-low"></i>abaixo de ${min||'—'}</span><span><i class="lvl-ok"></i>${min||'—'} ou mais</span><span><i class="lvl-top"></i>${max||'—'} ou mais</span><span class="gl-legend-goal">meta/dia: <b>${min||'—'}–${max||'—'}</b></span></div>
     </div>`
-    :`<div class="chart-wrap" style="height:150px"><canvas id="gp-tl-chart"></canvas></div><div style="font-size:.68rem;color:var(--t3);margin-top:8px">Período com mais de 31 dias — mostrando leads por semana.</div>`}
-  </div>`;
+    :`<div class="chart-wrap" style="height:150px"><canvas id="gp-tl-chart"></canvas></div><div class="gl-card-note">Período com mais de 31 dias — mostrando leads por semana.</div>`}
+  </section>`;
 
-  const callsCard=`<div class="card" style="padding:18px;border-left:3px solid #F59E0B;margin-bottom:14px">
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">
-      <div><div style="font-weight:700;font-size:.95rem">📞 Ligações efetivas</div><div style="font-size:.72rem;color:var(--t3)">atendidas (com ou sem interesse)</div></div>
-      <div style="text-align:right"><div id="gw-calls-cnt" data-cnt="${totalEff}" style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.7rem;line-height:1;color:#F59E0B">0</div><div style="font-size:.7rem;color:var(--t3)">${callsTarget>0?'de '+callsTarget:'no período'}</div></div>
-    </div>
-    ${callsTarget>0?`<div style="background:var(--surf2);border-radius:20px;height:12px;overflow:hidden"><div style="width:${callPct}%;height:100%;background:linear-gradient(90deg,#F59E0B,#F59E0Bbb);border-radius:20px;transition:width .5s"></div></div>
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:9px"><span style="font-size:.76rem;font-weight:600;color:${callPct>=100?'#10B981':'#F59E0B'}">${callPct>=100?'🎉 Meta batida!':callPct>=50?'💪 Mais da metade!':'🚀 Bora ligar!'}</span><span style="font-size:.82rem;font-weight:800;color:#F59E0B">${callPct}%</span></div>
-    <div style="font-size:.66rem;color:var(--t3);margin-top:8px">Meta semanal de ${callsGoalWeekly} escalada pros ${days} dia${days===1?'':'s'} do período.</div>`
-    :`<div style="font-size:.74rem;color:var(--t3);padding:6px 0">Defina uma meta semanal de ligações em <b>Definir metas</b> para acompanhar o progresso.</div>`}
-    <div style="font-size:.66rem;color:var(--t3);margin-top:11px;padding-top:9px;border-top:1px solid var(--border)">Efetiva = a pessoa atendeu (interessado, retornar, sem interesse ou fechou). "Não atendeu" não conta.</div>
-  </div>`;
-
-  $('content').innerHTML=`
-    <div class="tbl-controls">
-      <div style="flex:1"><div class="sec-title" style="margin:0">Metas</div><div class="sec-sub" style="margin:2px 0 0">Escolha o período e acompanhe tudo o que importa pra bater a meta.</div></div>
-      <button class="btn btn-primary" id="goals-edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>Definir metas</button>
-    </div>
-    <div class="tbl-controls">
-      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
-        <div class="fld"><label>De</label><input type="date" id="gp-from" value="${esc(S.goalsFrom)}"></div>
-        <div class="fld"><label>Até</label><input type="date" id="gp-to" value="${esc(S.goalsTo)}"></div>
-        ${memberSel}
+  // Modelo fixo: o acompanhamento é por AÇÕES (chamados + follow-ups) contra
+  // a meta diária do modelo, no lugar dos leads/dia do pagamento por lead.
+  let actCard='';
+  if(fixo){
+    const aMax=Math.max(actTarget,...act.perDay.map(d=>d.total),1);
+    const aLine=actTarget>0?Math.min(100,Math.round(actTarget/aMax*100)):0;
+    const hit=actTarget>0?act.perDay.filter(d=>d.total>=actTarget).length:0;
+    const aBars=act.perDay.map(d=>{
+      const c=d.total, lvl=actTarget>0&&c>=actTarget?'ok':c>0?'low':'zero', h=Math.max(Math.round(c/aMax*100),c>0?4:0), isToday=d.date.getTime()===today.getTime();
+      return `<div class="gl-bar${isToday?' is-today':''}" data-tip="${esc(fmtDateOnly(localIsoDate(d.date)))}: ${d.chamados} chamado(s) + ${d.followUps} follow-up(s) = ${c} ação(ões)">
+        <div class="gl-bar-val">${c}</div>
+        <div class="gl-bar-track">${aLine?`<i class="gl-bar-min" style="bottom:${aLine}%"></i>`:''}<div class="gl-bar-fill gw-bar-fill lvl-${lvl}" style="height:${h}%"></div></div>
+        <div class="gl-bar-day">${days<=14?dayNames[d.date.getDay()]:d.date.getDate()}</div>${days<=14?`<div class="gl-bar-date">${ddmm(d.date)}</div>`:''}
+      </div>`;
+    }).join('');
+    actCard=`<section class="gl-card" data-model="fixo_comissao">
+      <div class="gl-card-hd">
+        <div class="gl-card-ttl"><span class="gl-mark"></span><div><div class="gl-card-name">Ações de prospecção</div><div class="gl-card-sub">${fromLbl} a ${toLbl} · chamados + follow-ups · <span class="gl-nowrap">meta: ${fmtNum(actTarget)} por dia</span></div></div></div>
+        <div class="gl-card-big"><div id="gw-acts-cnt" data-cnt="${act.total}" data-chamados="${act.chamados}" data-followups="${act.followUps}">0</div><span>${fmtNum(act.chamados)} chamados + ${fmtNum(act.followUps)} follow-ups</span></div>
       </div>
-      <div style="display:flex;gap:6px">
-        <button class="btn btn-outline btn-sm" data-gppre="week">Esta semana</button>
-        <button class="btn btn-outline btn-sm" data-gppre="month">Este mês</button>
+      ${showBars?`<div class="gl-bars${days>14?' is-dense':''}">${aBars}</div>`:''}
+      <div class="gl-card-ft">
+        <span><b id="gw-acts-hit" data-hit="${hit}">${hit}/${days}</b> dias com ${fmtNum(actTarget)} ações ou mais</span>
+        <div class="gl-legend"><span><i class="lvl-low"></i>abaixo de ${fmtNum(actTarget)}</span><span><i class="lvl-ok"></i>${fmtNum(actTarget)} ou mais</span></div>
+      </div>
+      <div class="gl-card-note">${cont?'Contado pelo registro de ações (data e responsável), a mesma fonte do Relatório mensal.':'Acompanhamento pelas etapas do funil (o registro de ações ainda não está disponível).'} No pagamento, cada dia de segunda a sexta vale até 1 dia de fixo (ações ÷ ${fmtNum(actTarget)}) — veja Relatórios → "Fechamento mensal".</div>
+    </section>`;
+  }
+
+  $('content').innerHTML=`<div class="gl">
+    <div class="gl-head">
+      <div><div class="gl-title">Metas</div><div class="gl-sub">Acompanhe o progresso da equipe e bata as metas.</div></div>
+      <button class="gl-btn-gold" id="goals-edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>Definir metas</button>
+    </div>
+    <div class="gl-filters">
+      <div class="fld"><label>De</label><input type="date" id="gp-from" value="${esc(S.goalsFrom)}"></div>
+      <div class="fld"><label>Até</label><input type="date" id="gp-to" value="${esc(S.goalsTo)}"></div>
+      ${memberSel}
+      <div class="gl-seg" role="group" aria-label="Atalhos de período">
+        <button class="${presetOn.week?'is-on':''}" data-gppre="week" aria-pressed="${presetOn.week}">Esta semana</button>
+        <button class="${presetOn.month?'is-on':''}" data-gppre="month" aria-pressed="${presetOn.month}">Este mês</button>
       </div>
     </div>
     ${hero}
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-bottom:4px">${leadsCard}${callsCard}</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px">${cards}</div>`;
+    ${fixo?actCard:leadsCard}
+    <div class="gl-kpis">${cards}</div>
+  </div>`;
 
   $('goals-edit').onclick=()=>goalsForm();
   $('gp-from').onchange=e=>{ S.goalsFrom=e.target.value; renderGoals(); };
   $('gp-to').onchange=e=>{ S.goalsTo=e.target.value; renderGoals(); };
   const msel=$('gp-member'); if(msel) msel.onchange=e=>{ S.goalsMemberId=e.target.value; renderGoals(); };
-  document.querySelectorAll('[data-gppre]').forEach(b=>b.onclick=()=>{
-    if(b.dataset.gppre==='week'){ const { ws,we }=weekRange(); S.goalsFrom=isoDate(ws); S.goalsTo=isoDate(new Date(we-1)); }
-    else { const { s,e }=monthRange(); S.goalsFrom=isoDate(s); S.goalsTo=isoDate(new Date(e.getTime()-86400000)); }
-    renderGoals();
-  });
-  if(!showBars){
+  document.querySelectorAll('[data-gppre]').forEach(b=>b.onclick=()=>{ applyGoalsPreset(b.dataset.gppre); renderGoals(); });
+  if(!showBars && !fixo){
     requestAnimationFrame(()=>{
       const tl=$('gp-tl-chart'); if(!tl) return;
       const wkData=periodBuckets(rangeLeads, from, to, l=>l.addedAt).map(b=>({ label:b.date.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'}), count:b.count }));
       bindWeeklyHover(tl, drawWeekly(wkData, tl));
     });
   }
-  $('gw-leads-cnt')&&animateCount($('gw-leads-cnt'),Number($('gw-leads-cnt').dataset.cnt));
-  $('gw-calls-cnt')&&animateCount($('gw-calls-cnt'),Number($('gw-calls-cnt').dataset.cnt));
+  const cntEl=fixo?$('gw-acts-cnt'):$('gw-leads-cnt'); cntEl&&animateCount(cntEl,Number(cntEl.dataset.cnt));
   document.querySelectorAll('[id^="gm-cnt-"]').forEach(el=>animateCount(el,Number(el.dataset.cnt),el.dataset.money==='1'?fmtCurrency:undefined));
 }
 
 function goalsForm(){
   const g=getGoals();
-  openModal(`<div class="modal-ov"><div class="modal-box" style="max-width:480px"><div class="modal-hd">
-    <div><div class="modal-title">Definir metas do mês</div><div class="modal-sub">Valem para toda a equipe do espaço</div></div>
+  // Só METAS. Modelo e valores de pagamento ficam em Configurações →
+  // Pagamento (financeiro de cada equipe). O que é financeiro e já está
+  // gravado é reenviado IGUAL (a RPC org_set_goals recebe as 14 chaves).
+  const planHoje=payPlanAt(localIsoDate(new Date())), fixoHoje=planHoje.model==='fixo_comissao';
+  const prosp=modoConalvo()==='prospeccao';   // Prospecção: sem vendas, faturamento ou comissão
+  const secT=(t,m)=>`<div style="font-size:.66rem;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.05em;margin:${m||'0 0 8px'}">${t}</div>`;
+  openModal(`<div class="modal-ov"><div class="modal-box gl-modal" style="max-width:480px"><div class="modal-hd">
+    <div><div class="modal-title">Definir metas</div><div class="modal-sub">Metas de acompanhamento desta equipe. Não mudam valores de pagamento.</div></div>
     <div class="x"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div>
     </div>
     <div class="modal-bd">
-      <div style="font-size:.66rem;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Semanal · atividade de prospecção</div>
+      ${fixoHoje?`${secT('Prospecção · meta de atividade')}<div class="gl-plan-sub" style="margin-bottom:6px">${fmtNum(planHoje.actions_per_day)} ações por dia (chamados + follow-ups), definida no pagamento da equipe (Configurações → Pagamento).</div>`:''}
+      <div style="display:${fixoHoje?'none':'block'}">
+      ${secT('Prospecção · leads por dia')}
       <div class="form-grid">
         <div class="fld"><label>Leads/dia — mínimo</label><input id="gf-leadmin" type="number" min="0" value="${g.leadDailyMin}" placeholder="50"></div>
         <div class="fld"><label>Leads/dia — máximo</label><input id="gf-leadmax" type="number" min="0" value="${g.leadDailyMax}" placeholder="120"></div>
-        <div class="fld full"><label>Ligações efetivas / semana</label><input id="gf-callsweek" type="number" min="0" value="${g.callsWeekly||''}" placeholder="Ex.: 150"></div>
       </div>
-      <div style="display:${MOD().features.weeklyPay?'block':'none'}">
-        <div style="font-size:.66rem;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.05em;margin:14px 0 8px">Cálculo do pagamento (prospecção)</div>
-        <div class="form-grid">
-          <div class="fld full"><label>Contar como</label><select id="gf-pay-basis"><option value="seguidos" ${g.payBasis==='seguidos'?'selected':''}>Leads seguidos (todo lead cadastrado)</option><option value="chamados" ${g.payBasis==='chamados'?'selected':''}>Leads chamados (só quem já foi chamado)</option></select></div>
-          <div class="fld"><label>Valor por dia (R$)</label><input id="gf-pay-rate" type="text" inputmode="decimal" value="${numberToMoney(g.payDayRate)}" placeholder="25,00"></div>
-          <div class="fld"><label>Leads/dia p/ esse valor</label><input id="gf-pay-target" type="number" min="1" value="${g.payTargetPerDay}" placeholder="50"></div>
-          <div class="fld full"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input id="gf-pay-followup" type="checkbox" ${g.payFollowUp?'checked':''} style="width:auto;margin:0"> Pagar também pelos follow-ups</label><div style="font-size:.68rem;color:var(--t3);margin-top:4px">Cada follow-up vale uma unidade no dia em que foi feito — inclusive num lead chamado meses atrás. Vale pras etapas do funil com "follow" no nome.</div></div>
-          <div class="fld"><label>Bônus: chamados+follow-ups/dia</label><input id="gf-pay-bonusmin" type="number" min="0" value="${g.payBonusMinPerDay||''}" placeholder="0 = sem bônus"></div>
-          <div class="fld"><label>Bônus: valor por lead (R$)</label><input id="gf-pay-bonusrate" type="text" inputmode="decimal" value="${g.payBonusRate?numberToMoney(g.payBonusRate):''}" placeholder="0,65"></div>
-          <div class="fld full"><div style="font-size:.68rem;color:var(--t3);margin-top:-6px">Meta diária de impulso: quem bater esse tanto de trabalho num único dia — chamados e follow-ups somados — recebe o valor de bônus por unidade naquele dia, em vez da tarifa normal. Deixe em 0 pra desligar. Vale só para esta equipe.</div></div>
-        </div>
-        <div style="font-size:.68rem;color:var(--t3);margin-top:6px">Ex.: R$25/dia por 50 leads = R$0,50/lead. 120 leads num dia = R$60. O dashboard soma a semana e adiciona comissões de vendas ainda não pagas. Em "Leads chamados", só entra na conta quem já saiu da etapa "Novo Lead" no funil.</div>
       </div>
       <div style="height:1px;background:var(--border);margin:14px 0"></div>
-      <div style="font-size:.66rem;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Comissão padrão</div>
-      <div class="form-grid">
-        <div class="fld full"><label>% padrão sobre o valor da venda</label><input id="gf-commpct" type="number" min="0" max="100" step="0.01" value="${g.commissionPct}" placeholder="Ex.: 0.1"></div>
-      </div>
-      <div style="font-size:.68rem;color:var(--t3);margin-top:6px">Usada para calcular a comissão automaticamente ao cadastrar uma negociação (venda) — dá pra ajustar em cada negociação individualmente.</div>
-      <div style="height:1px;background:var(--border);margin:14px 0"></div>
-      <div style="font-size:.66rem;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Mensal</div>
+      ${secT('Resultados no período')}
       <div class="form-grid">
         <div class="fld"><label>Meta de contatos</label><input id="gf-contacts" type="number" min="0" value="${g.contacts||''}" placeholder="Ex.: 40"></div>
-        <div class="fld"><label>Meta de vendas</label><input id="gf-sales" type="number" min="0" value="${g.sales||''}" placeholder="Ex.: 5"></div>
-        <div class="fld full"><label>Meta de faturamento (R$)</label><input id="gf-revenue" type="text" inputmode="decimal" value="${g.revenue?numberToMoney(g.revenue):''}" placeholder="500.000,00"></div>
-        <div class="fld full"><label>Meta de comissão (R$)</label><input id="gf-commission" type="text" inputmode="decimal" value="${g.commission?numberToMoney(g.commission):''}" placeholder="10.000,00"></div>
+        <div class="fld" style="display:${prosp?'none':''}"><label>Meta de vendas</label><input id="gf-sales" type="number" min="0" value="${g.sales||''}" placeholder="Ex.: 5"></div>
+        <div class="fld full" style="display:${prosp?'none':''}"><label>Meta de faturamento (R$)</label><input id="gf-revenue" type="text" inputmode="decimal" value="${g.revenue?numberToMoney(g.revenue):''}" placeholder="500.000,00"></div>
+        <div class="fld full" style="display:${prosp?'none':''}"><label>Meta de comissão (R$)</label><input id="gf-commission" type="text" inputmode="decimal" value="${g.commission?numberToMoney(g.commission):''}" placeholder="10.000,00"></div>
       </div>
       <div style="font-size:.72rem;color:var(--t3);margin-top:8px">Deixe em branco (ou 0) para não acompanhar aquela meta.</div>
     </div>
     <div class="modal-ft"><button class="btn btn-outline" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" id="gf-save">Salvar metas</button></div></div></div>`);
-  maskMoneyInput($('gf-pay-rate')); maskMoneyInput($('gf-pay-bonusrate')); maskMoneyInput($('gf-revenue')); maskMoneyInput($('gf-commission'));
+  maskMoneyInput($('gf-revenue')); maskMoneyInput($('gf-commission'));
   $('gf-save').onclick=async()=>{
-    const newGoals={ contacts:parseInt($('gf-contacts').value)||0, sales:parseInt($('gf-sales').value)||0, revenue:moneyToNumber($('gf-revenue').value)||0, commission:moneyToNumber($('gf-commission').value)||0, leadDailyMin:parseInt($('gf-leadmin').value)||0, leadDailyMax:parseInt($('gf-leadmax').value)||0, callsWeekly:parseInt($('gf-callsweek').value)||0, payDayRate:moneyToNumber($('gf-pay-rate').value)||0, payTargetPerDay:parseInt($('gf-pay-target').value)||50, commissionPct:parseFloat($('gf-commpct').value)||0.1, payBasis:$('gf-pay-basis').value==='chamados'?'chamados':'seguidos', payFollowUp:$('gf-pay-followup').checked, payBonusMinPerDay:parseInt($('gf-pay-bonusmin').value)||0, payBonusRate:moneyToNumber($('gf-pay-bonusrate').value)||0 };
+    // Financeiro e Ligações (callsWeekly) vão com o valor GRAVADO: salvar metas nunca mexe neles.
+    const newGoals={ ...goalsFinanceiros(g), callsWeekly:g.callsWeekly, contacts:parseInt($('gf-contacts').value)||0,
+      sales:prosp?g.sales:(parseInt($('gf-sales').value)||0), revenue:prosp?g.revenue:(moneyToNumber($('gf-revenue').value)||0), commission:prosp?g.commission:(moneyToNumber($('gf-commission').value)||0),
+      leadDailyMin:fixoHoje?g.leadDailyMin:(parseInt($('gf-leadmin').value)||0), leadDailyMax:fixoHoje?g.leadDailyMax:(parseInt($('gf-leadmax').value)||0) };
     $('gf-save').disabled=true;
     const{error}=await saveOrgGoals(newGoals);   // já atualiza S.org quando dá certo
     if(error){ toast(error.message,'error'); $('gf-save').disabled=false; return; }
     closeModal(); toast('Metas atualizadas!','success'); renderGoals();
   };
 }
+// Chaves financeiras de orgs.settings.goals (pagamento por lead + comissão padrão).
+const GOALS_FIN_KEYS=['payDayRate','payTargetPerDay','commissionPct','payBasis','payFollowUp','payBonusMinPerDay','payBonusRate'];
+const goalsFinanceiros = g => Object.fromEntries(GOALS_FIN_KEYS.map(k=>[k,g[k]]));
 
 /* =====================================================================
    RELATÓRIOS — histórico permanente (nada some quando a semana vira):
@@ -1873,6 +1994,7 @@ function goalsForm(){
 ===================================================================== */
 const REL_VIEWS = [
   { k:'pay',    label:'Pagamento por período' },
+  { k:'mensal', label:'Fechamento mensal' },
   { k:'leads',  label:'Leads por semana' },
   { k:'calls',  label:'Ligações por semana' },
   { k:'vendas', label:'Relatório de vendas' },
@@ -1902,7 +2024,10 @@ function renderRelatorios(){
   if(!REL_VIEWS.some(v=>v.k===S.relView)) S.relView='pay';
   const showPay = MOD().features.weeklyPay;
   if(S.relView==='pay' && !showPay) S.relView='leads';
-  const views = showPay ? REL_VIEWS : REL_VIEWS.filter(v=>v.k!=='pay');
+  // "Fechamento mensal" só existe para equipe com algum modelo fixo gravado.
+  const temFixo = (S.payPlans||[]).some(p=>p.model==='fixo_comissao');
+  if(S.relView==='mensal' && !(showPay&&temFixo)) S.relView='pay';
+  const views = REL_VIEWS.filter(v=>(v.k!=='pay'||showPay) && (v.k!=='mensal'||(showPay&&temFixo)));
   const tabs = views.map(v=>`<div class="period-tab${S.relView===v.k?' active':''}" data-relv="${v.k}">${v.label}</div>`).join('');
   $('content').innerHTML = `
     <div class="tbl-controls">
@@ -1911,7 +2036,7 @@ function renderRelatorios(){
     </div>
     <div id="rel-body"></div>`;
   document.querySelectorAll('[data-relv]').forEach(b=>b.onclick=()=>{ S.relView=b.dataset.relv; renderRelatorios(); });
-  ({ pay:renderRelPay, leads:()=>renderRelWeekly('leads'), calls:()=>renderRelWeekly('calls'), vendas:renderRelVendas }[S.relView]||renderRelPay)();
+  ({ pay:renderRelPay, mensal:renderRelMensal, leads:()=>renderRelWeekly('leads'), calls:()=>renderRelWeekly('calls'), vendas:renderRelVendas }[S.relView]||renderRelPay)();
 }
 
 // Grade de estatísticas + lista de comissões — compartilhado entre a aba
@@ -1923,7 +2048,7 @@ function payBreakdownHtml(rep, idPrefix){
   const paidRows=rowsHtml(rep.paid,'✅','#6EE7B7','paidAt');
   return `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:14px">
-        <div style="background:var(--surf2);border-radius:9px;padding:12px 14px"><div style="font-size:.72rem;color:var(--t3);margin-bottom:3px">Prospecção · ${rep.prospectLeads} leads ${rep.payBasis==='chamados'?'chamados':'seguidos'}${rep.followUps?` + ${rep.followUps} follow-up${rep.followUps>1?'s':''}`:''}${rep.bonusDays?` · <b style="color:#10B981">${rep.bonusDays} dia${rep.bonusDays>1?'s':''} com bônus</b>`:''}</div><div id="${idPrefix}-prospect" data-cnt="${rep.prospectPay}" style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.3rem;color:#6366F1">${fmtCurrency(0)}</div></div>
+        <div style="background:var(--surf2);border-radius:9px;padding:12px 14px"><div style="font-size:.72rem;color:var(--t3);margin-bottom:3px">Prospecção · ${rep.prospectLeads} ${rep.payBasis==='chamados'?'leads chamados':'leads cadastrados (critério atual de “seguidos”)'}${rep.followUps?` + ${rep.followUps} follow-up${rep.followUps>1?'s':''}`:''}${rep.bonusDays?` · <b style="color:#10B981">${rep.bonusDays} dia${rep.bonusDays>1?'s':''} com bônus</b>`:''}</div><div id="${idPrefix}-prospect" data-cnt="${rep.prospectPay}" style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.3rem;color:#6366F1">${fmtCurrency(0)}</div></div>
         <div style="background:var(--surf2);border-radius:9px;padding:12px 14px"><div style="font-size:.72rem;color:var(--t3);margin-bottom:3px">Comissões pendentes</div><div id="${idPrefix}-pending" data-cnt="${rep.pendingTotal}" style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.3rem;color:#F59E0B">${fmtCurrency(0)}</div></div>
         <div style="background:var(--surf2);border-radius:9px;padding:12px 14px"><div style="font-size:.72rem;color:var(--t3);margin-bottom:3px">Total a receber</div><div id="${idPrefix}-total" data-cnt="${rep.total}" style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.3rem;background:linear-gradient(135deg,#10B981,#34D399);-webkit-background-clip:text;background-clip:text;color:transparent">${fmtCurrency(0)}</div></div>
       </div>
@@ -1951,6 +2076,10 @@ function renderRelPay(){
   const toExcl=new Date(S.relPayTo+'T00:00:00'); toExcl.setDate(toExcl.getDate()+1);
   const rep=weekReport(from, toExcl, S.relMemberId);
   const saved=S.weeklyPayments.find(p=>p.memberId===S.relMemberId && p.weekStart===S.relPayFrom);
+  // Período (ou parte dele) no modelo fixo + comissão: esse modelo é fechado
+  // por MÊS (renderRelMensal), não por período livre.
+  const fixoPer=periodHasFixedPlan(S.relPayFrom,S.relPayTo);
+  const fixoAviso=`<div id="rel-pay-fixo" style="padding:12px 14px;border-radius:10px;border:1px solid var(--border2);background:var(--surf2);font-size:.78rem;color:var(--t2);line-height:1.5"><b style="color:var(--t1)">Modelo fixo + comissão neste período.</b> Aqui não há valor nem confirmação: o modelo fixo é fechado por mês, na aba "Fechamento mensal". Os pagamentos já confirmados continuam no histórico abaixo.</div>`;
   const memberSel=S.members.length>1?`<div class="fld"><label>Quem recebe</label><select class="flt-sel" id="rel-pay-member">${S.members.map(m=>`<option value="${esc(m.id)}" ${m.id===S.relMemberId?'selected':''}>${esc(memberLabel(m))}</option>`).join('')}</select></div>`:'';
   $('rel-body').innerHTML=`
     <div class="card" style="padding:20px;border-left:3px solid ${saved?'#10B981':'#F59E0B'}">
@@ -1963,11 +2092,11 @@ function renderRelPay(){
         <div class="fld"><label>Até</label><input type="date" id="rel-pay-to" value="${esc(S.relPayTo)}"></div>
         ${memberSel}
       </div>
-      ${payBreakdownHtml(rep,'rp')}
-      ${saved
+      ${fixoPer?fixoAviso:payBreakdownHtml(rep,'rp')}
+      ${fixoPer?'':saved
         ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:11px 13px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:10px"><span style="font-weight:700;font-size:.84rem;color:#10B981">✅ Pagamento confirmado</span><span style="font-size:.74rem;color:var(--t3)">${fmtCurrency(saved.total)} · confirmado em ${fmtDate(saved.createdAt)}</span></div>`
         : `<button class="btn btn-primary" id="rel-pay-confirm" ${rep.total<=0?'disabled':''}>Confirmar pagamento do período (${fmtCurrency(rep.total)})</button>`}
-      <div style="font-size:.68rem;color:var(--t3);margin-top:10px">Pagamento por ${g.payBasis==='chamados'?'leads chamados':'leads seguidos'}${g.payFollowUp?' + follow-ups':''}${g.payBonusMinPerDay>0&&g.payBonusRate>0?` · bônus de ${fmtCurrency(g.payBonusRate)}/lead a partir de ${g.payBonusMinPerDay} no dia`:''}${g.payRecipientId?` · considera só leads de <b style="color:var(--t2)">${esc(payRecipientName())}</b>`:''} · ajuste em <b>Configurações</b>.</div>
+      ${fixoPer?'':`<div style="font-size:.68rem;color:var(--t3);margin-top:10px">Pagamento por ${basisLabel(g.payBasis)}${g.payFollowUp?' + follow-ups':''}${g.payBonusMinPerDay>0&&g.payBonusRate>0?` · bônus de ${fmtCurrency(g.payBonusRate)}/lead a partir de ${g.payBonusMinPerDay} no dia`:''}${g.payRecipientId?` · considera só leads de <b style="color:var(--t2)">${esc(payRecipientName())}</b>`:''} · ajuste em <b>Configurações</b>.</div>`}
     </div>
     <div class="card" style="padding:18px;margin-top:16px">
       <div class="card-title" style="margin-bottom:10px">Histórico de pagamentos confirmados</div>
@@ -1977,7 +2106,7 @@ function renderRelPay(){
   $('rel-pay-to').onchange=e=>{ S.relPayTo=e.target.value; renderRelPay(); };
   const sel=$('rel-pay-member'); if(sel) sel.onchange=e=>{ S.relMemberId=e.target.value; renderRelPay(); };
   const cf=$('rel-pay-confirm'); if(cf) cf.onclick=()=>confirmWeeklyPayment(from, toExcl, S.relMemberId, rep, 'rel-pay-confirm', renderRelPay);
-  animatePayBreakdown('rp');
+  if(!fixoPer) animatePayBreakdown('rp');
 }
 function renderPayHistory(memberId){
   const rows=S.weeklyPayments.filter(p=>p.memberId===memberId).sort((a,b)=>b.weekStart.localeCompare(a.weekStart));
@@ -1988,8 +2117,19 @@ function renderPayHistory(memberId){
 // campo commission_paid usado no formulário de negociação) e grava um snapshot
 // permanente em weekly_payments — daí em diante o valor nunca mais desaparece,
 // mesmo que a semana vire ou os leads/deals mudem de outra forma.
+// Pagamento confirmado é IMUTÁVEL: grava com insert (nunca upsert) e recusa
+// antes de mexer em qualquer negociação se o período já foi confirmado —
+// aqui, no banco (consulta) ou pela trava da P-01 (erro 23505/"imutável").
+const JA_CONFIRMADO='Este pagamento já foi confirmado e não pode ser alterado.';
 async function confirmWeeklyPayment(ws, we, memberId, rep, btnId='rel-pay-confirm', onDone=renderRelPay){
   const btn=$(btnId); if(btn) btn.disabled=true;
+  const falha=m=>{ toast(m,'error'); if(btn) btn.disabled=false; };
+  if(periodHasFixedPlan(localIsoDate(ws), localIsoDate(new Date(we-1)))) return falha('Período no modelo fixo + comissão: ele é fechado por mês, em Relatórios → "Fechamento mensal".');
+  const weekStart=isoDate(ws);
+  if(S.weeklyPayments.some(p=>p.memberId===memberId && p.weekStart===weekStart)) return falha(JA_CONFIRMADO);
+  const ja=await sb.from('weekly_payments').select('id').eq('org_id',S.org.id).eq('member_id',memberId).eq('week_start',weekStart).limit(1);
+  if(ja.error) return falha(ja.error.message);
+  if(ja.data && ja.data.length) return falha(JA_CONFIRMADO);
   const now=new Date().toISOString();
   if(rep.dealIds.length){
     const { error }=await sb.from('deals').update({ commission_paid:true, paid_at:now }).eq('org_id',S.org.id).in('id',rep.dealIds);
@@ -2000,12 +2140,83 @@ async function confirmWeeklyPayment(ws, we, memberId, rep, btnId='rel-pay-confir
   const row={ org_id:S.org.id, member_id:memberId, member_name:memberLabel(member), week_start:isoDate(ws), week_end:isoDate(new Date(we-1)),
     prospect_leads:rep.prospectLeads, prospect_pay:rep.prospectPay, commission_pay:rep.pendingTotal, total:rep.total, deal_ids:rep.dealIds,
     created_by:(S.session&&S.session.user&&S.session.user.id)||null };
-  const { data, error }=await sb.from('weekly_payments').upsert(row,{ onConflict:'org_id,member_id,week_start' }).select('*').single();
-  if(error){ toast(error.message,'error'); if(btn)btn.disabled=false; return; }
-  S.weeklyPayments=S.weeklyPayments.filter(p=>!(p.memberId===memberId&&p.weekStart===row.week_start));
+  const { data, error }=await sb.from('weekly_payments').insert(row).select('*').single();
+  if(error) return falha(error.code==='23505'||/imut[aá]vel/i.test(error.message||'')?JA_CONFIRMADO:error.message);
   S.weeklyPayments.push(weeklyPaymentFromRow(data));
   toast('Pagamento confirmado!','success');
   onDone();
+}
+
+// Fechamento mensal do modelo fixo + comissão. Mostra a conta inteira, mas
+// só deixa confirmar sem nenhum bloqueio (registro de ações completo, todas
+// as ações com responsável, mês encerrado, destinatário definido...).
+let relMensalSeq=0;
+async function renderRelMensal(){
+  const body=$('rel-body'); if(!body) return;
+  if(!S.relMonth){ const n=new Date(); const p=new Date(n.getFullYear(), n.getMonth()-1, 1); S.relMonth=`${p.getFullYear()}-${String(p.getMonth()+1).padStart(2,'0')}`; }
+  const seq=++relMensalSeq;
+  body.innerHTML='<div class="card" style="padding:20px;font-size:.8rem;color:var(--t3)">Calculando o fechamento…</div>';
+  const c=await fixedMonthClosure(S.relMonth);
+  if(seq!==relMensalSeq || S.relView!=='mensal') return;          // trocou de mês/aba no meio
+  const head=`<div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px"><div class="fld"><label>Mês</label><input type="month" id="rel-month" value="${esc(S.relMonth)}"></div></div>`;
+  if(!c.applicable){
+    body.innerHTML=`<div class="card" style="padding:20px">${head}<div id="rel-mensal-na" style="font-size:.8rem;color:var(--t3)">Neste mês a equipe não estava no modelo fixo + comissão. Use "Pagamento por período".</div></div>`;
+  } else {
+    const fx=c.calc, nome=c.recipient?memberLabel(c.recipient):'—';
+    const dias=fx.days.map(r=>`<tr${r.eligible?'':' style="opacity:.45"'}><td>${fmtDateOnly(r.day)}</td><td>${['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'][new Date(r.day+'T12:00:00Z').getUTCDay()]}</td><td style="text-align:right">${r.eligible?r.actions:'—'}</td><td style="text-align:right">${r.eligible?r.frac.toLocaleString('pt-BR',{maximumFractionDigits:2}):'fora do modelo'}</td></tr>`).join('');
+    const vendas=c.vendas.length?c.vendas.map(v=>`<div style="display:flex;justify-content:space-between;gap:10px;font-size:.74rem;padding:5px 0;border-bottom:1px dashed var(--border)"><span>${esc(v.name)} <span style="color:var(--t3)">(${fmtDateOnly(v.day)} · crédito ${fmtCurrency(v.card)})</span></span><b>${fmtCurrency(v.value)}</b></div>`).join(''):'<div style="font-size:.74rem;color:var(--t3)">Nenhuma venda com comissão pendente.</div>';
+    const bloqueios=c.blockers.length?`<div id="rel-mensal-bloqueios" style="margin-top:14px;padding:12px 14px;border-radius:10px;border:1px solid rgba(245,158,11,.35);background:rgba(245,158,11,.08);font-size:.76rem;line-height:1.5"><b>Ainda não dá para confirmar:</b><ul style="margin:6px 0 0 18px">${c.blockers.map(b=>`<li>${esc(b)}</li>`).join('')}</ul><div style="color:var(--t3);margin-top:6px">Os valores acima são uma prévia, não um valor a pagar.</div></div>`:'';
+    body.innerHTML=`<div class="card" style="padding:20px" id="rel-mensal" data-fixo="${fx.fixo}" data-comm="${c.commTotal}" data-total="${c.total}" data-bloqueios="${c.blockers.length}">
+      <div style="font-weight:800;font-size:.95rem;margin-bottom:2px">Fechamento mensal · fixo + comissão</div>
+      <div style="font-size:.72rem;color:var(--t3);margin-bottom:12px">Destinatário: <b>${esc(nome)}</b> · ${fmtCurrency(c.plan.fixed_monthly)}/mês ÷ ${fx.weekdays} dias de segunda a sexta = ${fmtCurrency(fx.daily)} por dia · meta ${fmtNum(c.plan.actions_per_day)} ações/dia · comissão ${fmtPct(c.plan.commission_rate)} do crédito</div>
+      ${head}
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:14px">
+        <div style="background:var(--surf2);border-radius:9px;padding:12px 14px"><div style="font-size:.72rem;color:var(--t3)">Ações do destinatário</div><div style="font-weight:800;font-size:1.2rem">${fmtNum(c.actions)}</div><div style="font-size:.68rem;color:var(--t3)">${fmtNum(c.chamados)} chamados + ${fmtNum(c.followUps)} follow-ups</div></div>
+        <div style="background:var(--surf2);border-radius:9px;padding:12px 14px"><div style="font-size:.72rem;color:var(--t3)">Dias completos (soma das frações)</div><div style="font-weight:800;font-size:1.2rem">${fx.fracSum.toLocaleString('pt-BR',{maximumFractionDigits:2})} de ${fx.weekdays}</div></div>
+        <div style="background:var(--surf2);border-radius:9px;padding:12px 14px"><div style="font-size:.72rem;color:var(--t3)">Fixo do mês</div><div style="font-weight:800;font-size:1.2rem">${fmtCurrency(fx.fixo)}</div></div>
+        <div style="background:var(--surf2);border-radius:9px;padding:12px 14px"><div style="font-size:.72rem;color:var(--t3)">Comissões</div><div style="font-weight:800;font-size:1.2rem">${fmtCurrency(c.commTotal)}</div></div>
+        <div style="background:var(--surf2);border-radius:9px;padding:12px 14px"><div style="font-size:.72rem;color:var(--t3)">Total</div><div style="font-weight:800;font-size:1.2rem">${fmtCurrency(c.total)}</div><div style="font-size:.68rem;color:var(--t3)">bônus adicional: a definir</div></div>
+      </div>
+      <details style="margin-bottom:12px"><summary style="cursor:pointer;font-size:.76rem;font-weight:700">Dias de segunda a sexta (${fx.weekdays})</summary>
+        <table style="width:100%;font-size:.74rem;margin-top:8px;border-collapse:collapse"><thead><tr style="color:var(--t3);text-align:left"><th>Dia</th><th></th><th style="text-align:right">Ações</th><th style="text-align:right">Fração</th></tr></thead><tbody>${dias}</tbody></table></details>
+      <div style="font-size:.76rem;font-weight:700;margin-bottom:4px">Comissões (vendas marcadas como Vendida)</div>${vendas}
+      ${bloqueios}
+      <div style="margin-top:14px">${c.saved
+        ? `<div style="font-weight:700;font-size:.84rem;color:#10B981">✅ Mês confirmado: ${fmtCurrency(c.saved.total)}</div>`
+        : `<button class="btn btn-primary" id="rel-mensal-confirm" ${c.blockers.length||c.total<=0?'disabled':''}>Confirmar fechamento (${fmtCurrency(c.total)})</button>`}</div>
+    </div>`;
+    const cf=$('rel-mensal-confirm'); if(cf&&!c.blockers.length) cf.onclick=()=>confirmFixedMonth(c);
+  }
+  const mi=$('rel-month'); if(mi) mi.onchange=e=>{ if(/^\d{4}-\d{2}$/.test(e.target.value)){ S.relMonth=e.target.value; renderRelMensal(); } };
+}
+// Grava o fechamento (imutável, como todo pagamento confirmado): primeiro o
+// pagamento, depois marca as comissões. Recalcula antes de gravar e recusa
+// qualquer bloqueio, período já confirmado ou divergência com a tela.
+async function confirmFixedMonth(prev){
+  const btn=$('rel-mensal-confirm'); if(btn) btn.disabled=true;
+  const falha=m=>{ toast(m,'error'); if(btn) btn.disabled=false; };
+  const c=await fixedMonthClosure(prev.ym);
+  if(!c.applicable || c.blockers.length) return falha('Fechamento com pendências: '+(c.blockers[0]||'modelo não se aplica'));
+  if(c.total!==prev.total) return falha('Os números mudaram desde que a tela foi aberta. Confira e tente de novo.');
+  if(c.saved) return falha(JA_CONFIRMADO);
+  const ja=await sb.from('weekly_payments').select('id').eq('org_id',S.org.id).eq('member_id',c.recipientId).eq('week_start',c.first).limit(1);
+  if(ja.error) return falha(ja.error.message);
+  if(ja.data && ja.data.length) return falha(JA_CONFIRMADO);
+  const dealIds=c.vendas.map(v=>v.id);
+  const row={ org_id:S.org.id, member_id:c.recipientId, member_name:memberLabel(c.recipient), week_start:c.first, week_end:c.last,
+    prospect_leads:c.actions, prospect_pay:c.calc.fixo, commission_pay:c.commTotal, total:c.total, deal_ids:dealIds,
+    created_by:(S.session&&S.session.user&&S.session.user.id)||null };
+  const { data, error }=await sb.from('weekly_payments').insert(row).select('*').single();
+  if(error) return falha(error.code==='23505'||/imut[aá]vel/i.test(error.message||'')?JA_CONFIRMADO:error.message);
+  S.weeklyPayments.push(weeklyPaymentFromRow(data));
+  if(dealIds.length){
+    const now=new Date().toISOString();
+    const r=await sb.from('deals').update({ commission_paid:true, paid_at:now }).eq('org_id',S.org.id).in('id',dealIds);
+    if(r.error) toast('Fechamento gravado, mas as comissões não foram marcadas como pagas: '+r.error.message+'. Elas já constam do fechamento e não serão pagas de novo.','error');
+    else dealIds.forEach(id=>{ const d=S.deals.find(x=>x.id===id); if(d){ d.commissionPaid=true; d.paidAt=now; } });
+  }
+  toast('Fechamento do mês confirmado!','success');
+  renderRelMensal();
 }
 
 // Contagem semana a semana de leads/ligações — usa os dados já carregados
@@ -2180,8 +2391,11 @@ function renderRelDash(targetId){
   // atual + o próprio usuário, se ainda não foi visitada nesta sessão), pra
   // não precisar trocar de aba só pra ver quanto tem a receber.
   let payCard='';
-  if(inHeader && MOD().features.weeklyPay && S.members.length){
+  if(inHeader && MOD().features.weeklyPay && modoConalvo()==='consorcio' && S.members.length){
     if(!S.relPayFrom||!S.relPayTo){ const { ws,we }=weekRange(); S.relPayFrom=isoDate(ws); S.relPayTo=isoDate(new Date(we-1)); }
+    if(periodHasFixedPlan(S.relPayFrom,S.relPayTo)){
+      payCard=`<div class="card rd-clickable" id="dash-pay-card" data-model="fixo_comissao" style="padding:16px 20px;margin-bottom:16px;border-left:3px solid var(--border2)"><div style="font-weight:800;font-size:.88rem">💵 Modelo fixo + comissão</div><div style="font-size:.72rem;color:var(--t3)">${fmtDateOnly(S.relPayFrom)} a ${fmtDateOnly(S.relPayTo)} · fechado por mês em Relatórios → Fechamento mensal</div></div>`;
+    } else {
     // Mesma regra de padrão do Relatórios: prioriza quem está configurado em
     // Configurações → "Quem deve receber o valor" — senão o dono via o
     // PRÓPRIO nome aqui mesmo quando quem recebe de verdade é outra pessoa.
@@ -2199,6 +2413,7 @@ function renderRelDash(targetId){
       </div>
       <div id="dash-pay-total" data-cnt="${payRep.total}" style="font-family:'Plus Jakarta Sans';font-weight:800;font-size:1.7rem;line-height:1;background:linear-gradient(135deg,#10B981,#34D399);-webkit-background-clip:text;background-clip:text;color:transparent">${fmtCurrency(0)}</div>
     </div>`;
+    }
   }
   const topCard = inHeader
     ? `<div class="card" style="padding:14px 20px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
@@ -3116,7 +3331,7 @@ async function renderOrgSwitcher(){
       <div class="search-wrap" style="margin-bottom:14px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input class="search-inp" id="org-sw-q" placeholder="Buscar equipe…"></div>
       <div id="org-sw-list" class="org-grid"><div style="font-size:.8rem;color:var(--t3)">Carregando…</div></div>
     </div>
-    <div class="modal-ft"><button class="btn btn-outline" onclick="closeModal()">Fechar</button><button class="btn btn-primary" id="org-sw-add">+ Criar ou entrar em outra equipe</button></div></div></div>`);
+    <div class="modal-ft"><button class="btn btn-outline" onclick="closeModal()">Fechar</button><button class="btn btn-primary" id="org-sw-add">Entrar em outra equipe ou pedir uma nova</button></div></div></div>`);
   $('org-sw-add').onclick=()=>{ closeModal(); renderOnboard(); };
   const { data:orgs, error }=await sb.rpc('my_orgs');
   if(!$('org-sw-list')) return; // modal já foi fechado
@@ -3138,7 +3353,7 @@ function renderOrgSelectScreen(orgs){
     <div style="font-size:.78rem;color:var(--t3);margin-bottom:16px">Selecione a equipe que quer acessar</div>
     <div class="search-wrap" style="margin-bottom:14px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input class="search-inp" id="orgsel-q" placeholder="Buscar equipe…"></div>
     <div id="orgsel-list" class="org-grid"></div>
-    <div style="display:flex;justify-content:flex-end;margin-top:16px"><button class="btn btn-outline" id="orgsel-add">+ Criar ou entrar em outra equipe</button></div>
+    <div style="display:flex;justify-content:flex-end;margin-top:16px"><button class="btn btn-outline" id="orgsel-add">Entrar em outra equipe ou pedir uma nova</button></div>
   `;
   $('orgsel-add').onclick=()=>{ $('org-select').classList.add('hidden'); renderOnboard(); };
   const repaint=()=>renderOrgSelectScreen(orgs);
@@ -3255,14 +3470,23 @@ function notePresetsModal(){
   };
 }
 
-function renderSettings(){
+// Cartões de configuração do painel (integração com o CRM, funis e nichos,
+// notificações, extensão…). O painel Conalvo (conalvo-telas.js) organiza
+// Configurações por assunto e pede só os cartões de cada seção:
+//   cartoesConfiguracao(['integracao'], elemento)
+// Sem lista, desenha todos em #content (reserva, caso conalvo-telas.js não carregue).
+// Depois de gravar, os cartões chamam renderSettings(), que no painel Conalvo
+// redesenha a seção aberta.
+function renderSettings(){ cartoesConfiguracao(); }
+function cartoesConfiguracao(cards, alvo){
+  const quer=k=>!cards||cards.includes(k);
   const owner=S.profile&&S.profile.org_role==='owner';
   const curTheme=currentTheme();
-  $('content').innerHTML=`<div class="stg">
-    <div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(99,102,241,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#A5B4FC" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></div><div><div class="st-title">Seu espaço</div><div class="st-sub">${esc(S.org&&S.org.name||'—')} · você é ${owner?'dono(a)':'membro'}</div></div></div>
+  (alvo||$('content')).innerHTML=`<div class="stg">
+    ${quer('espaco')?`<div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(99,102,241,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#A5B4FC" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></div><div><div class="st-title">Seu espaço</div><div class="st-sub">${esc(S.org&&S.org.name||'—')} · você é ${owner?'dono(a)':'membro'}</div></div></div>
       <div class="stg-bd"><div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Código de convite</div><div class="stg-ri-s">Passe para um colega entrar no mesmo espaço</div></div><span class="code-pill">${esc(S.org&&S.org.join_code||'—')}</span></div>
-        <div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Módulo de profissão</div><div class="stg-ri-s">${MOD().icon} ${esc(MOD().name)} · define funil, termos e campos usados no sistema</div></div>${owner?`<select class="stg-input" id="st-module" style="max-width:200px">${(window.IGP_MODULE_ORDER||[]).map(id=>`<option value="${id}" ${id===MOD().id?'selected':''}>${window.IGP_MODULES[id].icon} ${window.IGP_MODULES[id].name}</option>`).join('')}</select>`:''}</div></div></div>
-    ${owner?`<div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(99,102,241,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#A5B4FC" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div><div><div class="st-title">Equipe</div><div class="st-sub">Só donos podem remover membros ou promover outros donos</div></div></div>
+        <div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Módulo de profissão</div><div class="stg-ri-s">${MOD().icon} ${esc(MOD().name)} · define funil, termos e campos usados no sistema</div></div>${owner?`<select class="stg-input" id="st-module" style="max-width:200px">${(window.IGP_MODULE_ORDER||[]).map(id=>`<option value="${id}" ${id===MOD().id?'selected':''}>${window.IGP_MODULES[id].icon} ${window.IGP_MODULES[id].name}</option>`).join('')}</select>`:''}</div></div></div>`:''}
+    ${owner&&quer('membros')?`<div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(99,102,241,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#A5B4FC" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div><div><div class="st-title">Equipe</div><div class="st-sub">Só donos podem remover membros ou promover outros donos</div></div></div>
       <div class="stg-bd">
         ${S.members.map(m=>{
           const isMe=m.id===S.session.user.id, isOwner=m.org_role==='owner';
@@ -3270,24 +3494,24 @@ function renderSettings(){
             <div class="tbl-acts" style="opacity:1">${(!isOwner)?`<button class="act-btn" data-promote="${esc(m.id)}">★ Tornar dono</button>`:''}${(!isMe)?`<button class="act-btn act-del" data-remove="${esc(m.id)}">Remover</button>`:''}</div></div>`;
         }).join('')||'<div class="empty-sub">Nenhum outro membro ainda.</div>'}
       </div></div>`:''}
-    <div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(139,92,246,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#C084FC" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg></div><div><div class="st-title">Aparência</div><div class="st-sub">Tema do sistema · salvo neste aparelho</div></div></div>
+    ${quer('aparencia')?`<div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(139,92,246,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#C084FC" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg></div><div><div class="st-title">Aparência</div><div class="st-sub">Tema do sistema · salvo neste aparelho</div></div></div>
       <div class="stg-bd"><div class="theme-seg">
         <button class="theme-opt${curTheme==='dark'?' active':''}" data-theme-set="dark"><span class="theme-prev tp-dark"><i></i><b></b></span><span>Escuro</span></button>
         <button class="theme-opt${curTheme==='light'?' active':''}" data-theme-set="light"><span class="theme-prev tp-light"><i></i><b></b></span><span>Claro</span></button>
-      </div></div></div>
-    ${(()=>{ const perm=pushPerm(); const sup=pushSupported(); const on=perm==='granted';
+      </div></div></div>`:''}
+    ${quer('notificacoes')?(()=>{ const perm=pushPerm(); const sup=pushSupported(); const on=perm==='granted';
       const statusTxt = !sup ? 'Não disponível neste navegador' : perm==='granted' ? 'Ativadas neste aparelho ✓' : perm==='denied' ? 'Bloqueadas — libere nas configurações do navegador' : 'Desativadas neste aparelho';
       const btn = !sup ? '' : on ? `<button class="btn btn-outline btn-sm" id="st-push-off">Desativar</button>` : perm==='denied' ? '' : `<button class="btn btn-primary btn-sm" id="st-push-on">Ativar notificações</button>`;
       const iosHint = `<div style="font-size:.72rem;color:var(--t2);margin-top:8px;padding:9px 11px;background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.2);border-radius:8px">📱 <b>No iPhone:</b> abra o site no Safari, toque em Compartilhar → <b>Adicionar à Tela de Início</b>, abra pelo ícone novo e então ative as notificações. Sem isso o iOS não entrega push.</div>`;
       return `<div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(244,114,182,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#F472B6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></div><div><div class="st-title">Notificações</div><div class="st-sub">Avisa a equipe quando um lead envia contato ou chega mensagem nova</div></div></div>
         <div class="stg-bd"><div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Notificações neste aparelho</div><div class="stg-ri-s">${statusTxt}</div></div>${btn}</div>${iosHint}</div></div>`;
-    })()}
-    <div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(16,185,129,.12)"><svg viewBox="0 0 24 24" fill="none" stroke="#6EE7B7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></div><div><div class="st-title">Integração CRM</div><div class="st-sub">Envia leads e ligações ao CRM · compartilhada no espaço</div></div></div>
+    })():''}
+    ${quer('integracao')?`<div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(16,185,129,.12)"><svg viewBox="0 0 24 24" fill="none" stroke="#6EE7B7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></div><div><div class="st-title">Integração CRM</div><div class="st-sub">Envia os contatos ao CRM · compartilhada no espaço</div></div></div>
       <div class="stg-bd">
       ${!owner?`<div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Status</div><div class="stg-ri-s">${agendorOn()?'☁ Conectado ao CRM':'Não configurado'}</div></div></div><div class="stg-ri-s">Só o dono da equipe pode editar a integração com o CRM.</div>`:`
-        <div class="stg-field"><label class="stg-label">Token da API</label><input class="stg-input" type="password" id="st-token" value="${esc(S.org&&S.org.agendor_token||'')}" placeholder="Cole o token"><div class="stg-hint" style="font-size:.72rem;color:var(--t2);margin-top:5px">Token pessoal do Hub do Corretor: <b>CRM → Configurações → aba "Token da API" → Mostrar</b>. Vale a conta inteira, não só o CRM — melhor criar um usuário só pro IGProspect.</div></div>
+        <div class="stg-field"><label class="stg-label">Token da API</label><input class="stg-input" type="password" id="st-token" value="" autocomplete="off" placeholder="${agendorOn()?'Token configurado (não é exibido). Cole um novo para substituir':'Cole o token'}"><div class="stg-hint" style="font-size:.72rem;color:var(--t2);margin-top:5px">Token pessoal do Hub do Corretor: <b>CRM → Configurações → aba "Token da API" → Mostrar</b>. Vale a conta inteira, não só o CRM — melhor criar um usuário só para a Conalvo.</div></div>
         <div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Envio automático</div><div class="stg-ri-s">Ao chegar na última etapa de um funil, envia sozinho ao CRM</div></div><label style="cursor:pointer"><input type="checkbox" id="st-auto" ${agendorAutoOn()?'checked':''} style="width:20px;height:20px;cursor:pointer;accent-color:#10B981"></label></div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary" id="st-save">Salvar integração</button><button class="btn btn-outline" id="ag-test">Testar conexão</button></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary" id="st-save">Salvar integração</button><button class="btn btn-outline" id="ag-test">Testar conexão</button>${agendorOn()?'<button class="btn btn-outline" id="ag-remove">Remover token</button>':''}</div>
         <div style="height:1px;background:rgba(255,255,255,.06);margin:4px 0"></div>
         <div class="stg-ri-t">Roteamento por etapa e origem</div>
         <div class="stg-ri-s" style="margin-bottom:8px">Cada ETAPA de cada funil de lead aponta pra uma etapa do CRM — quando o lead muda de etapa aqui, o negócio move de etapa lá também (não fica sempre no mesmo destino fixo). Etapas sem mapeamento não são enviadas. A <b>Origem</b> é escolhida uma vez por funil (ex.: funil "Instagram" → origem "Instagram") e vai carimbada no negócio; sem ela, o CRM marca tudo como "IGProspect".</div>
@@ -3317,13 +3541,13 @@ function renderSettings(){
         ${S._funnelStages.length?`<button class="btn btn-primary btn-sm" id="ag-save-map" style="align-self:flex-start">Salvar mapeamento</button>`:''}
         <div style="font-size:.72rem;color:var(--t2);margin-top:6px;padding:9px 11px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:8px">⚠️ O navegador bloqueia chamadas diretas à API do CRM (CORS) — por isso o envio passa por um proxy (Cloudflare Worker) já configurado no sistema.</div>
       `}
-      </div></div>
-    ${owner&&MOD().features.weeklyPay?(()=>{ const g=getGoals(); return `<div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(16,185,129,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#6EE7B7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div><div><div class="st-title">Pagamento da meta</div><div class="st-sub">Só o dono vê · escolhe quem recebe o valor calculado na aba Metas</div></div></div>
+      </div></div>`:''}
+    ${owner&&quer('destinatario')&&MOD().features.weeklyPay?(()=>{ const g=getGoals(); return `<div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(16,185,129,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#6EE7B7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div><div><div class="st-title">Pagamento da meta</div><div class="st-sub">Só o dono vê · escolhe quem recebe o valor calculado na aba Metas</div></div></div>
       <div class="stg-bd">
         <div class="fld"><label>Quem deve receber o valor</label><select class="stg-input" id="st-pay-recipient" style="max-width:320px"><option value="">Todo mundo (padrão — soma leads da equipe inteira)</option>${S.members.map(m=>`<option value="${esc(m.id)}" ${g.payRecipientId===m.id?'selected':''}>${esc(memberLabel(m))}</option>`).join('')}</select></div>
         <div style="font-size:.72rem;color:var(--t3);line-height:1.5">Quando escolhe uma pessoa, o valor "a pagar" (Dashboard e Metas) passa a contar só os leads cadastrados por ela. Assim, se outra pessoa (ex.: o dono) usar a extensão só pra colocar leads no sistema, isso não infla o valor de quem realmente prospectou. Na extensão, quem cadastra escolhe "quem é você" ao conectar a equipe — é esse campo que decide de quem é cada lead.</div>
       </div></div>`; })():''}
-    ${owner?`<div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(99,102,241,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#A5B4FC" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></div><div><div class="st-title">Personalização</div><div class="st-sub">Funis, nichos, negociações e ligações do seu jeito · só o dono edita</div></div></div>
+    ${owner&&quer('funis')?`<div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(99,102,241,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#A5B4FC" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></div><div><div class="st-title">Personalização</div><div class="st-sub">Funis, nichos, etapas de negociação e observações do seu jeito · só o dono edita</div></div></div>
       <div class="stg-bd">
         <div class="stg-ri-t">Etapas do CRM (Funis de Lead)</div>
         <div class="stg-ri-s" style="margin-bottom:8px">Controla as colunas da aba CRM. Cada funil tem suas próprias etapas — leads pertencem a um funil (ex.: "Instagram", "Empresários", "Indicação"). Clique em "Editar etapas" para renomear, recolorir, reordenar ou adicionar colunas do CRM.</div>
@@ -3335,11 +3559,11 @@ function renderSettings(){
         <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">${S.niches.map(n=>`<span class="tag" data-niche="${n.id}" style="cursor:pointer" title="Remover">${esc(n.name)} ✕</span>`).join('')||'<span class="empty-sub">Nenhum nicho cadastrado.</span>'}</div>
         <div style="display:flex;gap:8px"><input class="stg-input" id="niche-add-inp" placeholder="Novo nicho… (Enter para adicionar)" style="flex:1;max-width:280px"><button class="btn btn-outline btn-sm" id="niche-add-btn">Adicionar</button></div>
         <div style="height:1px;background:rgba(255,255,255,.06);margin:10px 0"></div>
-        <div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Etapas de Negociação</div><div class="stg-ri-s">${DEAL_STS().length} etapa(s) · usadas na aba Negociações</div></div><button class="btn btn-outline btn-sm" id="deal-stages-edit">Editar</button></div>
-        <div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Desfechos de Ligação</div><div class="stg-ri-s">${CALL_OUT().length} opção(ões) · usadas na aba Ligações</div></div><button class="btn btn-outline btn-sm" id="call-out-edit">Editar</button></div>
+        ${featOn('deals')?`<div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Etapas de Negociação</div><div class="stg-ri-s">${DEAL_STS().length} etapa(s) · usadas na aba Negociações</div></div><button class="btn btn-outline btn-sm" id="deal-stages-edit">Editar</button></div>`:''}
+        <!-- Desfechos de Ligação: Ligações saíram da interface Conalvo (os registros continuam no banco). -->
         <div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">Observações pré-prontas</div><div class="stg-ri-s">Textos sugeridos por etapa, no campo Observações de leads e negociações</div></div><button class="btn btn-outline btn-sm" id="note-presets-edit">Editar</button></div>
       </div></div>`:''}
-    <div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(236,72,153,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#F472B6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></div><div><div class="st-title">Extensão do Instagram</div><div class="st-sub">Detecta perfis e adiciona leads direto do Instagram para o seu espaço</div></div></div>
+    ${quer('extensao')?`<div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(236,72,153,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#F472B6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></div><div><div class="st-title">Extensão do Instagram</div><div class="st-sub">Detecta perfis e adiciona leads direto do Instagram para o seu espaço</div></div></div>
       <div class="stg-bd">
         <div style="display:flex;gap:8px;flex-wrap:wrap"><a class="btn btn-primary" href="igprospect-extension.zip" download>⬇ Baixar extensão</a></div>
         <div style="font-size:.8rem;color:var(--t2);margin-top:10px;padding:11px 13px;background:rgba(236,72,153,.08);border:1px solid rgba(236,72,153,.2);border-radius:8px;line-height:1.6">
@@ -3350,15 +3574,17 @@ function renderSettings(){
           4. Clique em <b>Carregar sem compactação</b> e selecione a pasta descompactada<br>
           5. Abra o Instagram — a extensão já aparece nos perfis
         </div>
-      </div></div>
-    <div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(139,92,246,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#C084FC" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></div><div><div class="st-title">Conta</div><div class="st-sub">${esc(S.profile&&S.profile.email||'')}</div></div></div>
+      </div></div>`:''}
+    ${quer('conta')?`<div class="stg-card"><div class="stg-hd"><div class="stg-hd-ico" style="background:rgba(139,92,246,.14)"><svg viewBox="0 0 24 24" fill="none" stroke="#C084FC" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></div><div><div class="st-title">Conta</div><div class="st-sub">${esc(S.profile&&S.profile.email||'')}</div></div></div>
       <div class="stg-bd">
         <div class="stg-field"><label class="stg-label">Seu nome de usuário</label><input class="stg-input" id="st-name" value="${esc(S.profile&&S.profile.name||'')}" placeholder="Como você quer aparecer" maxlength="60" style="max-width:340px"></div>
         <div class="stg-ri-s" style="margin-bottom:10px">É assim que seu nome aparece para a equipe (recados, lista de membros, etc.).</div>
         <div class="stg-row"><div class="stg-ri"><div class="stg-ri-t">${S.leads.length} leads · ${S.calls.length} ligações neste espaço</div></div><div class="tbl-acts" style="opacity:1"><button class="btn btn-primary btn-sm" id="st-name-save">Salvar nome</button><button class="btn btn-outline btn-sm" id="st-logout">Sair</button></div></div>
-      </div></div>
+      </div></div>`:''}
   </div>`;
-  $('st-save')&&($('st-save').onclick=async()=>{ const settings={ ...(S.org.settings||{}), agendorAuto: $('st-auto')?$('st-auto').checked:true }; const patch={ agendor_token:$('st-token').value.trim(), settings }; const{error}=await sb.from('orgs').update(patch).eq('id',S.org.id); if(error){toast(error.message,'error');return;} S.org={...S.org,...patch}; toast('Integração salva','success'); });
+  $('st-save')&&($('st-save').onclick=async()=>{ const settings={ ...(S.org.settings||{}), agendorAuto: $('st-auto')?$('st-auto').checked:true }; const novo=$('st-token').value.trim(); /* o token salvo nunca volta para a tela: vazio = mantém o atual */ const patch={ agendor_token:novo||(S.org.agendor_token||''), settings }; const{error}=await sb.from('orgs').update(patch).eq('id',S.org.id); if(error){toast(error.message,'error');return;} S.org={...S.org,...patch}; toast('Integração salva','success'); });
+  $('ag-remove')&&($('ag-remove').onclick=async e=>{ const b=e.currentTarget; if(b.dataset.armado!=='1'){ b.dataset.armado='1'; b.textContent='Confirmar: desligar a integração'; return; }
+    const{error}=await sb.from('orgs').update({agendor_token:''}).eq('id',S.org.id); if(error){toast(error.message,'error');return;} S.org={...S.org,agendor_token:''}; toast('Token removido: a integração foi desligada','success'); renderSettings(); });
   $('ag-test')&&($('ag-test').onclick=testAgendor);
   $('ag-load-funnels')&&($('ag-load-funnels').onclick=loadAgendorFunnels);
   $('ag-diag')&&($('ag-diag').onclick=diagAgendorOrigins);
@@ -3490,7 +3716,7 @@ function renderSettings(){
     });
   });
   $('note-presets-edit')&&($('note-presets-edit').onclick=notePresetsModal);
-  $('st-logout').onclick=igpLogout;
+  $('st-logout')&&($('st-logout').onclick=igpLogout);
   $('st-name-save')&&($('st-name-save').onclick=async()=>{
     const name=$('st-name').value.trim();
     if(!name){ toast('Digite um nome','error'); return; }
@@ -3710,8 +3936,8 @@ async function boot(freshLogin){
   if(!session){ renderAuth(); return; }
   const { data:prof }=await sb.from('profiles').select('*').eq('id',session.user.id).single();
   S.profile=prof;
-  if(prof&&prof.status==='blocked'){ $('app').classList.remove('show'); $('onboard').classList.add('hidden'); $('auth').classList.remove('hidden'); $('auth-card').innerHTML=`<div class="auth-h">Acesso bloqueado</div><div class="auth-sub">Fale com o administrador.</div><button class="btn-block" onclick="igpLogout()">Sair</button>`; return; }
-  if(prof&&prof.status==='pending'){ $('app').classList.remove('show'); $('onboard').classList.add('hidden'); $('auth').classList.remove('hidden'); $('auth-card').innerHTML=`<div class="auth-h">Cadastro em análise</div><div class="auth-sub">Seu acesso está aguardando aprovação do administrador.</div><button class="btn-block" onclick="igpLogout()">Sair</button>`; return; }
+  if(prof&&prof.status==='blocked'){ $('app').classList.remove('show'); $('onboard').classList.add('hidden'); $('auth').classList.remove('hidden'); $('auth-card').innerHTML=`<div class="cv-marca"><div class="cv-marca-ico"><img src="../conalvo-alvo.png" alt="" width="26" height="26"></div><div><div class="cv-marca-n">Conalvo</div><div class="cv-marca-s">Prospecção e consórcio</div></div></div><div class="auth-h">Acesso bloqueado</div><div class="auth-sub">Seu acesso está suspenso. Fale com a administração Conalvo.</div><button class="btn-block" onclick="igpLogout()">Sair</button>`; return; }
+  if(prof&&prof.status==='pending'){ $('app').classList.remove('show'); $('onboard').classList.add('hidden'); $('auth').classList.remove('hidden'); $('auth-card').innerHTML=`<div class="cv-marca"><div class="cv-marca-ico"><img src="../conalvo-alvo.png" alt="" width="26" height="26"></div><div><div class="cv-marca-n">Conalvo</div><div class="cv-marca-s">Prospecção e consórcio</div></div></div><div class="auth-h">Cadastro em análise</div><div class="auth-sub">Seu cadastro está aguardando aprovação da administração Conalvo. Você poderá entrar assim que for aprovado.</div><button class="btn-block" onclick="igpLogout()">Sair</button>`; return; }
   if(!prof||!prof.org_id){ renderOnboard(); return; }
   // Login novo + mais de uma equipe → mostra a tela de seleção ANTES de montar
   // qualquer coisa do painel (nada é carregado até escolher). Num F5 comum
@@ -3727,7 +3953,7 @@ async function boot(freshLogin){
   if(S.org) unhideOrgHere(S.org.id); // virou a equipe ativa de novo → sai da lista de escondidas
   if(org) authLoading(`Entrando na equipe de ${org.name}…`);
   await loadFeatures();
-  await loadOrgConfig(); await loadLeads(); await normalizeEmpresarios(); await loadCalls(); await loadDeals(); await backfillEmpresarioDeals(); await loadMessages(); await loadMembers(); await loadWeeklyPayments(); renderShell();
+  await loadOrgConfig(); await loadLeads(); await normalizeEmpresarios(); await loadCalls(); await loadDeals(); await backfillEmpresarioDeals(); await loadMessages(); await loadMembers(); await loadWeeklyPayments(); await loadPayPlans(); renderShell();
   bindBridge();
   subscribeMessages();
   subscribeLeads();
@@ -3755,5 +3981,7 @@ async function backfillEmpresarioDeals(){
 }
 async function igpLogout(){ if(sb)await sb.auth.signOut(); location.reload(); }
 window.igpLogout=igpLogout;
+// Painel Conalvo: telas de conalvo-telas.js entram antes do 1º desenho.
+if(typeof window.__conalvoInstalar==='function') window.__conalvoInstalar();
 document.addEventListener('DOMContentLoaded',()=>{ $('logout').onclick=igpLogout; boot(); });
 if(document.readyState!=='loading'){ if($('logout'))$('logout').onclick=igpLogout; boot(); }

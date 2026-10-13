@@ -176,4 +176,22 @@ window.IGP_MODULES = {
   },
 };
 
+// Conalvo — tipo "Prospecção": só equipes criadas assim pela administração
+// (module_id = 'prospeccao', E-01). Nenhuma equipe existente é reclassificada.
+// Mesmo funil de prospecção do Consórcio, sem pagamento (weeklyPay false),
+// sem Negociações, CRM ou CRM externo (no banco, a equipe nasce com
+// deals/calls/crm desligados em org_features; no painel, featOn em conalvo-telas.js).
+window.IGP_MODULES.prospeccao = {
+  id: 'prospeccao', name: 'Prospecção', icon: '🎯',
+  labels: { dealsTabTitle: 'Negociações', dealsTabSub: '', dealSingular: 'negociação', cardTypeLabel: 'Tipo', cardValueLabel: 'Valor' },
+  prospectFunnel: window.IGP_MODULES.consorcio.prospectFunnel,
+  empFunnel: window.IGP_MODULES.consorcio.empFunnel,
+  dealFunnel: window.IGP_MODULES.consorcio.dealFunnel,
+  cardTypes: [], extraLeadFields: [],
+  features: { weeklyPay: false },
+  abas: ['dashboard', 'goals', 'leads', 'relatorios', 'team', 'settings'],
+};
+
+// Ordem dos módulos antigos (sem 'prospeccao': o tipo é escolhido só pela
+// administração ao aprovar um pedido, nunca trocado pela equipe).
 window.IGP_MODULE_ORDER = ['consorcio','imoveis','seguros','saas'];

@@ -14,3 +14,6 @@ exclude:
   - worker
   - supabase
   - crm-demo
+  - dev
+  - extension-dev
+  - previa            # Prévia Conalvo (revisão com dados fictícios): substituída pelo painel; não é servida
